@@ -1,0 +1,24 @@
+<Project Sdk="WixToolset.Sdk/7.0.0">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <Cultures>en-US</Cultures>
+    <OutputName>OpenTimeStamp-$(ProductVersion)-x64</OutputName>
+    <DefineConstants>
+      PayloadPath=$(PayloadPath);DeployPath=$(DeployPath);SetupPath=$(SetupPath);ProductVersion=$(ProductVersion)
+    </DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" />
+    <PackageReference Include="WixToolset.Util.wixext" />
+  </ItemGroup>
+  <Target Name="ValidateInstallerInputs" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(PayloadPath)' == '' or !Exists('$(PayloadPath)')"
+      Text="PayloadPath must identify the prepared OpenTimeStamp payload directory." />
+    <Error Condition="'$(DeployPath)' == '' or !Exists('$(DeployPath)')"
+      Text="DeployPath must identify the OpenTimeStamp deployment scripts directory." />
+    <Error Condition="'$(SetupPath)' == '' or !Exists('$(SetupPath)')"
+      Text="SetupPath must identify the OpenTimeStamp MSI source directory." />
+    <Error Condition="'$(ProductVersion)' == ''" Text="ProductVersion is required." />
+  </Target>
+</Project>

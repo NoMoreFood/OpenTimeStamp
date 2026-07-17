@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<OpenTimeStampConfiguration xmlns:i="http://www.w3.org/2001/XMLSchema-instance" xmlns="urn:opentimestamp:configuration:v1">
+  <SchemaVersion>1</SchemaVersion>
+  <Rfc3161Enabled>true</Rfc3161Enabled>
+  <AuthenticodeEnabled>true</AuthenticodeEnabled>
+  <AuthenticationMode>Anonymous</AuthenticationMode>
+  <CertificateStoreLocation>LocalMachine</CertificateStoreLocation>
+  <CertificateStoreName>My</CertificateStoreName>
+  <CertificateThumbprint i:nil="true" />
+  <DefaultPolicyOid>1.3.6.1.4.1.55555.1</DefaultPolicyOid>
+  <AcceptedPolicyOids xmlns:d2p1="http://schemas.microsoft.com/2003/10/Serialization/Arrays">
+    <d2p1:string>1.3.6.1.4.1.55555.1</d2p1:string>
+  </AcceptedPolicyOids>
+  <AllowedHashAlgorithms xmlns:d2p1="http://schemas.microsoft.com/2003/10/Serialization/Arrays">
+    <d2p1:string>SHA256</d2p1:string>
+    <d2p1:string>SHA384</d2p1:string>
+    <d2p1:string>SHA512</d2p1:string>
+  </AllowedHashAlgorithms>
+  <SigningDigestAlgorithm>SHA256</SigningDigestAlgorithm>
+  <IncludeCertificateChain>true</IncludeCertificateChain>
+  <AccuracySeconds>0</AccuracySeconds>
+  <AccuracyMilliseconds>0</AccuracyMilliseconds>
+  <Ordering>false</Ordering>
+  <MaxRequestBytes>65536</MaxRequestBytes>
+  <LogRetentionDays>365</LogRetentionDays>
+  <AdminAllowedWindowsGroups xmlns:d2p1="http://schemas.microsoft.com/2003/10/Serialization/Arrays">
+    <d2p1:string>S-1-5-21-168386361-3908804931-2142650674-1000</d2p1:string>
+  </AdminAllowedWindowsGroups>
+  <FailClosedOnAuditError>true</FailClosedOnAuditError>
+  <LogMessageImprints>true</LogMessageImprints>
+  <ClockRollbackToleranceSeconds>2</ClockRollbackToleranceSeconds>
+  <AllowUntrustedDevelopmentCertificate>false</AllowUntrustedDevelopmentCertificate>
+  <CertificateSelectionMode>Automatic</CertificateSelectionMode>
+  <LogRolloverInterval>Daily</LogRolloverInterval>
+  <PruneAuditLogs>true</PruneAuditLogs>
+</OpenTimeStampConfiguration>

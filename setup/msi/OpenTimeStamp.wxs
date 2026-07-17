@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+  xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="OpenTimeStamp $(var.ProductVersion)"
+    Manufacturer="OpenTimeStamp"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="{651638E5-FBC8-43AF-8303-0E913F1E2A7E}"
+    InstallerVersion="500"
+    Compressed="yes"
+    Scope="perMachine">
+    <SummaryInformation Description="OpenTimeStamp IIS timestamp authority" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of OpenTimeStamp is already installed."
+      Schedule="afterInstallInitialize" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Property Id="ARPCONTACT" Value="OpenTimeStamp maintainers" />
+    <Property Id="IISINSTALLED">
+      <RegistrySearch Id="IisInstalledSearch" Root="HKLM" Key="SOFTWARE\Microsoft\InetStp"
+        Name="MajorVersion" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="IISSITENAME" Value="Default Web Site" Secure="yes">
+      <RegistrySearch Id="ExistingIisSiteNameSearch" Root="HKLM"
+        Key="Software\OpenTimeStamp\Installer" Name="SiteName" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="APPLICATIONNAME" Value="OpenTimeStamp" Secure="yes">
+      <RegistrySearch Id="ExistingApplicationNameSearch" Root="HKLM"
+        Key="Software\OpenTimeStamp\Installer" Name="ApplicationName" Type="raw" Bitness="always64" />
+    </Property>
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLERCACHE]" After="CostFinalize" />
+    <Launch Condition="VersionNT64" Message="OpenTimeStamp requires 64-bit Windows Server." />
+    <Launch Condition="Installed OR IISINSTALLED"
+      Message="Microsoft IIS must be installed and configured before installing OpenTimeStamp." />
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLERCACHE" />
+    <UI Id="IisConfigurationUI">
+      <Dialog Id="IisConfigurationDlg" Width="370" Height="270" Title="OpenTimeStamp IIS Configuration">
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="2" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="2" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="280" Height="15" Transparent="yes"
+          NoPrefix="yes" Text="{\WixUI_Font_Title}IIS Application" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="320" Height="15" Transparent="yes"
+          NoPrefix="yes" Text="Choose the existing IIS website and the URL application name." />
+        <Control Id="SiteNameLabel" Type="Text" X="25" Y="56" Width="320" Height="12"
+          Text="IIS website name:" />
+        <Control Id="SiteName" Type="ComboBox" X="25" Y="70" Width="320" Height="18"
+          Property="IISSITENAME" ComboList="no" Sorted="yes">
+          <ComboBox Property="IISSITENAME">
+            <ListItem Value="Default Web Site" />
+          </ComboBox>
+        </Control>
+        <Control Id="SiteNameHelp" Type="Text" X="25" Y="91" Width="320" Height="18" Transparent="yes"
+          NoPrefix="yes" Text="Select Default Web Site or type the exact name of another existing IIS website." />
+        <Control Id="ApplicationNameLabel" Type="Text" X="25" Y="119" Width="320" Height="12"
+          Text="Application name:" />
+        <Control Id="ApplicationName" Type="Edit" X="25" Y="133" Width="320" Height="18"
+          Property="APPLICATIONNAME" />
+        <Control Id="ApplicationNameHelp" Type="Text" X="25" Y="154" Width="320" Height="18"
+          Transparent="yes" NoPrefix="yes"
+          Text="The service will be installed at /[APPLICATIONNAME] on the selected website." />
+        <Control Id="PrerequisiteHelp" Type="Text" X="25" Y="183" Width="320" Height="28"
+          Transparent="yes" NoPrefix="yes"
+          Text="IIS and all required role services must already be installed. Setup will not add or modify Windows features." />
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes"
+          Text="!(loc.WixUINext)">
+          <Publish Event="SpawnDialog" Value="InvalidIisSelectionDlg" Order="1"
+            Condition="IISSITENAME = &quot;&quot; OR APPLICATIONNAME = &quot;&quot;" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="2"
+            Condition="IISSITENAME &lt;&gt; &quot;&quot; AND APPLICATIONNAME &lt;&gt; &quot;&quot;" />
+        </Control>
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17"
+          Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="InstallDirDlg" Condition="1" Order="100" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes"
+          Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" Condition="1" Order="100" />
+        </Control>
+      </Dialog>
+      <Dialog Id="InvalidIisSelectionDlg" Width="260" Height="90" Title="OpenTimeStamp IIS Configuration">
+        <Control Id="Message" Type="Text" X="18" Y="18" Width="224" Height="32"
+          Text="Enter both an existing IIS website name and an application name." />
+        <Control Id="OK" Type="PushButton" X="102" Y="60" Width="56" Height="17" Default="yes"
+          Cancel="yes" Text="OK">
+          <Publish Event="EndDialog" Value="Return" Condition="1" />
+        </Control>
+      </Dialog>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="IisConfigurationDlg"
+        Order="5" Condition="NOT Installed OR WIX_UPGRADE_DETECTED" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="IisConfigurationDlg"
+        Order="5" Condition="NOT Installed OR WIX_UPGRADE_DETECTED" />
+    </UI>
+
+    <Feature Id="Complete" Title="OpenTimeStamp" Level="1">
+      <ComponentRef Id="InstallerScripts" />
+      <Files Directory="PAYLOADFOLDER" Include="$(var.PayloadPath)\**" />
+      <Files Directory="DEPLOYFOLDER" Include="$(var.DeployPath)\*.ps1" />
+    </Feature>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="PRODUCTFOLDER" Name="OpenTimeStamp">
+        <Directory Id="INSTALLERCACHE" Name="Installer">
+          <Directory Id="PAYLOADFOLDER" Name="payload" />
+          <Directory Id="DEPLOYFOLDER" Name="deploy" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <DirectoryRef Id="INSTALLERCACHE">
+      <Component Id="InstallerScripts" Guid="{56530866-AFB4-479F-9060-786241FBA341}">
+        <File Id="InstallMsiScript" Source="$(var.SetupPath)\Install-Msi.ps1" />
+        <File Id="UninstallMsiScript" Source="$(var.SetupPath)\Uninstall-Msi.ps1" />
+        <File Id="InstallerReadme" Source="$(var.SetupPath)\README.md" Name="README.md" />
+        <RegistryValue Root="HKLM" Key="Software\OpenTimeStamp\Installer" Name="Version"
+          Value="$(var.ProductVersion)" Type="string" KeyPath="yes" />
+        <RegistryValue Root="HKLM" Key="Software\OpenTimeStamp\Installer" Name="SiteName"
+          Value="[IISSITENAME]" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\OpenTimeStamp\Installer" Name="ApplicationName"
+          Value="[APPLICATIONNAME]" Type="string" />
+      </Component>
+    </DirectoryRef>
+
+    <SetProperty Id="InstallOpenTimeStamp"
+      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#InstallMsiScript]&quot;"
+      Before="InstallOpenTimeStamp" Sequence="execute" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+    <CustomAction Id="InstallOpenTimeStamp"
+      BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+      DllEntry="WixQuietExec"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+
+    <SetProperty Id="UninstallOpenTimeStamp"
+      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#UninstallMsiScript]&quot;"
+      Before="UninstallOpenTimeStamp" Sequence="execute"
+      Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    <CustomAction Id="UninstallOpenTimeStamp"
+      BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+      DllEntry="WixQuietExec"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+
+    <InstallExecuteSequence>
+      <Custom Action="InstallOpenTimeStamp" After="WriteRegistryValues"
+        Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="UninstallOpenTimeStamp" Before="RemoveRegistryValues"
+        Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

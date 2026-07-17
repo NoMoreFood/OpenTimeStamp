@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="Current" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{300D7237-8AC7-4C60-ACB9-92F18199C725}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>OpenTimeStamp.Tests</RootNamespace>
+    <AssemblyName>OpenTimeStamp.Tests</AssemblyName>
+    <IsTestProject>true</IsTestProject>
+    <FileAlignment>512</FileAlignment>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.Security" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="MSTest.TestAdapter" />
+    <PackageReference Include="MSTest.TestFramework" />
+    <PackageReference Include="System.Buffers" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Asn1AndRequestTests.cs" />
+    <Compile Include="AssertEx.cs" />
+    <Compile Include="PersistenceAndConfigurationTests.cs" />
+    <Compile Include="Program.cs" />
+    <Compile Include="ProtocolTests.cs" />
+    <Compile Include="PostQuantumProtocolTests.cs" />
+    <Compile Include="TestFixtures.cs" />
+    <Compile Include="WebHandlerTests.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Fixtures\MlDsa65TimestampCertificate.pfx.b64">
+      <LogicalName>OpenTimeStamp.Tests.MlDsa65TimestampCertificate.pfx.b64</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OpenTimeStamp.Core\OpenTimeStamp.Core.csproj">
+      <Project>{8E2C923F-C17B-4B0C-89E9-B50ED17B3144}</Project>
+      <Name>OpenTimeStamp.Core</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\..\src\OpenTimeStamp.Web\OpenTimeStamp.Web.csproj">
+      <Project>{D2AA9228-235B-45DD-9909-D4540152088B}</Project>
+      <Name>OpenTimeStamp.Web</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

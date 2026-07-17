@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+.vs/
+artifacts/
+*.user
+*.suo
+src/OpenTimeStamp.Web/App_Data/*.config
+src/OpenTimeStamp.Web/App_Data/Logs/
+!src/OpenTimeStamp.Web/App_Data/.gitkeep
+
