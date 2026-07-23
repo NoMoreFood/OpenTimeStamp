@@ -1387,7 +1387,6 @@ if ([int]$frameworkRelease -lt 528040) {
 # touching deployment/data ACLs.
 $SourcePath = (Resolve-Path -LiteralPath $SourcePath).ProviderPath
 $SourcePath = Get-OpenTimeStampCanonicalDirectoryPath -Path $SourcePath
-$manifest = Assert-OpenTimeStampPublishedPayload -PayloadPath $SourcePath -AllowPublishMarker
 if ([string]::IsNullOrWhiteSpace($ManifestSignaturePath) -ne
     [string]::IsNullOrWhiteSpace($TrustedManifestSignerThumbprint)) {
     throw 'ManifestSignaturePath and TrustedManifestSignerThumbprint must be supplied together.'
@@ -1400,11 +1399,16 @@ if (-not [string]::IsNullOrWhiteSpace($ManifestSignaturePath)) {
     $manifestSignature = Assert-OpenTimeStampManifestSignature `
         -ManifestPath (Join-Path $SourcePath $script:OpenTimeStampDeploymentManifestName) `
         -SignaturePath $ManifestSignaturePath -TrustedSignerThumbprint $TrustedManifestSignerThumbprint
+    $manifest = Assert-OpenTimeStampPublishedPayload -PayloadPath $SourcePath `
+        -Manifest $manifestSignature.Manifest -AllowPublishMarker
 }
 elseif (-not $AllowUnsignedManifest) {
     throw 'A detached signed manifest is required. Supply ManifestSignaturePath and TrustedManifestSignerThumbprint, or use -AllowUnsignedManifest only for development or explicitly approved legacy deployment.'
 }
-else { Write-Warning 'Manifest authenticity verification was explicitly disabled with -AllowUnsignedManifest.' }
+else {
+    Write-Warning 'Manifest authenticity verification was explicitly disabled with -AllowUnsignedManifest.'
+    $manifest = Assert-OpenTimeStampPublishedPayload -PayloadPath $SourcePath -AllowPublishMarker
+}
 
 foreach ($requiredRuntimeAssembly in @(Get-OpenTimeStampRequiredRuntimeAssemblies)) {
     $requiredAssemblyPath = Join-Path $SourcePath "bin\$requiredRuntimeAssembly"

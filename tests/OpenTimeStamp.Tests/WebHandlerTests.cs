@@ -399,7 +399,7 @@ internal static class WebHandlerTests
         var utcNow = new DateTime(2026, 7, 16, 12, 0, 0, DateTimeKind.Utc);
         var cacheDuration = TimeSpan.FromSeconds(30);
         AssertEx.Equal(
-            utcNow.AddSeconds(35),
+            utcNow.AddSeconds(45),
             HealthPolicy.GetCertificateValidationTimeUtc(
                 utcNow,
                 utcNow.AddSeconds(1),

@@ -22,13 +22,17 @@ msiexec /i OpenTimeStamp-1.0.0-x64.msi `
 ```
 
 The chosen website and application name are retained for upgrades and safe
-uninstall. Use the PowerShell deployment workflow when a different initial
-authentication mode or other advanced topology is required.
+uninstall. Upgrades preserve the existing authoritative authentication mode.
+Use the PowerShell deployment workflow when a different initial authentication
+mode or other advanced topology is required.
 
 Uninstall removes the matching IIS application, dedicated application pool, and
 unused service auto-start registration only after validating their ownership.
 It deliberately preserves releases, configuration, issuance state, and audit
-logs under the deployment root for recovery or a later reinstall.
+logs under the deployment root for recovery. A later reinstall must use the
+PowerShell workflow with an explicit `-AuthenticationMode`; MSI setup fails
+closed rather than guessing how to expose a preserved deployment whose IIS
+application was removed.
 
 Build the application and MSI from the repository root:
 

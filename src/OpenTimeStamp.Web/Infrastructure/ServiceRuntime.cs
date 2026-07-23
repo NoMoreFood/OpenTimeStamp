@@ -316,11 +316,13 @@ internal static class ServiceRuntime
         }
     }
 
-    internal static X509Certificate2 GetSelectedCertificate(ServiceRuntimeSnapshot snapshot)
+    internal static X509Certificate2 GetSelectedCertificate(
+        ServiceRuntimeSnapshot snapshot,
+        CancellationToken cancellationToken)
     {
         if (snapshot is null) throw new ArgumentNullException(nameof(snapshot));
         EnsureInitialized();
-        return Certificates.GetSelectedCertificate(snapshot.Configuration);
+        return Certificates.GetSelectedCertificate(snapshot.Configuration, cancellationToken);
     }
 
     public static void Initialize(string applicationPath)

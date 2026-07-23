@@ -294,9 +294,18 @@ Invoke-WebRequest `
 ```
 
 Health is cached for 30 seconds and checks configuration, the effective FIPS
-gate, issuance-state and audit writability, plus a small private-key signature
-probe using the configured CMS digest. Use a noninteractive Windows key provider
-so health and issuance cannot block on a UI or PIN prompt.
+gate, issuance-state and audit writability, plus non-signing access to a private
+key that Windows associates with and compares to the selected certificate. Health
+does not create a timestamp or any other signature. Use a noninteractive Windows
+key provider so health and issuance cannot block on a UI or PIN prompt.
+
+Certificate selection is cached for 30 seconds. While one request refreshes an
+expired selection, concurrent requests can reuse that same selection only until
+its 45-second validation horizon. The 15-second overlap covers the 10-second chain
+URL retrieval timeout plus a five-second scheduling margin; configuration changes
+and refresh failures stop reuse immediately. When no validated selection is
+available, concurrent requests share the active refresh and wait for at most 15
+seconds while still honoring the request deadline.
 
 Post an existing DER RFC 3161 request and save the binary response:
 

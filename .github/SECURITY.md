@@ -83,8 +83,9 @@ application audit trail.
 
 Use a CA-issued, policy-governed TSA certificate with critical timestamping-only
 EKU. Prefer a hardware-protected, noninteractive RSA CNG key when operationally
-possible and test provider compatibility, including the health signature probe,
-before production. The included self-signed certificate script is development-only.
+possible and test provider compatibility, including the non-signing health key
+access and association check and an explicit RFC 3161 issuance, before production.
+The included self-signed certificate script is development-only.
 
 - Store a software key in `LocalMachine\My` and grant read access only to the
   dedicated application-pool identity.

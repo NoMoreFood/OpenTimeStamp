@@ -98,8 +98,8 @@ try {
                 [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
             $certificate = $request.CreateSelfSigned(
                 [DateTimeOffset]::UtcNow.AddMinutes(-1), [DateTimeOffset]::UtcNow.AddHours(1))
-            $content = [System.Security.Cryptography.Pkcs.ContentInfo]::new(
-                [System.IO.File]::ReadAllBytes($manifestPath))
+            $signedManifestBytes = [System.IO.File]::ReadAllBytes($manifestPath)
+            $content = [System.Security.Cryptography.Pkcs.ContentInfo]::new($signedManifestBytes)
             $cms = [System.Security.Cryptography.Pkcs.SignedCms]::new($content, $true)
             $signer = [System.Security.Cryptography.Pkcs.CmsSigner]::new($certificate)
             $signer.IncludeOption = [System.Security.Cryptography.X509Certificates.X509IncludeOption]::EndCertOnly
@@ -112,6 +112,21 @@ try {
                 -SignaturePath $signaturePath -TrustedSignerThumbprint $certificate.Thumbprint
             Assert-Equal $certificate.Thumbprint $verified.SignerThumbprint `
                 'Detached manifest signature returned the wrong signer.'
+            Assert-Equal '20260717010102Z-0123456789ab' ([string]$verified.Manifest.ReleaseId) `
+                'Detached manifest verification did not return the signed manifest snapshot.'
+
+            # Replace both payload and on-disk manifest with a self-consistent but
+            # unsigned revision. Validation against the already verified snapshot
+            # must reject the replacement even though rereading the disk manifest succeeds.
+            [System.IO.File]::AppendAllText((Join-Path $payload 'bin\OpenTimeStamp.Core.dll'), '-changed')
+            New-OpenTimeStampDeploymentManifest -PayloadPath $payload `
+                -ReleaseId '20260717010102Z-0123456789ab' | Out-Null
+            Assert-OpenTimeStampPublishedPayload -PayloadPath $payload | Out-Null
+            Assert-Throws {
+                Assert-OpenTimeStampPublishedPayload -PayloadPath $payload -Manifest $verified.Manifest
+            } 'A substituted self-consistent payload was accepted instead of the signed manifest snapshot.'
+
+            [System.IO.File]::WriteAllBytes($manifestPath, $signedManifestBytes)
             $signatureBytes[$signatureBytes.Length - 1] = $signatureBytes[$signatureBytes.Length - 1] -bxor 1
             [System.IO.File]::WriteAllBytes($signaturePath, $signatureBytes)
             Assert-Throws {
@@ -1425,6 +1440,8 @@ catch {
             Assert-True ($msiInstall -match [regex]::Escape($installToken)) `
                 "MSI deployment integration '$installToken' is missing."
         }
+        Assert-True ($msiInstall -notmatch 'AuthenticationMode') `
+            'MSI deployment bypasses the main installer authentication-preservation and orphan-root safeguards.'
         foreach ($uninstallToken in @('Test-OpenTimeStampDeploymentRootMarker',
                 'Assert-OpenTimeStampPublishedPayload', 'unexpectedAssignments',
                 'Preserved deployment releases and application data',
@@ -1448,6 +1465,17 @@ catch {
 
     Invoke-Test 'Installer retains release rollback and pool-state safeguards' {
         $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1') -Raw
+        $signatureValidation = $installer.IndexOf('$manifestSignature = Assert-OpenTimeStampManifestSignature')
+        $signedSnapshotValidation = if ($signatureValidation -lt 0) { -1 } else {
+            $installer.IndexOf('-Manifest $manifestSignature.Manifest', $signatureValidation)
+        }
+        $stagingCopy = if ($signedSnapshotValidation -lt 0) { -1 } else {
+            $installer.IndexOf('Copy-OpenTimeStampPublishedPayload', $signedSnapshotValidation)
+        }
+        Assert-True ($signatureValidation -ge 0 -and $signedSnapshotValidation -gt $signatureValidation) `
+            'Installer payload validation does not consume the exact manifest snapshot verified by CMS.'
+        Assert-True ($stagingCopy -gt $signedSnapshotValidation) `
+            'Installer staging is not ordered after validation of the signed manifest snapshot.'
         Assert-True ($installer -match 'existingApplicationPool') 'Installer does not inspect the actual current pool.'
         Assert-True ($installer -match 'finally\s*\{') 'Installer lacks a finally-based pool restoration path.'
         Assert-True ($installer -match 'Restore-PoolState') 'Installer lacks pool-state restoration.'
@@ -1478,6 +1506,8 @@ catch {
             'Installer records issuance initialization before the state initializer returns.'
         Assert-True ($installer -match 'missing, invalid, or ambiguous') `
             'Installer does not fail closed on ambiguous inherited authentication settings.'
+        Assert-True ($installer -match 'AuthenticationMode must be explicit when adopting a deployment root') `
+            'Installer does not fail closed when a preserved deployment has no authoritative IIS application.'
         Assert-True ($installer -notmatch 'issuance\.state\.bak.*(?:Copy|Move|Replace)') `
             'Installer appears to restore a potentially stale issuance-state backup.'
         Assert-True ($installer.IndexOf('Enter-OpenTimeStampDeploymentLock') -lt `

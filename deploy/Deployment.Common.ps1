@@ -653,6 +653,34 @@ function Assert-OpenTimeStampManifestSignature {
         throw 'The detached manifest signature exceeds 1 MiB.'
     }
 
+    # Hold the manifest open without write/delete sharing while capturing one
+    # bounded byte snapshot. Signature verification and JSON parsing must consume
+    # these same bytes so a mutable source cannot substitute a different manifest
+    # between payload approval and signer verification.
+    $manifestStream = [System.IO.FileStream]::new(
+        $manifest,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::Read,
+        4096,
+        [System.IO.FileOptions]::SequentialScan)
+    try {
+        if ($manifestStream.Length -gt 4194304) {
+            throw 'The deployment manifest exceeds 4 MiB.'
+        }
+
+        $manifestBytes = New-Object byte[] ([int]$manifestStream.Length)
+        $offset = 0
+        while ($offset -lt $manifestBytes.Length) {
+            $read = $manifestStream.Read($manifestBytes, $offset, $manifestBytes.Length - $offset)
+            if ($read -eq 0) { throw 'The deployment manifest ended before its declared length.' }
+            $offset += $read
+        }
+    }
+    finally {
+        $manifestStream.Dispose()
+    }
+
     $expectedThumbprint = ($TrustedSignerThumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
     if ($expectedThumbprint -notmatch '^[0-9A-F]{40}$') {
         throw 'TrustedManifestSignerThumbprint must be one complete SHA-1 certificate thumbprint.'
@@ -662,7 +690,7 @@ function Assert-OpenTimeStampManifestSignature {
         # Never load a same-named assembly from the unauthenticated payload.
         Add-Type -AssemblyName System.Security
         $content = [System.Security.Cryptography.Pkcs.ContentInfo]::new(
-            [System.IO.File]::ReadAllBytes($manifest))
+            $manifestBytes)
         $signedCms = [System.Security.Cryptography.Pkcs.SignedCms]::new($content, $true)
         $signedCms.Decode([System.IO.File]::ReadAllBytes($signature))
         $signedCms.CheckSignature($true)
@@ -677,9 +705,24 @@ function Assert-OpenTimeStampManifestSignature {
     if (-not $actualThumbprint.Equals($expectedThumbprint, [System.StringComparison]::Ordinal)) {
         throw "The deployment manifest was signed by '$actualThumbprint' instead of '$expectedThumbprint'."
     }
+
+    try {
+        $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+        $manifestJson = $strictUtf8.GetString($manifestBytes)
+        if ($manifestJson.Length -ne 0 -and $manifestJson[0] -eq [char]0xFEFF) {
+            $manifestJson = $manifestJson.Substring(1)
+        }
+        $verifiedManifest = $manifestJson | ConvertFrom-Json
+        if ($null -eq $verifiedManifest) { throw 'the JSON document is empty' }
+    }
+    catch {
+        throw "The signed deployment manifest could not be parsed as UTF-8 JSON: $($_.Exception.Message)"
+    }
+
     return [PSCustomObject]@{
         SignerThumbprint = $actualThumbprint
         SignerSubject = $signedCms.SignerInfos[0].Certificate.Subject
+        Manifest = $verifiedManifest
     }
 }
 

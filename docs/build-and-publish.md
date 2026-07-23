@@ -34,8 +34,9 @@ cryptographic provider support.
 The managed ML-DSA key-access members in the current BCL package are marked
 `SYSLIB5006` (evaluation only). This service does not suppress that diagnostic
 or call those members. It uses the stable `MLDsa.IsSupported` capability check
-and CMS surface for provider detection, signing, and private-key probes, and
-uses Crypt32/NCrypt only for deployment-time machine-key ACL discovery.
+and CMS surface for provider detection and signing, the stable Crypt32 key-acquisition
+surface for runtime private-key access and public-key association checks, and
+Crypt32/NCrypt for deployment-time machine-key ACL discovery.
 
 ## Build and Publish
 

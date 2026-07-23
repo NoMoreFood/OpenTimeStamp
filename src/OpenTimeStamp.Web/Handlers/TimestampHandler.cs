@@ -449,7 +449,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
             // Let the RFC processor encode a standards-compliant rejection when no key is selected.
             try
             {
-                certificate = ServiceRuntime.GetSelectedCertificate(snapshot);
+                certificate = ServiceRuntime.GetSelectedCertificate(snapshot, cancellationToken);
             }
             catch (CertificateSelectionException)
             {
@@ -492,7 +492,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
         var request = LegacyAuthenticodeHttpCodec.DecodeRequestBody(encodedBody);
         var signature = AuthenticodeTimestampProcessor.ParseRequest(request);
 
-        using (var certificate = ServiceRuntime.GetSelectedCertificate(snapshot))
+        using (var certificate = ServiceRuntime.GetSelectedCertificate(snapshot, cancellationToken))
         {
             AuthenticodeResult result;
             try

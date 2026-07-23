@@ -1,9 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using System.Security.Cryptography.Pkcs;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading;
 using OpenTimeStamp.Asn1;
 using OpenTimeStamp.Configuration;
 
@@ -34,12 +37,17 @@ public sealed class CertificateRepository : IDisposable
 {
     private static readonly TimeSpan ChainUrlRetrievalTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan SelectionCacheDuration = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan SelectionRefreshSchedulingMargin = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan SelectionRefreshWaitTimeout =
+        ChainUrlRetrievalTimeout + SelectionRefreshSchedulingMargin;
     private static readonly TimeSpan SelectionFailureBackoff = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan SelectionValidationHorizon = TimeSpan.FromSeconds(35);
+    private static readonly TimeSpan SelectionValidationHorizon =
+        SelectionCacheDuration + SelectionRefreshWaitTimeout;
     private readonly object selectionCacheLock = new();
     private X509Certificate2 cachedSelection;
     private string cachedSelectionKey;
     private DateTime cachedSelectionExpiresUtc;
+    private DateTime cachedSelectionValidatedUntilUtc;
     private bool selectionRefreshInProgress;
     private long selectionCacheGeneration;
     private string cachedSelectionFailureKey;
@@ -82,43 +90,102 @@ public sealed class CertificateRepository : IDisposable
             .ThenBy(item => item.Subject, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-    public X509Certificate2 GetSelectedCertificate(ServiceConfiguration configuration)
+    public X509Certificate2 GetSelectedCertificate(ServiceConfiguration configuration) =>
+        GetSelectedCertificate(configuration, null, CancellationToken.None);
+
+    public X509Certificate2 GetSelectedCertificate(
+        ServiceConfiguration configuration,
+        CancellationToken cancellationToken) =>
+        GetSelectedCertificate(configuration, null, cancellationToken);
+
+    internal X509Certificate2 GetSelectedCertificate(
+        ServiceConfiguration configuration,
+        Func<ServiceConfiguration, DateTime, DateTime, X509Certificate2> loadSelection) =>
+        GetSelectedCertificate(configuration, loadSelection, CancellationToken.None);
+
+    internal X509Certificate2 GetSelectedCertificate(
+        ServiceConfiguration configuration,
+        Func<ServiceConfiguration, DateTime, DateTime, X509Certificate2> loadSelection,
+        CancellationToken cancellationToken)
     {
         if (configuration is null) throw new ArgumentNullException(nameof(configuration));
 
-        var now = DateTime.UtcNow;
         var cacheKey = BuildSelectionCacheKey(configuration);
-        long refreshGeneration;
-        lock (selectionCacheLock)
+        using var cancellationRegistration = cancellationToken.Register(() =>
         {
-            if (cachedSelection is not null && now < cachedSelectionExpiresUtc &&
-                string.Equals(cacheKey, cachedSelectionKey, StringComparison.Ordinal))
+            lock (selectionCacheLock) Monitor.PulseAll(selectionCacheLock);
+        });
+        long requestGeneration;
+        lock (selectionCacheLock) requestGeneration = selectionCacheGeneration;
+        Stopwatch refreshWait = null;
+        DateTime now;
+        long refreshGeneration;
+        while (true)
+        {
+            lock (selectionCacheLock)
             {
-                return new X509Certificate2(cachedSelection);
-            }
+                cancellationToken.ThrowIfCancellationRequested();
+                if (requestGeneration != selectionCacheGeneration)
+                {
+                    throw new CertificateSelectionException(
+                        "Certificate settings changed during validation. Refresh the page and try again.");
+                }
 
-            if (now < cachedSelectionFailureExpiresUtc &&
-                cachedSelectionFailureGeneration == selectionCacheGeneration &&
-                string.Equals(cacheKey, cachedSelectionFailureKey, StringComparison.Ordinal))
-            {
-                throw new CertificateSelectionException(cachedSelectionFailureReason);
-            }
+                now = DateTime.UtcNow;
+                if (cachedSelection is not null && now < cachedSelectionExpiresUtc &&
+                    string.Equals(cacheKey, cachedSelectionKey, StringComparison.Ordinal))
+                {
+                    return new X509Certificate2(cachedSelection);
+                }
 
-            if (selectionRefreshInProgress)
-            {
-                throw new CertificateSelectionException(
-                    "Timestamp signing certificate validation is already in progress.");
-            }
+                if (now < cachedSelectionFailureExpiresUtc &&
+                    cachedSelectionFailureGeneration == selectionCacheGeneration &&
+                    string.Equals(cacheKey, cachedSelectionFailureKey, StringComparison.Ordinal))
+                {
+                    throw new CertificateSelectionException(cachedSelectionFailureReason);
+                }
 
-            selectionRefreshInProgress = true;
-            refreshGeneration = selectionCacheGeneration;
+                if (selectionRefreshInProgress)
+                {
+                    if (CanServeCachedSelectionDuringRefresh(
+                            cachedSelection is not null,
+                            cacheKey,
+                            cachedSelectionKey,
+                            now,
+                            cachedSelectionExpiresUtc,
+                            cachedSelectionValidatedUntilUtc))
+                    {
+                        return new X509Certificate2(cachedSelection);
+                    }
+
+                    refreshWait ??= Stopwatch.StartNew();
+                    var remaining = SelectionRefreshWaitTimeout - refreshWait.Elapsed;
+                    if (remaining <= TimeSpan.Zero)
+                    {
+                        throw new CertificateSelectionException(
+                            "Timed out waiting for timestamp signing certificate validation.");
+                    }
+
+                    Monitor.Wait(selectionCacheLock, remaining);
+                    continue;
+                }
+
+                selectionRefreshInProgress = true;
+                refreshGeneration = requestGeneration;
+                break;
+            }
         }
 
         X509Certificate2 loaded = null;
         try
         {
             var validationHorizonUtc = GetSelectionValidationTimeUtc(now, TimeSpan.Zero);
-            loaded = LoadSelectedCertificate(configuration, now, validationHorizonUtc);
+            loaded = loadSelection is null
+                ? LoadSelectedCertificate(configuration, now, validationHorizonUtc)
+                : loadSelection(configuration, now, validationHorizonUtc);
+            if (loaded is null)
+                throw new CertificateSelectionException(
+                    "Timestamp signing certificate validation returned no certificate.");
             lock (selectionCacheLock)
             {
                 if (refreshGeneration != selectionCacheGeneration)
@@ -127,16 +194,25 @@ public sealed class CertificateRepository : IDisposable
                         "Certificate settings changed during validation. Refresh the page and try again.");
                 }
 
+                if (DateTime.UtcNow >= validationHorizonUtc)
+                {
+                    throw new CertificateSelectionException(
+                        "Timestamp signing certificate validation did not complete before its validation horizon.");
+                }
+
                 cachedSelection?.Dispose();
                 cachedSelection = loaded;
                 loaded = null;
                 cachedSelectionKey = cacheKey;
                 cachedSelectionExpiresUtc = now.Add(SelectionCacheDuration);
+                cachedSelectionValidatedUntilUtc = validationHorizonUtc;
                 ClearSelectionFailure();
                 return new X509Certificate2(cachedSelection);
             }
         }
-        catch (CertificateSelectionException ex)
+        catch (Exception ex) when (ex is CertificateSelectionException or CryptographicException or
+                                   System.IO.IOException or UnauthorizedAccessException or
+                                   System.Security.SecurityException)
         {
             lock (selectionCacheLock)
             {
@@ -154,7 +230,11 @@ public sealed class CertificateRepository : IDisposable
         finally
         {
             loaded?.Dispose();
-            lock (selectionCacheLock) selectionRefreshInProgress = false;
+            lock (selectionCacheLock)
+            {
+                selectionRefreshInProgress = false;
+                Monitor.PulseAll(selectionCacheLock);
+            }
         }
     }
 
@@ -166,8 +246,10 @@ public sealed class CertificateRepository : IDisposable
             cachedSelection = null;
             cachedSelectionKey = null;
             cachedSelectionExpiresUtc = DateTime.MinValue;
+            cachedSelectionValidatedUntilUtc = DateTime.MinValue;
             ClearSelectionFailure();
             selectionCacheGeneration++;
+            Monitor.PulseAll(selectionCacheLock);
         }
     }
 
@@ -330,8 +412,8 @@ public sealed class CertificateRepository : IDisposable
                 return true;
             }
 
-            // Manual resolution first checks current usability, then performs the private-key
-            // and trust probes exactly once at the requested health or save horizon.
+            // Manual resolution first checks current usability, then performs private-key access,
+            // association, and trust checks exactly once at the requested health or save horizon.
             using var certificate = LoadSelectedCertificate(configuration, DateTime.UtcNow, null);
             if (!ValidateCertificate(
                     certificate,
@@ -382,7 +464,7 @@ public sealed class CertificateRepository : IDisposable
                 {
                     try
                     {
-                        // Enumeration stays metadata-only; save and health checks perform the private-key signature probe.
+                        // Enumeration stays metadata-only; save and health checks open and compare the private key.
                         var eligible = IsEligible(
                             certificate,
                             false,
@@ -615,24 +697,15 @@ public sealed class CertificateRepository : IDisposable
             }
         }
 
-        // Probe with the configured digest when explicit key-access validation is requested.
-        var probeAlgorithm = HashAlgorithmCatalog.FindByName(signingDigestAlgorithm);
-        if (testPrivateKey && (probeAlgorithm is null || !probeAlgorithm.CmsSigningSupported))
+        var signingAlgorithm = HashAlgorithmCatalog.FindByName(signingDigestAlgorithm);
+        if (testPrivateKey && (signingAlgorithm is null || !signingAlgorithm.CmsSigningSupported))
         {
-            reason = "The configured timestamp signing hash cannot be used to test the certificate.";
+            reason = "The configured timestamp signing hash cannot be used for CMS signing.";
             return false;
         }
 
-        if (!IsSigningKeyCompatible(certificate, probeAlgorithm, authenticodeEnabled, out reason)) return false;
-
-        if (!IsSupportedSigningKey(
-                certificate,
-                testPrivateKey,
-                probeAlgorithm ?? HashAlgorithmCatalog.FindByName("SHA256"),
-                out reason))
-        {
-            return false;
-        }
+        if (!IsSigningKeyCompatible(certificate, signingAlgorithm, authenticodeEnabled, out reason)) return false;
+        if (testPrivateKey && !CanAccessAssociatedPrivateKey(certificate, out reason)) return false;
 
         reason = null;
         return true;
@@ -874,90 +947,89 @@ public sealed class CertificateRepository : IDisposable
         algorithmIdentifier.ThrowIfNotEmpty();
     }
 
-    private static bool IsSupportedSigningKey(
-        X509Certificate2 certificate,
-        bool testPrivateKey,
-        TimestampHashAlgorithm probeAlgorithm,
-        out string reason)
+    internal static bool CanServeCachedSelectionDuringRefresh(
+        bool hasCachedSelection,
+        string requestedCacheKey,
+        string cachedCacheKey,
+        DateTime utcNow,
+        DateTime cacheExpiresUtc,
+        DateTime validationHorizonUtc) =>
+        hasCachedSelection &&
+        string.Equals(requestedCacheKey, cachedCacheKey, StringComparison.Ordinal) &&
+        utcNow >= cacheExpiresUtc &&
+        utcNow < validationHorizonUtc;
+
+    private static bool CanAccessAssociatedPrivateKey(X509Certificate2 certificate, out string reason)
     {
-        try
+        // Ask Windows to open the key silently and compare its public half with the certificate.
+        // ML-DSA is CNG-only; RSA remains compatible with both legacy CSP and CNG providers.
+        const uint cacheKey = 0x00000001;
+        const uint compareKey = 0x00000004;
+        const uint silent = 0x00000040;
+        const uint allowNCrypt = 0x00010000;
+        const uint onlyNCrypt = 0x00040000;
+        var flags = cacheKey | compareKey | silent |
+            (IsMldsaCertificate(certificate) ? onlyNCrypt : allowNCrypt);
+        if (!CryptAcquireCertificatePrivateKey(
+                certificate.Handle,
+                flags,
+                IntPtr.Zero,
+                out var keyHandle,
+                out var keySpec,
+                out var callerFree))
         {
-            // Prove private-key possession and that the key matches the certificate.
-            if (IsMldsaCertificate(certificate))
-            {
-                if (!testPrivateKey)
-                {
-                    reason = null;
-                    return true;
-                }
-
-                byte[] probeData = [1, 2, 3];
-                SignedCms probe = new(new ContentInfo(probeData), false);
-                CmsSigner signer = new(SubjectIdentifierType.IssuerAndSerialNumber, certificate)
-                {
-                    DigestAlgorithm = new Oid(probeAlgorithm.Oid),
-                    IncludeOption = X509IncludeOption.None
-                };
-                signer.SignedAttributes.Add(new Pkcs9SigningTime(DateTime.UtcNow));
-                probe.ComputeSignature(signer, true);
-
-                var encodedProbe = probe.Encode();
-                SignedCms verification = new();
-                verification.Decode(encodedProbe);
-                verification.CheckSignature(new X509Certificate2Collection(certificate), true);
-                if (!verification.ContentInfo.Content.SequenceEqual(probeData))
-                {
-                    reason = "The ML-DSA private-key test returned invalid signed content.";
-                    return false;
-                }
-
-                reason = null;
-                return true;
-            }
-
-            // Eligibility enumeration has already checked the public RSA key and must not
-            // open or prompt for a private key. Save and health validation request the probe.
-            if (!testPrivateKey)
-            {
-                reason = null;
-                return true;
-            }
-
-            using var rsa = certificate.GetRSAPrivateKey();
-            if (rsa is not null)
-            {
-                if (rsa.KeySize < 2048)
-                {
-                    reason = "RSA timestamp signing keys must be at least 2048 bits.";
-                    return false;
-                }
-
-                if (testPrivateKey)
-                {
-                    byte[] probeData = [1, 2, 3];
-                    var hashAlgorithm = new HashAlgorithmName(probeAlgorithm.Name);
-                    var probeSignature = rsa.SignData(probeData, hashAlgorithm, RSASignaturePadding.Pkcs1);
-                    using var publicKey = certificate.GetRSAPublicKey();
-                    if (publicKey is null ||
-                        !publicKey.VerifyData(probeData, probeSignature, hashAlgorithm, RSASignaturePadding.Pkcs1))
-                    {
-                        reason = "The accessible RSA private key does not match this certificate.";
-                        return false;
-                    }
-                }
-
-                reason = null;
-                return true;
-            }
-        }
-        catch (Exception ex) when (ex is CryptographicException or NotSupportedException)
-        {
-            reason = "The service account cannot access the private key: " + ex.Message;
+            var error = Marshal.GetLastWin32Error();
+            reason = "The service account cannot access a private key matching this certificate: " +
+                new Win32Exception(error).Message;
             return false;
         }
 
-        reason = "The certificate must use RSA or pure ML-DSA-44, ML-DSA-65, or ML-DSA-87.";
-        return false;
+        using var acquiredKey = new AcquiredCertificatePrivateKeyHandle(
+            keyHandle,
+            callerFree,
+            keySpec == uint.MaxValue);
+        if (acquiredKey.IsInvalid)
+        {
+            reason = "Windows returned an invalid handle for the certificate's associated private key.";
+            return false;
+        }
+
+        reason = null;
+        return true;
+    }
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptAcquireCertificatePrivateKey(
+        IntPtr certificate,
+        uint flags,
+        IntPtr parameters,
+        out IntPtr key,
+        out uint keySpec,
+        [MarshalAs(UnmanagedType.Bool)] out bool callerFree);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptReleaseContext(IntPtr provider, uint flags);
+
+    [DllImport("ncrypt.dll", ExactSpelling = true)]
+    private static extern int NCryptFreeObject(IntPtr handle);
+
+    private sealed class AcquiredCertificatePrivateKeyHandle : SafeHandle
+    {
+        private readonly bool isNCrypt;
+
+        internal AcquiredCertificatePrivateKeyHandle(IntPtr value, bool ownsHandle, bool isNCrypt)
+            : base(IntPtr.Zero, ownsHandle)
+        {
+            this.isNCrypt = isNCrypt;
+            SetHandle(value);
+        }
+
+        public override bool IsInvalid => handle == IntPtr.Zero || handle == new IntPtr(-1);
+
+        protected override bool ReleaseHandle() =>
+            isNCrypt ? NCryptFreeObject(handle) == 0 : CryptReleaseContext(handle, 0);
     }
 
     private static bool IsMldsaOid(string oid) =>

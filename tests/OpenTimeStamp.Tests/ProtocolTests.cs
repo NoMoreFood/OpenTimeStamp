@@ -27,9 +27,20 @@ internal static class ProtocolTests
         // Exercise wire rejections, token semantics, CMS attributes, and legacy countersigning.
         tests.Add(new TestCase("RFC3161 processor rejection responses", Rfc3161Rejections));
         tests.Add(new TestCase("RFC3161 rejects generation outside certificate validity", Rfc3161CertificateValidityAtGenerationTime));
-        tests.Add(new TestCase("Certificate validation uses supplied signing time and private key", CertificateValidationAtSigningTime));
+        tests.Add(new TestCase(
+            "Certificate validation uses supplied signing time and associated private key",
+            CertificateValidationAtSigningTime));
         tests.Add(new TestCase("Certificate trust validation is production-default and explicitly bypassable", CertificateTrustPolicy));
         tests.Add(new TestCase("Automatic certificate ordering prefers the latest expiration", AutomaticCertificateOrdering));
+        tests.Add(new TestCase(
+            "Certificate refresh stale reuse is bounded by the validated horizon",
+            CertificateRefreshStaleReuse));
+        tests.Add(new TestCase(
+            "Certificate refresh single-flight waits for a cold selection",
+            CertificateRefreshSingleFlight));
+        tests.Add(new TestCase(
+            "Certificate refresh wait honors cancellation and invalidation",
+            CertificateRefreshWaitInterruption));
         tests.Add(new TestCase("Platform FIPS registry interpretation fails closed", FipsRegistryInterpretation));
         tests.Add(new TestCase("Certificate profile and cancellation precede durable allocation", PreallocationGuards));
         tests.Add(new TestCase("RFC3161 common request hashes honor Windows FIPS policy", Rfc3161CommonHashAlgorithms));
@@ -65,6 +76,294 @@ internal static class ProtocolTests
 
         using var repository = new CertificateRepository();
         AssertEx.Throws<ArgumentNullException>(() => repository.ValidateSelection(null, latest, out _));
+    }
+
+    private static void CertificateRefreshStaleReuse()
+    {
+        const string cacheKey = "selection";
+        var validationStartedUtc = new DateTime(2026, 7, 16, 12, 0, 0, DateTimeKind.Utc);
+        var cacheExpiresUtc = validationStartedUtc.AddSeconds(30);
+        var validationHorizonUtc = CertificateRepository.GetSelectionValidationTimeUtc(
+            validationStartedUtc,
+            TimeSpan.Zero);
+        AssertEx.Equal(validationStartedUtc.AddSeconds(45), validationHorizonUtc,
+            "The validation horizon must cover the cache, chain URL timeout, and scheduling margin.");
+
+        AssertEx.False(CertificateRepository.CanServeCachedSelectionDuringRefresh(
+            true,
+            cacheKey,
+            cacheKey,
+            cacheExpiresUtc.AddTicks(-1),
+            cacheExpiresUtc,
+            validationHorizonUtc), "Fresh selections use the normal cache path.");
+        AssertEx.True(CertificateRepository.CanServeCachedSelectionDuringRefresh(
+            true,
+            cacheKey,
+            cacheKey,
+            cacheExpiresUtc,
+            cacheExpiresUtc,
+            validationHorizonUtc));
+        AssertEx.True(CertificateRepository.CanServeCachedSelectionDuringRefresh(
+            true,
+            cacheKey,
+            cacheKey,
+            validationHorizonUtc.AddTicks(-1),
+            cacheExpiresUtc,
+            validationHorizonUtc));
+        AssertEx.False(CertificateRepository.CanServeCachedSelectionDuringRefresh(
+            true,
+            cacheKey,
+            cacheKey,
+            validationHorizonUtc,
+            cacheExpiresUtc,
+            validationHorizonUtc), "A cached selection must never be served at or beyond its validated horizon.");
+        AssertEx.False(CertificateRepository.CanServeCachedSelectionDuringRefresh(
+            false,
+            cacheKey,
+            cacheKey,
+            cacheExpiresUtc,
+            cacheExpiresUtc,
+            validationHorizonUtc));
+        AssertEx.False(CertificateRepository.CanServeCachedSelectionDuringRefresh(
+            true,
+            "changed-selection",
+            cacheKey,
+            cacheExpiresUtc,
+            cacheExpiresUtc,
+            validationHorizonUtc));
+    }
+
+    private static void CertificateRefreshSingleFlight()
+    {
+        using var fixture = new TimestampCertificateFixture();
+        using var repository = new CertificateRepository();
+        using var refreshStarted = new ManualResetEventSlim();
+        using var releaseRefresh = new ManualResetEventSlim();
+        var configuration = TestFixtures.CreateConfiguration();
+        var loadCount = 0;
+        X509Certificate2 firstCertificate = null;
+        X509Certificate2 secondCertificate = null;
+        Exception firstFailure = null;
+        Exception secondFailure = null;
+        Func<ServiceConfiguration, DateTime, DateTime, X509Certificate2> loader = (_, _, _) =>
+        {
+            if (Interlocked.Increment(ref loadCount) != 1)
+                throw new InvalidOperationException("Concurrent callers started more than one certificate load.");
+            refreshStarted.Set();
+            if (!releaseRefresh.Wait(TimeSpan.FromSeconds(5)))
+                throw new TimeoutException("The certificate refresh test was not released.");
+            return new X509Certificate2(fixture.Certificate);
+        };
+        var first = new Thread(() =>
+        {
+            try
+            {
+                firstCertificate = repository.GetSelectedCertificate(configuration, loader);
+            }
+            catch (Exception ex)
+            {
+                firstFailure = ex;
+            }
+        }) { IsBackground = true };
+        var second = new Thread(() =>
+        {
+            try
+            {
+                secondCertificate = repository.GetSelectedCertificate(configuration, loader);
+            }
+            catch (Exception ex)
+            {
+                secondFailure = ex;
+            }
+        }) { IsBackground = true };
+
+        try
+        {
+            first.Start();
+            AssertEx.True(refreshStarted.Wait(TimeSpan.FromSeconds(5)), "The first certificate refresh did not start.");
+            second.Start();
+            AssertThreadWaiting(second, "A cold concurrent certificate request did not wait for the active refresh.");
+
+            releaseRefresh.Set();
+            AssertEx.True(first.Join(TimeSpan.FromSeconds(5)), "The first certificate request did not finish.");
+            AssertEx.True(second.Join(TimeSpan.FromSeconds(5)), "The waiting certificate request did not finish.");
+            AssertEx.True(firstFailure is null, "The first certificate request failed: " + firstFailure);
+            AssertEx.True(secondFailure is null, "The waiting certificate request failed: " + secondFailure);
+            AssertEx.Equal(1, loadCount, "Concurrent certificate requests did not share one refresh.");
+            AssertEx.Equal(firstCertificate.Thumbprint, secondCertificate.Thumbprint);
+        }
+        finally
+        {
+            releaseRefresh.Set();
+            if (first.IsAlive) first.Join(TimeSpan.FromSeconds(5));
+            if (second.IsAlive) second.Join(TimeSpan.FromSeconds(5));
+            firstCertificate?.Dispose();
+            secondCertificate?.Dispose();
+        }
+    }
+
+    private static void CertificateRefreshWaitInterruption()
+    {
+        using var fixture = new TimestampCertificateFixture();
+        var configuration = TestFixtures.CreateConfiguration();
+        using (var repository = new CertificateRepository())
+        using (var refreshStarted = new ManualResetEventSlim())
+        using (var releaseRefresh = new ManualResetEventSlim())
+        using (var waiterCancellation = new CancellationTokenSource())
+        {
+            var loadCount = 0;
+            Exception leaderFailure = null;
+            Exception waiterFailure = null;
+            X509Certificate2 leaderCertificate = null;
+            Func<ServiceConfiguration, DateTime, DateTime, X509Certificate2> loader = (_, _, _) =>
+            {
+                Interlocked.Increment(ref loadCount);
+                refreshStarted.Set();
+                if (!releaseRefresh.Wait(TimeSpan.FromSeconds(5)))
+                    throw new TimeoutException("The cancellation refresh test was not released.");
+                return new X509Certificate2(fixture.Certificate);
+            };
+            var leader = new Thread(() =>
+            {
+                try
+                {
+                    leaderCertificate = repository.GetSelectedCertificate(configuration, loader);
+                }
+                catch (Exception ex)
+                {
+                    leaderFailure = ex;
+                }
+            }) { IsBackground = true };
+            var waiter = new Thread(() =>
+            {
+                try
+                {
+                    using var certificate = repository.GetSelectedCertificate(
+                        configuration,
+                        loader,
+                        waiterCancellation.Token);
+                }
+                catch (Exception ex)
+                {
+                    waiterFailure = ex;
+                }
+            }) { IsBackground = true };
+
+            try
+            {
+                leader.Start();
+                AssertEx.True(refreshStarted.Wait(TimeSpan.FromSeconds(5)));
+                waiter.Start();
+                AssertThreadWaiting(waiter, "The cancellable certificate request did not wait for the active refresh.");
+                waiterCancellation.Cancel();
+                AssertEx.True(
+                    waiter.Join(TimeSpan.FromSeconds(5)),
+                    "Cancellation did not wake the certificate waiter.");
+                AssertEx.True(waiterFailure is OperationCanceledException,
+                    "The canceled certificate waiter returned an unexpected result: " + waiterFailure);
+
+                releaseRefresh.Set();
+                AssertEx.True(leader.Join(TimeSpan.FromSeconds(5)));
+                AssertEx.True(
+                    leaderFailure is null,
+                    "Canceling a waiter disrupted the refresh leader: " + leaderFailure);
+                AssertEx.NotNull(leaderCertificate);
+                AssertEx.Equal(1, loadCount);
+            }
+            finally
+            {
+                releaseRefresh.Set();
+                if (leader.IsAlive) leader.Join(TimeSpan.FromSeconds(5));
+                if (waiter.IsAlive) waiter.Join(TimeSpan.FromSeconds(5));
+                leaderCertificate?.Dispose();
+            }
+        }
+
+        using (var repository = new CertificateRepository())
+        using (var refreshStarted = new ManualResetEventSlim())
+        using (var releaseRefresh = new ManualResetEventSlim())
+        {
+            var loadCount = 0;
+            Exception leaderFailure = null;
+            Exception waiterFailure = null;
+            Func<ServiceConfiguration, DateTime, DateTime, X509Certificate2> loader = (_, _, _) =>
+            {
+                Interlocked.Increment(ref loadCount);
+                refreshStarted.Set();
+                if (!releaseRefresh.Wait(TimeSpan.FromSeconds(5)))
+                    throw new TimeoutException("The invalidation refresh test was not released.");
+                return new X509Certificate2(fixture.Certificate);
+            };
+            var leader = new Thread(() =>
+            {
+                try
+                {
+                    using var certificate = repository.GetSelectedCertificate(configuration, loader);
+                }
+                catch (Exception ex)
+                {
+                    leaderFailure = ex;
+                }
+            }) { IsBackground = true };
+            var waiter = new Thread(() =>
+            {
+                try
+                {
+                    using var certificate = repository.GetSelectedCertificate(configuration, loader);
+                }
+                catch (Exception ex)
+                {
+                    waiterFailure = ex;
+                }
+            }) { IsBackground = true };
+
+            try
+            {
+                leader.Start();
+                AssertEx.True(refreshStarted.Wait(TimeSpan.FromSeconds(5)));
+                waiter.Start();
+                AssertThreadWaiting(
+                    waiter,
+                    "The invalidation certificate request did not wait for the active refresh.");
+                repository.InvalidateSelectionCache();
+                AssertEx.True(
+                    waiter.Join(TimeSpan.FromSeconds(5)),
+                    "Invalidation did not wake the certificate waiter.");
+                AssertEx.True(waiterFailure is CertificateSelectionException);
+                AssertEx.Contains("settings changed", waiterFailure.Message);
+
+                releaseRefresh.Set();
+                AssertEx.True(leader.Join(TimeSpan.FromSeconds(5)));
+                AssertEx.True(leaderFailure is CertificateSelectionException);
+                AssertEx.Contains("settings changed", leaderFailure.Message);
+                AssertEx.Equal(1, loadCount, "Invalidation started a stale-snapshot certificate refresh.");
+                using var recovered = repository.GetSelectedCertificate(
+                    configuration,
+                    (_, _, _) =>
+                    {
+                        Interlocked.Increment(ref loadCount);
+                        return new X509Certificate2(fixture.Certificate);
+                    });
+                AssertEx.Equal(
+                    2,
+                    loadCount,
+                    "A new-generation certificate refresh did not recover after invalidation.");
+            }
+            finally
+            {
+                releaseRefresh.Set();
+                if (leader.IsAlive) leader.Join(TimeSpan.FromSeconds(5));
+                if (waiter.IsAlive) waiter.Join(TimeSpan.FromSeconds(5));
+            }
+        }
+    }
+
+    private static void AssertThreadWaiting(Thread thread, string message)
+    {
+        AssertEx.True(SpinWait.SpinUntil(
+            () => !thread.IsAlive || (thread.ThreadState & ThreadState.WaitSleepJoin) != 0,
+            TimeSpan.FromSeconds(5)), message);
+        AssertEx.True(thread.IsAlive && (thread.ThreadState & ThreadState.WaitSleepJoin) != 0, message);
     }
 
     private static void Rfc3161CommonHashAlgorithms()
