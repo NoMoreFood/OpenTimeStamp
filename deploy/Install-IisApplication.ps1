@@ -1628,8 +1628,8 @@ if ($dataClassification.Kind -eq 'Marked' -and
 }
 
 $hostCandidates = [System.Collections.Generic.List[string]]::new()
-foreach ($host in @('localhost', '127.0.0.1', '::1', [Environment]::MachineName)) {
-    $hostCandidates.Add($host)
+foreach ($hostName in @('localhost', '127.0.0.1', '::1', [Environment]::MachineName)) {
+    $hostCandidates.Add($hostName)
 }
 $networkIdentity = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties()
 if (-not [string]::IsNullOrWhiteSpace($networkIdentity.DomainName)) {
@@ -1648,7 +1648,7 @@ if (-not $PSBoundParameters.ContainsKey('AdminHostNames') -and $applicationExist
 }
 foreach ($configuredHost in @($AdminHostNames)) {
     if ([string]::IsNullOrWhiteSpace($configuredHost)) { continue }
-    foreach ($host in @($configuredHost -split '[,;]')) { $hostCandidates.Add($host) }
+    foreach ($hostName in @($configuredHost -split '[,;]')) { $hostCandidates.Add($hostName) }
 }
 $effectiveAdminHostNames = [System.Collections.Generic.List[string]]::new()
 $seenAdminHostNames = [System.Collections.Generic.HashSet[string]]::new(

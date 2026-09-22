@@ -24,6 +24,7 @@ internal static class PersistenceAndConfigurationTests
         tests.Add(new TestCase("Issuance state is durable and serials are unique", DurableUniqueSerialAllocation));
         tests.Add(new TestCase("Issuance ordering and rollback protection", OrderingAndClockRollback));
         tests.Add(new TestCase("Issuance allocation is concurrency-safe", ConcurrentAllocation));
+        tests.Add(new TestCase("Issuance clock is sampled after the filesystem lock", AllocationSamplesClockAfterLock));
         tests.Add(new TestCase("Issuance filesystem lock coordinates external handles", IssuanceFilesystemLock));
         tests.Add(new TestCase("Issuance cancellation stops lock waits without allocation", IssuanceCancellation));
         tests.Add(new TestCase("Issuance fast path honors staged recovery state", StagedStateRecovery));
@@ -137,6 +138,53 @@ internal static class PersistenceAndConfigurationTests
             });
             AssertEx.Equal(32, serials.Count);
             AssertEx.Equal(32, serials.Distinct(StringComparer.Ordinal).Count());
+        }
+    }
+
+    private static void AllocationSamplesClockAfterLock()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = directory.File("issuance-clock.bin");
+        var store = TestFixtures.CreateInitializedStateStore(path);
+        var now = new DateTime(2026, 7, 16, 20, 0, 0, DateTimeKind.Utc);
+        store.Allocate(now.AddSeconds(3), TimeSpan.Zero, false);
+        var currentTicks = now.Ticks;
+        var clockSamples = 0;
+        Func<DateTime> clock = () =>
+        {
+            Interlocked.Increment(ref clockSamples);
+            return new DateTime(Interlocked.Read(ref currentTicks), DateTimeKind.Utc);
+        };
+        using var started = new ManualResetEventSlim();
+        Task<IssuanceAllocation> waiting = null;
+        try
+        {
+            using (new FileStream(path + ".lock", FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                waiting = Task.Run(() =>
+                {
+                    started.Set();
+                    return store.Allocate(clock, TimeSpan.FromSeconds(2), false, CancellationToken.None);
+                });
+                AssertEx.True(started.Wait(2000), "The issuance contender did not start.");
+                AssertEx.False(waiting.Wait(150), "Issuance unexpectedly bypassed the external lock.");
+                AssertEx.Equal(0, Volatile.Read(ref clockSamples), "The clock was sampled before acquiring the lock.");
+                Interlocked.Exchange(ref currentTicks, now.AddSeconds(4).Ticks);
+            }
+
+            AssertEx.True(SpinWait.SpinUntil(() => waiting.IsCompleted, 5000), "Issuance did not resume.");
+            AssertEx.Equal(now.AddSeconds(4), waiting.GetAwaiter().GetResult().GenerationTimeUtc);
+            Interlocked.Exchange(ref currentTicks, now.Ticks);
+            AssertEx.Throws<ClockRollbackException>(() =>
+                store.Allocate(clock, TimeSpan.FromSeconds(2), false, CancellationToken.None));
+        }
+        finally
+        {
+            if (waiting is not null && !waiting.IsCompleted)
+            {
+                try { waiting.Wait(6000); }
+                catch (AggregateException) { }
+            }
         }
     }
 

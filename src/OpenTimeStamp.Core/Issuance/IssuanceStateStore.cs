@@ -100,9 +100,16 @@ public sealed class IssuanceStateStore
         DateTime utcNow,
         TimeSpan rollbackTolerance,
         bool ordering,
+        CancellationToken cancellationToken) =>
+        Allocate(() => utcNow, rollbackTolerance, ordering, cancellationToken);
+
+    public IssuanceAllocation Allocate(
+        Func<DateTime> utcNowProvider,
+        TimeSpan rollbackTolerance,
+        bool ordering,
         CancellationToken cancellationToken)
     {
-        utcNow = utcNow.ToUniversalTime();
+        if (utcNowProvider is null) throw new ArgumentNullException(nameof(utcNowProvider));
         ValidateRollbackTolerance(rollbackTolerance);
 
         return ExecuteLocked(TimeSpan.FromSeconds(10), cancellationToken, () =>
@@ -133,6 +140,8 @@ public sealed class IssuanceStateStore
                     RepairState(state, marker);
                 }
 
+                // Sample after locking and recovery so waiting requests cannot report a false clock rollback.
+                var utcNow = utcNowProvider().ToUniversalTime();
                 EnsureClockNotRolledBack(state.LastIssuedUtc, utcNow, rollbackTolerance);
                 var generationTime = CalculateGenerationTime(state.LastIssuedUtc, utcNow, ordering);
 

@@ -84,7 +84,7 @@ function Invoke-InstallerSigning {
     $arguments += $MsiPath
 
     Write-Host "Signing MSI with $signTool"
-    & $signTool @arguments
+    & $signTool @arguments | Out-Host
     $signExitCode = $LASTEXITCODE
     if ($signExitCode -ne 0) {
         if ($Required) { throw "MSI signing failed with exit code $signExitCode." }
@@ -92,7 +92,7 @@ function Invoke-InstallerSigning {
         return $false
     }
 
-    & $signTool verify /pa /all $MsiPath
+    & $signTool verify /pa /all $MsiPath | Out-Host
     if ($LASTEXITCODE -ne 0) {
         if ($Required) { throw 'The MSI signature could not be verified.' }
         Write-Warning 'The MSI signature could not be verified.'

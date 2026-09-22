@@ -138,6 +138,7 @@ internal static class HttpSupport
         var overflow = new byte[1];
         var length = 0;
         var stopwatch = Stopwatch.StartNew();
+        Task<int> readTask = null;
         try
         {
             while (true)
@@ -153,7 +154,7 @@ internal static class HttpSupport
                 // HttpBufferlessInputStream supplies native BeginRead/EndRead methods on
                 // ASP.NET 4.8, so this does not pin a worker thread while a client stalls.
                 var probingForOverflow = length == capacity;
-                var readTask = input.ReadAsync(
+                readTask = input.ReadAsync(
                     probingForOverflow ? overflow : output,
                     probingForOverflow ? 0 : length,
                     probingForOverflow ? 1 : capacity - length,
@@ -222,7 +223,19 @@ internal static class HttpSupport
         }
         finally
         {
-            if (pooled) bufferPool.Return(output, true);
+            // A detached read still owns its destination buffer until it completes.
+            if (pooled && readTask != null && !readTask.IsCompleted)
+            {
+                _ = readTask.ContinueWith(
+                    _ => bufferPool.Return(output, true),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+            else if (pooled)
+            {
+                bufferPool.Return(output, true);
+            }
         }
     }
 

@@ -37,6 +37,9 @@ internal static class WebHandlerTests
         tests.Add(new TestCase("Timestamp admission limits span worker processes", TimestampAdmissionUsesNamedSharedLimits));
         tests.Add(new TestCase("Timestamp body deadline aborts and observes pending read", TimestampBodyDeadlineAbortsPendingRead));
         tests.Add(new TestCase("Timestamp body deadline releases a non-cancelable read", TimestampBodyDeadlineBoundsAbortObservation));
+        tests.Add(new TestCase(
+            "Timestamp abandoned body read retains its pooled buffer until completion",
+            TimestampAbandonedReadRetainsPooledBuffer));
         tests.Add(new TestCase("Timestamp body cancellation remains distinguishable from deadline", TimestampBodyCancellationIsPreserved));
         tests.Add(new TestCase("Timestamp declared body length avoids a final copy", TimestampDeclaredBodyIsExactAllocated));
         tests.Add(new TestCase("Timestamp chunked body clears and returns pooled growth", TimestampChunkedBodyReturnsPooledBuffers));
@@ -697,7 +700,7 @@ internal static class WebHandlerTests
 
     private static void TimestampBodyDeadlineBoundsAbortObservation()
     {
-        var stream = new DeferredFaultStream();
+        var stream = new DeferredReadStream();
         using var observed = new ManualResetEventSlim();
         var stopwatch = Stopwatch.StartNew();
         var exception = AssertEx.Throws<RequestBodyException>(() =>
@@ -722,10 +725,50 @@ internal static class WebHandlerTests
             "The detached observer must consume a native-read fault that arrives after the 408 path returns.");
     }
 
+    private static void TimestampAbandonedReadRetainsPooledBuffer()
+    {
+        var stream = new DeferredReadStream();
+        using var returned = new ManualResetEventSlim();
+        using var observed = new ManualResetEventSlim();
+        var pool = new TrackingArrayPool(returned.Set);
+        var exception = AssertEx.Throws<RequestBodyException>(() =>
+            HttpSupport.ReadBoundedStreamAsync(
+                    stream,
+                    -1,
+                    1024,
+                    TimeSpan.FromMilliseconds(50),
+                    stream.Abort,
+                    CancellationToken.None,
+                    observed.Set,
+                    pool)
+                .GetAwaiter()
+                .GetResult());
+
+        try
+        {
+            AssertEx.Equal(408, exception.StatusCode);
+            AssertEx.True(stream.AbortCalled);
+            AssertEx.Equal(0, pool.ReturnCount,
+                "An incomplete native read still owns its destination and must not return it to the pool.");
+        }
+        finally
+        {
+            stream.CompleteAfterReturn([1, 2, 3]);
+            AssertEx.True(returned.Wait(TimeSpan.FromSeconds(1)),
+                "A detached read must return its buffer after its late successful completion.");
+            AssertEx.True(observed.Wait(TimeSpan.FromSeconds(1)));
+        }
+
+        AssertEx.Equal(1, pool.ReturnCount, "The abandoned read returned its buffer more than once.");
+        AssertEx.True(stream.PendingBuffer.All(value => value == 0),
+            "The late read's bytes were not cleared before its buffer returned to the pool.");
+    }
+
     private static void TimestampBodyCancellationIsPreserved()
     {
-        var stream = new DeferredFaultStream();
-        var pool = new TrackingArrayPool();
+        var stream = new DeferredReadStream();
+        using var returned = new ManualResetEventSlim();
+        var pool = new TrackingArrayPool(returned.Set);
         using var cancellation = new CancellationTokenSource();
         using var observed = new ManualResetEventSlim();
         cancellation.CancelAfter(TimeSpan.FromMilliseconds(50));
@@ -744,6 +787,7 @@ internal static class WebHandlerTests
         AssertEx.True(stream.AbortCalled);
         stream.FaultAfterReturn();
         AssertEx.True(observed.Wait(TimeSpan.FromSeconds(1)));
+        AssertEx.True(returned.Wait(TimeSpan.FromSeconds(1)));
         AssertEx.Equal(1, pool.ReturnCount);
         AssertEx.True(pool.AllReturnsRequestedClear);
     }
@@ -920,23 +964,37 @@ internal static class WebHandlerTests
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
-    private sealed class DeferredFaultStream : Stream
+    private sealed class DeferredReadStream : Stream
     {
         private readonly TaskCompletionSource<int> pendingRead = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        private int pendingOffset;
 
         internal bool AbortCalled { get; private set; }
+
+        internal byte[] PendingBuffer { get; private set; }
 
         internal void Abort() => AbortCalled = true;
 
         internal void FaultAfterReturn() =>
             pendingRead.TrySetException(new IOException("The delayed native read failed."));
 
+        internal void CompleteAfterReturn(byte[] value)
+        {
+            Buffer.BlockCopy(value, 0, PendingBuffer, pendingOffset, value.Length);
+            pendingRead.TrySetResult(value.Length);
+        }
+
         public override Task<int> ReadAsync(
             byte[] buffer,
             int offset,
             int count,
-            CancellationToken cancellationToken) => pendingRead.Task;
+            CancellationToken cancellationToken)
+        {
+            PendingBuffer = buffer;
+            pendingOffset = offset;
+            return pendingRead.Task;
+        }
 
         public override bool CanRead => true;
         public override bool CanSeek => false;
@@ -991,7 +1049,7 @@ internal static class WebHandlerTests
         public override void Write(byte[] buffer, int bufferOffset, int count) => throw new NotSupportedException();
     }
 
-    private sealed class TrackingArrayPool : ArrayPool<byte>
+    private sealed class TrackingArrayPool(Action returned = null) : ArrayPool<byte>
     {
         internal int RentCount { get; private set; }
         internal int ReturnCount { get; private set; }
@@ -1008,6 +1066,7 @@ internal static class WebHandlerTests
             ReturnCount++;
             AllReturnsRequestedClear &= clearArray;
             if (clearArray) Array.Clear(array, 0, array.Length);
+            returned?.Invoke();
         }
     }
 }

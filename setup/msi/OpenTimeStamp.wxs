@@ -121,7 +121,7 @@
 
     <SetProperty Id="InstallOpenTimeStamp"
       Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#InstallMsiScript]&quot;"
-      Before="InstallOpenTimeStamp" Sequence="execute" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      Before="InstallOpenTimeStamp" Sequence="execute" Condition="NOT Installed AND NOT REMOVE~=&quot;ALL&quot;" />
     <CustomAction Id="InstallOpenTimeStamp"
       BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
       DllEntry="WixQuietExec"
@@ -142,7 +142,7 @@
 
     <InstallExecuteSequence>
       <Custom Action="InstallOpenTimeStamp" After="WriteRegistryValues"
-        Condition="NOT REMOVE~=&quot;ALL&quot;" />
+        Condition="NOT Installed AND NOT REMOVE~=&quot;ALL&quot;" />
       <Custom Action="UninstallOpenTimeStamp" Before="RemoveRegistryValues"
         Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>

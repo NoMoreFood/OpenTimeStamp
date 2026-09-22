@@ -43,6 +43,7 @@ internal static class ProtocolTests
             CertificateRefreshWaitInterruption));
         tests.Add(new TestCase("Platform FIPS registry interpretation fails closed", FipsRegistryInterpretation));
         tests.Add(new TestCase("Certificate profile and cancellation precede durable allocation", PreallocationGuards));
+        tests.Add(new TestCase("Protocols resample the clock for durable allocation", ProtocolAllocationResamplesClock));
         tests.Add(new TestCase("RFC3161 common request hashes honor Windows FIPS policy", Rfc3161CommonHashAlgorithms));
         tests.Add(new TestCase("RFC3161 happy path preserves policy, nonce, and imprint", Rfc3161HappyPath));
         tests.Add(new TestCase("RFC3161 certReq controls certificate inclusion", Rfc3161CertificateInclusion));
@@ -631,6 +632,29 @@ internal static class ProtocolTests
 
             AssertSnapshotUnchanged(before, directory.Path);
         }
+    }
+
+    private static void ProtocolAllocationResamplesClock()
+    {
+        using var directory = new TemporaryDirectory();
+        using var certificate = new TimestampCertificateFixture();
+        var configuration = TestFixtures.CreateConfiguration();
+        var now = new DateTime(2026, 7, 16, 12, 0, 0, DateTimeKind.Utc);
+        var store = TestFixtures.CreateInitializedStateStore(directory.File("clock.bin"));
+        store.Allocate(now.AddSeconds(3), TimeSpan.Zero, false);
+        var sample = 0;
+        Func<DateTime> clock = () => ++sample == 1 ? now : now.AddSeconds(4);
+        var request = Rfc3161Request.Parse(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32]));
+        var rfc3161 = new Rfc3161TimestampProcessor().Process(
+            request, configuration, certificate.Certificate, store, clock, CancellationToken.None);
+        AssertEx.True(rfc3161.Granted, rfc3161.Detail);
+        AssertEx.Equal(now.AddSeconds(4), rfc3161.GenerationTimeUtc);
+        if (!PlatformSecurityPolicy.IsLegacyAuthenticodeAllowed) return;
+
+        sample = 0;
+        var authenticode = new AuthenticodeTimestampProcessor().ProcessParsedSignature(
+            [1, 2, 3], configuration, certificate.Certificate, store, clock, CancellationToken.None);
+        AssertEx.Equal(now.AddSeconds(4), authenticode.GenerationTimeUtc);
     }
 
     private static void Rfc3161HappyPath()

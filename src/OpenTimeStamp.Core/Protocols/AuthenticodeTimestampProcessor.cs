@@ -55,7 +55,7 @@ public sealed class AuthenticodeTimestampProcessor
             configuration,
             certificate,
             stateStore,
-            utcNow,
+            () => utcNow,
             cancellationToken);
     }
 
@@ -79,8 +79,18 @@ public sealed class AuthenticodeTimestampProcessor
         X509Certificate2 certificate,
         IssuanceStateStore stateStore,
         DateTime utcNow,
+        CancellationToken cancellationToken) =>
+        ProcessParsedSignature(signature, configuration, certificate, stateStore, () => utcNow, cancellationToken);
+
+    public AuthenticodeResult ProcessParsedSignature(
+        byte[] signature,
+        ServiceConfiguration configuration,
+        X509Certificate2 certificate,
+        IssuanceStateStore stateStore,
+        Func<DateTime> utcNowProvider,
         CancellationToken cancellationToken)
     {
+        if (utcNowProvider is null) throw new ArgumentNullException(nameof(utcNowProvider));
         ValidateInvocation(configuration);
         if (signature is null || signature.Length is 0 or > MaximumSignatureLength)
         {
@@ -93,7 +103,7 @@ public sealed class AuthenticodeTimestampProcessor
             configuration,
             certificate,
             stateStore,
-            utcNow,
+            utcNowProvider,
             cancellationToken);
     }
 
@@ -102,7 +112,7 @@ public sealed class AuthenticodeTimestampProcessor
         ServiceConfiguration configuration,
         X509Certificate2 certificate,
         IssuanceStateStore stateStore,
-        DateTime utcNow,
+        Func<DateTime> utcNowProvider,
         CancellationToken cancellationToken)
     {
         var signingHash = HashAlgorithmCatalog.FindByName(configuration.SigningDigestAlgorithm);
@@ -120,7 +130,7 @@ public sealed class AuthenticodeTimestampProcessor
         if (!CertificateRepository.ValidateCertificateProfile(
                 certificate,
                 signingHash.Name,
-                utcNow,
+                utcNowProvider(),
                 true,
                 out var keyReason))
         {
@@ -135,7 +145,7 @@ public sealed class AuthenticodeTimestampProcessor
         // Allocate audit state before producing the legacy CMS countersignature response.
         cancellationToken.ThrowIfCancellationRequested();
         var allocation = stateStore.Allocate(
-            utcNow,
+            utcNowProvider,
             TimeSpan.FromSeconds(configuration.ClockRollbackToleranceSeconds),
             false,
             cancellationToken);

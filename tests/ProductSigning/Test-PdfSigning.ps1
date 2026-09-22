@@ -143,23 +143,8 @@ try {
     Assert-Condition ($validationStatus -in 3, 4) `
         "Acrobat returned PDF signature validation status '$validationStatus' instead of 3 or 4."
 
-    $pdfText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($artifactPath))
-    $contentMatches = [regex]::Matches($pdfText, '(?s)/Contents\s*<([0-9A-Fa-f\s]+)>')
-    Assert-Condition ($contentMatches.Count -gt 0) 'The signed PDF has no hexadecimal CMS signature contents.'
-    $timestampFound = $false
-    $lastError = $null
-    foreach ($contentMatch in $contentMatches) {
-        try {
-            Assert-CmsHasRfc3161Timestamp -Bytes (Convert-HexToBytes -Hex $contentMatch.Groups[1].Value) `
-                -ExpectedTsaThumbprint $ExpectedTsaThumbprint
-            $timestampFound = $true
-            break
-        }
-        catch {
-            $lastError = $_.Exception.Message
-        }
-    }
-    Assert-Condition $timestampFound "The PDF CMS signature did not contain a valid RFC 3161 timestamp: $lastError"
+    Assert-PdfHasRfc3161Timestamp -Bytes ([IO.File]::ReadAllBytes($artifactPath)) `
+        -ExpectedTsaThumbprint $ExpectedTsaThumbprint
 
     $result = New-ProductTestResult -Name $testName -Status Passed -Artifact $artifactPath `
         -Detail ('Acrobat validated the PDF signature, and its CMS signature-time-stamp token validated ' +

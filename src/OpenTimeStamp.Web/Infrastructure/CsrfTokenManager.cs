@@ -120,7 +120,7 @@ internal static class CsrfTokenManager
         return WindowsHash.ComputeSha256(Encoding.UTF8.GetBytes(identityKey));
     }
 
-    private static string AdminPath(HttpRequest request)
+    internal static string AdminPath(HttpRequest request)
     {
         var applicationPath = request.ApplicationPath == "/" ? string.Empty : request.ApplicationPath.TrimEnd('/');
         return applicationPath + "/admin";

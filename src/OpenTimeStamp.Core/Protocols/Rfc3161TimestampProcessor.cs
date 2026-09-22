@@ -84,8 +84,18 @@ public sealed class Rfc3161TimestampProcessor
         X509Certificate2 certificate,
         IssuanceStateStore stateStore,
         DateTime utcNow,
+        CancellationToken cancellationToken) =>
+        Process(request, configuration, certificate, stateStore, () => utcNow, cancellationToken);
+
+    public Rfc3161Result Process(
+        Rfc3161Request request,
+        ServiceConfiguration configuration,
+        X509Certificate2 certificate,
+        IssuanceStateStore stateStore,
+        Func<DateTime> utcNowProvider,
         CancellationToken cancellationToken)
     {
+        if (utcNowProvider is null) throw new ArgumentNullException(nameof(utcNowProvider));
         try
         {
             ValidateRequestPolicy(request, configuration, out var policy, out var signingHash);
@@ -98,7 +108,7 @@ public sealed class Rfc3161TimestampProcessor
             if (!CertificateRepository.ValidateCertificateProfile(
                     certificate,
                     signingHash.Name,
-                    utcNow,
+                    utcNowProvider(),
                     false,
                     out var keyReason))
             {
@@ -113,7 +123,7 @@ public sealed class Rfc3161TimestampProcessor
             // Allocate durable serial/time state before constructing and signing TSTInfo.
             cancellationToken.ThrowIfCancellationRequested();
             var allocation = stateStore.Allocate(
-                utcNow,
+                utcNowProvider,
                 TimeSpan.FromSeconds(configuration.ClockRollbackToleranceSeconds),
                 configuration.Ordering,
                 cancellationToken);

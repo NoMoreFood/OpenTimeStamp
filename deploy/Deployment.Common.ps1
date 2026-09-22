@@ -1976,22 +1976,22 @@ function Remove-OpenTimeStampObsoleteReleases {
     $directories = @(Get-ChildItem -LiteralPath $root -Force -Directory |
         Where-Object { $_.Name -match '^[0-9]{14}Z-[0-9a-f]{12}$' } |
         Sort-Object Name -Descending)
-    $keep = @($directories | Select-Object -First $RetainCount | ForEach-Object { $_.FullName })
-    if ($keep -notcontains $active) { $keep += $active }
+    $retainedCount = 0
     $removed = [System.Collections.Generic.List[string]]::new()
     foreach ($directory in $directories) {
-        if ($keep -contains $directory.FullName) { continue }
         try {
             $manifest = Assert-OpenTimeStampPublishedPayload -PayloadPath $directory.FullName
             if (-not ([string]$manifest.ReleaseId).Equals(
                     $directory.Name, [System.StringComparison]::OrdinalIgnoreCase)) {
                 throw "The release manifest identifies '$($manifest.ReleaseId)' instead of '$($directory.Name)'."
             }
+            if ($retainedCount -lt $RetainCount) { $retainedCount++; continue }
+            if ($directory.FullName.Equals($active, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
             Remove-OpenTimeStampControlledDirectory -ExpectedParent $root -Path $directory.FullName
             $removed.Add($directory.FullName)
         }
         catch {
-            Write-Warning "Obsolete release '$($directory.FullName)' was preserved: $($_.Exception.Message)"
+            Write-Warning "Release '$($directory.FullName)' was preserved: $($_.Exception.Message)"
         }
     }
     return [string[]]$removed

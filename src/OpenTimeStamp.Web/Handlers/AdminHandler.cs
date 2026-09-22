@@ -544,7 +544,8 @@ internal sealed class AdminHandler : IHttpHandler
         AppendDashboard(builder, context, configuration, generation);
 
         // Render service, algorithm, time, and audit policy controls.
-        builder.Append("<form method=\"post\"><input type=\"hidden\" name=\"csrf\" value=\"").Append(H(csrf)).Append("\">")
+        builder.Append("<form method=\"post\" action=\"").Append(H(CsrfTokenManager.AdminPath(context.Request)))
+            .Append("\"><input type=\"hidden\" name=\"csrf\" value=\"").Append(H(csrf)).Append("\">")
             .Append("<input type=\"hidden\" name=\"generation\" value=\"").Append(H(generation)).Append("\">")
             .Append("<fieldset><legend>Timestamp Endpoints</legend><p><strong>IIS authentication mode:</strong> ").Append(H(configuration.AuthenticationMode)).Append("</p>")
             .Append(Check("rfc3161", "Enable the RFC 3161 endpoint", configuration.Rfc3161Enabled, false))

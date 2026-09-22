@@ -461,7 +461,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
                 configuration,
                 certificate,
                 ServiceRuntime.IssuanceState,
-                DateTime.UtcNow,
+                () => DateTime.UtcNow,
                 cancellationToken);
 
             WriteRfc3161Result(context, configuration, identity, correlationId, stopwatch, result);
@@ -502,7 +502,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
                     configuration,
                     certificate,
                     ServiceRuntime.IssuanceState,
-                    DateTime.UtcNow,
+                    () => DateTime.UtcNow,
                     cancellationToken);
             }
             catch (AuthenticodeProtocolException ex)

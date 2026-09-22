@@ -548,10 +548,15 @@ function Assert-Rfc3161Token {
 }
 
 function Assert-CmsHasRfc3161Timestamp {
-    param([Parameter(Mandatory)][byte[]]$Bytes, [string]$ExpectedTsaThumbprint)
+    param(
+        [Parameter(Mandatory)][byte[]]$Bytes,
+        [Parameter(Mandatory)][byte[]]$DetachedContent,
+        [string]$ExpectedTsaThumbprint
+    )
 
     Add-Type -AssemblyName System.Security.Cryptography.Pkcs
-    $cms = [System.Security.Cryptography.Pkcs.SignedCms]::new()
+    $content = [System.Security.Cryptography.Pkcs.ContentInfo]::new($DetachedContent)
+    $cms = [System.Security.Cryptography.Pkcs.SignedCms]::new($content, $true)
     $cms.Decode((Get-DerObjectBytes -Bytes $Bytes))
     $cms.CheckSignature($true)
     foreach ($signer in $cms.SignerInfos) {
@@ -565,6 +570,31 @@ function Assert-CmsHasRfc3161Timestamp {
     }
 
     throw 'The CMS signature has no RFC 3161 signature-time-stamp unsigned attribute.'
+}
+
+function Assert-PdfHasRfc3161Timestamp {
+    param([Parameter(Mandatory)][byte[]]$Bytes, [string]$ExpectedTsaThumbprint)
+
+    $text = [Text.Encoding]::ASCII.GetString($Bytes)
+    $rangeMatch = [regex]::Match($text,
+        '/ByteRange\s*\[\s*([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s*\]')
+    Assert-Condition ($rangeMatch.Success -and -not $rangeMatch.NextMatch().Success) `
+        'The generated PDF must contain exactly one four-value signature ByteRange.'
+    $ranges = [long[]]@(1..4 | ForEach-Object { [long]$rangeMatch.Groups[$_].Value })
+    Assert-Condition ($ranges[0] -eq 0 -and $ranges[1] -gt 0 -and $ranges[1] -lt $ranges[2] -and
+        $ranges[2] -lt $Bytes.LongLength -and $ranges[3] -eq $Bytes.LongLength - $ranges[2]) `
+        'The PDF signature ByteRange must cover the entire file except its Contents value.'
+
+    $contents = [regex]::Match($text.Substring([int]$ranges[1], [int]($ranges[2] - $ranges[1])),
+        '\A<([0-9A-Fa-f\s]+)>\z')
+    Assert-Condition ($contents.Success -and
+        [regex]::IsMatch($text.Substring(0, [int]$ranges[1]), '/Contents\s*\z')) `
+        'The PDF signature ByteRange gap must contain exactly its hexadecimal Contents value.'
+    $signedContent = [byte[]]::new([int]($ranges[1] + $ranges[3]))
+    [Buffer]::BlockCopy($Bytes, 0, $signedContent, 0, [int]$ranges[1])
+    [Buffer]::BlockCopy($Bytes, [int]$ranges[2], $signedContent, [int]$ranges[1], [int]$ranges[3])
+    Assert-CmsHasRfc3161Timestamp -Bytes (Convert-HexToBytes -Hex $contents.Groups[1].Value) `
+        -DetachedContent $signedContent -ExpectedTsaThumbprint $ExpectedTsaThumbprint
 }
 
 function Convert-HexToBytes {

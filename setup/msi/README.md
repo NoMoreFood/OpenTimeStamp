@@ -26,6 +26,10 @@ uninstall. Upgrades preserve the existing authoritative authentication mode.
 Use the PowerShell deployment workflow when a different initial authentication
 mode or other advanced topology is required.
 
+MSI repair restores the installer cache while keeping the existing deployed
+release selected. Use the PowerShell deployment workflow with a newly published
+release to repair the running application.
+
 Uninstall removes the matching IIS application, dedicated application pool, and
 unused service auto-start registration only after validating their ownership.
 It deliberately preserves releases, configuration, issuance state, and audit

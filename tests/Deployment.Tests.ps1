@@ -352,6 +352,41 @@ catch {
         Assert-True $childExited 'The timed-out native product process left its child running.'
     }
 
+    Invoke-Test 'PDF timestamp validation proves the signed document imprint' {
+        $pwsh = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+        if ($null -eq $pwsh -or $pwsh.Version -lt [version]'7.6') {
+            Write-Warning 'PowerShell 7.6 or later is unavailable; PDF signature validation was not exercised.'
+            return
+        }
+        $regressionPath = Join-Path $repositoryRoot 'tests\ProductSigning\Test-PdfSignatureValidation.ps1'
+        $output = @(& $pwsh.Source -NoLogo -NoProfile -NonInteractive -File $regressionPath 2>&1)
+        Assert-Equal 0 $LASTEXITCODE "PDF signature validation failed: $($output -join [Environment]::NewLine)"
+    }
+
+    Invoke-Test 'Administrative host candidates avoid automatic-variable collisions' {
+        $installerPath = Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $installerPath, [ref]$tokens, [ref]$parseErrors)
+        Assert-Equal 0 @($parseErrors).Count 'Installer could not be parsed for host-candidate regression.'
+        $loops = @($ast.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.ForEachStatementAst] -and
+                        ($node.Condition.Extent.Text.Contains("'localhost'") -or
+                            $node.Condition.Extent.Text.Contains('$configuredHost -split'))
+                }, $true))
+        Assert-Equal 2 $loops.Count 'The installer host-candidate loops could not be isolated.'
+        $hostCandidates = [System.Collections.Generic.List[string]]::new()
+        $configuredHost = 'tsa.example.test;tsa2.example.test'
+        foreach ($loop in $loops) { & ([scriptblock]::Create($loop.Extent.Text)) }
+        Assert-Equal 6 $hostCandidates.Count 'The installer did not collect all default and configured hosts.'
+        foreach ($expected in @('localhost', '127.0.0.1', '::1', [Environment]::MachineName,
+                'tsa.example.test', 'tsa2.example.test')) {
+            Assert-True ($hostCandidates.Contains($expected)) "Administrative host '$expected' was omitted."
+        }
+    }
+
     Invoke-Test 'Upgrade intake settings are range checked, related, and preserved' {
         $stage = Join-Path $testRoot 'intake-settings-stage'
         New-TestPayload -Path $stage
@@ -443,6 +478,31 @@ catch {
             -ActiveReleasePath $active -RetainCount 5 3>$null | Out-Null
         Assert-True (Test-Path -LiteralPath (Join-Path $invalidRelease 'unknown.txt') -PathType Leaf) `
             'Release retention deleted an unvalidated release-shaped directory.'
+    }
+
+    Invoke-Test 'Invalid recent releases cannot displace healthy retained releases' {
+        $releases = Join-Path $testRoot 'retention-with-corrupt-recent-release'
+        $releasePaths = @{}
+        for ($index = 1; $index -le 6; $index++) {
+            $releaseId = '202607170102{0:D2}Z-{1}' -f $index, $index.ToString('x12')
+            $releasePaths[$index] = Join-Path $releases $releaseId
+            New-TestPayload -Path $releasePaths[$index]
+            New-OpenTimeStampDeploymentManifest -PayloadPath $releasePaths[$index] `
+                -ReleaseId $releaseId | Out-Null
+        }
+        [IO.File]::AppendAllText((Join-Path $releasePaths[5] 'bin\OpenTimeStamp.Web.dll'), '-corrupt')
+        $removed = @(Remove-OpenTimeStampObsoleteReleases -ReleasesPath $releases `
+            -ActiveReleasePath $releasePaths[6] -RetainCount 2 3>$null)
+        Assert-Equal 3 $removed.Count 'An invalid recent release consumed a healthy retention slot.'
+        foreach ($index in @(4, 5, 6)) {
+            Assert-True (Test-Path -LiteralPath $releasePaths[$index] -PathType Container) `
+                "Retention removed protected release $index."
+        }
+        Assert-OpenTimeStampPublishedPayload -PayloadPath $releasePaths[4] | Out-Null
+        Remove-OpenTimeStampObsoleteReleases -ReleasesPath $releases `
+            -ActiveReleasePath $releasePaths[4] -RetainCount 1 3>$null | Out-Null
+        Assert-True (Test-Path -LiteralPath $releasePaths[4] -PathType Container) `
+            'Retention removed an active release older than the newest valid release.'
     }
 
     Invoke-Test 'Operation lock rejects a concurrent owner without waiting' {
@@ -1461,6 +1521,39 @@ catch {
         Assert-True ($publish -match [regex]::Escape("'setup/msi'") -and
             $publish -match 'SkipInstaller = \$true') `
             'Publishing neither tracks the MSI inputs nor suppresses a redundant nested MSI build.'
+    }
+
+    Invoke-Test 'SignTool output cannot turn an MSI signing failure into success' {
+        $builderPath = Join-Path $repositoryRoot 'setup\msi\Build-Msi.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $builderPath, [ref]$tokens, [ref]$parseErrors)
+        Assert-Equal 0 @($parseErrors).Count 'MSI builder could not be parsed for signing regression.'
+        $signingFunction = $ast.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -eq 'Invoke-InstallerSigning'
+            }, $true)
+        Assert-True ($null -ne $signingFunction) 'MSI signing function could not be isolated.'
+        . ([scriptblock]::Create($signingFunction.Extent.Text))
+        function Resolve-SignTool { return 'Invoke-MsiSigningTestTool' }
+        function Invoke-MsiSigningTestTool {
+            'SignTool regression output'
+            $exitCode = if ($args[0] -eq $failurePhase) { 1 } else { 0 }
+            Set-Variable -Name LASTEXITCODE -Value $exitCode -Scope 1
+        }
+        foreach ($failurePhase in @('sign', 'verify')) {
+            $result = @(Invoke-InstallerSigning -MsiPath 'unused.msi' `
+                -Rfc3161Url 'https://tsa.example.test/' 3>$null 6>$null)
+            Assert-Equal 1 $result.Count "SignTool $failurePhase output escaped into the Boolean result."
+            Assert-True ($result[0] -is [bool] -and -not $result[0]) `
+                "SignTool $failurePhase failure was reported as successful."
+            Assert-Throws {
+                Invoke-InstallerSigning -MsiPath 'unused.msi' -Rfc3161Url 'https://tsa.example.test/' `
+                    -Required 6>$null
+            } "Required MSI signing accepted a $failurePhase failure."
+        }
     }
 
     Invoke-Test 'Installer retains release rollback and pool-state safeguards' {
