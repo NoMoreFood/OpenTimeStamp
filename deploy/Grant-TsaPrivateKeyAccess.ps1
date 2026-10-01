@@ -433,7 +433,7 @@ try {
                 $appliedAcl = Get-Acl -LiteralPath $keyPath
                 $appliedSddl = $appliedAcl.GetSecurityDescriptorSddlForm(
                     [System.Security.AccessControl.AccessControlSections]::All)
-                if (-not $appliedSddl.Equals($updatedSddl, [System.StringComparison]::Ordinal)) {
+                if (-not (Test-OpenTimeStampSecurityDescriptorEqual -First $appliedSddl -Second $updatedSddl)) {
                     throw 'The private-key ACL written by the helper could not be verified exactly.'
                 }
             }

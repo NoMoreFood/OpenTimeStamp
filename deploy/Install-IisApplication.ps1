@@ -106,7 +106,16 @@ function Get-IisLocalAttributeSnapshot {
         if (-not [string]::IsNullOrWhiteSpace($ChildElement)) {
             $target = $target.GetChildElement($ChildElement)
         }
-        $hasLocalValue = $target.RawAttributes.ContainsKey($Attribute)
+        $document = Read-OpenTimeStampXmlDocument -Path (
+            Join-Path $env:WINDIR 'System32\inetsrv\config\applicationHost.config')
+        $locationNode = @($document.SelectNodes('/configuration/location') | Where-Object {
+            ([string]$_.GetAttribute('path')).Equals($Location, [System.StringComparison]::OrdinalIgnoreCase)
+        }) | Select-Object -First 1
+        $localElement = if ($null -ne $locationNode) { $locationNode.SelectSingleNode('./' + $Section) }
+        if ($null -ne $localElement -and -not [string]::IsNullOrWhiteSpace($ChildElement)) {
+            $localElement = $localElement.SelectSingleNode('./' + $ChildElement)
+        }
+        $hasLocalValue = $null -ne $localElement -and $localElement.HasAttribute($Attribute)
         return [PSCustomObject]@{
             Location = $Location
             Section = $Section
@@ -114,7 +123,7 @@ function Get-IisLocalAttributeSnapshot {
             Attribute = $Attribute
             Available = $true
             HasLocalValue = $hasLocalValue
-            RawValue = if ($hasLocalValue) { $target.RawAttributes[$Attribute] } else { $null }
+            RawValue = if ($hasLocalValue) { $localElement.GetAttribute($Attribute) } else { $null }
         }
     }
     finally {
@@ -182,12 +191,14 @@ function Get-IisExactLocalState {
         }
     }
     Get-IisLocalAttributeSnapshot -Location $AppLocation `
+        -Section 'system.webServer/security/authentication/anonymousAuthentication' -Attribute 'userName'
+    Get-IisLocalAttributeSnapshot -Location $AppLocation `
         -Section 'system.webServer/security/requestFiltering' -ChildElement 'requestLimits' `
         -Attribute 'maxAllowedContentLength'
     Get-IisLocalAttributeSnapshot -Location $AppLocation `
-        -Section 'system.webServer/security/access' -Attribute 'sslFlags'
+        -Section 'system.webServer/serverRuntime' -Attribute 'uploadReadAheadSize'
     Get-IisLocalAttributeSnapshot -Location $AppLocation `
-        -Section 'system.web/httpCookies' -Attribute 'requireSSL'
+        -Section 'system.webServer/security/access' -Attribute 'sslFlags'
     )
     return [PSCustomObject]@{
         Attributes = $attributes
@@ -292,6 +303,9 @@ function Set-IisDesiredLocalStateAtomic {
             'system.webServer/security/authentication/anonymousAuthentication', $AppLocation).SetAttributeValue(
                 'enabled', $AuthenticationMode -eq 'Anonymous')
         $configuration.GetSection(
+            'system.webServer/security/authentication/anonymousAuthentication', $AppLocation).SetAttributeValue(
+                'userName', '')
+        $configuration.GetSection(
             'system.webServer/security/authentication/windowsAuthentication', $AppLocation).SetAttributeValue(
                 'enabled', $AuthenticationMode -eq 'Windows')
         $configuration.GetSection(
@@ -302,11 +316,11 @@ function Set-IisDesiredLocalStateAtomic {
                 'enabled', $true)
         $configuration.GetSection('system.webServer/security/requestFiltering', $AppLocation).GetChildElement(
             'requestLimits').SetAttributeValue('maxAllowedContentLength', 1048576)
+        $configuration.GetSection('system.webServer/serverRuntime', $AppLocation).SetAttributeValue(
+            'uploadReadAheadSize', [uint32]0)
         if ($SetTlsSettings) {
             $configuration.GetSection('system.webServer/security/access', $AppLocation).SetAttributeValue(
                 'sslFlags', $(if ($RequireTls) { 'Ssl' } else { 'None' }))
-            $configuration.GetSection('system.web/httpCookies', $AppLocation).SetAttributeValue(
-                'requireSSL', $RequireTls)
         }
         $ipSection = $configuration.GetSection('system.webServer/security/ipSecurity', $AdminLocation)
         $ipSection.SetAttributeValue('allowUnlisted', $false)
@@ -359,6 +373,9 @@ function Test-IisDesiredLocalState {
         if ([bool]$configuration.GetSection(
                 'system.webServer/security/authentication/anonymousAuthentication', $AppLocation).GetAttributeValue('enabled') -ne
             ($AuthenticationMode -eq 'Anonymous')) { return $false }
+        if (-not [string]::IsNullOrEmpty([string]$configuration.GetSection(
+                'system.webServer/security/authentication/anonymousAuthentication', $AppLocation).GetAttributeValue(
+                    'userName'))) { return $false }
         if ([bool]$configuration.GetSection(
                 'system.webServer/security/authentication/windowsAuthentication', $AppLocation).GetAttributeValue('enabled') -ne
             ($AuthenticationMode -eq 'Windows')) { return $false }
@@ -372,17 +389,19 @@ function Test-IisDesiredLocalState {
         }
         if ([uint64]$configuration.GetSection('system.webServer/security/requestFiltering', $AppLocation).GetChildElement(
                 'requestLimits').GetAttributeValue('maxAllowedContentLength') -ne 1048576) { return $false }
+        if ([uint32]$configuration.GetSection('system.webServer/serverRuntime', $AppLocation).GetAttributeValue(
+                'uploadReadAheadSize') -ne 0) { return $false }
         if ($SetTlsSettings) {
             $expectedSslFlags = if ($RequireTls) { 'Ssl' } else { 'None' }
-            if ([string]$configuration.GetSection('system.webServer/security/access', $AppLocation).GetAttributeValue(
-                    'sslFlags') -ne $expectedSslFlags -or
-                [bool]$configuration.GetSection('system.web/httpCookies', $AppLocation).GetAttributeValue(
-                    'requireSSL') -ne $RequireTls) { return $false }
+            if ((ConvertTo-IisAttributeEffectiveValue -Value ($configuration.GetSection(
+                    'system.webServer/security/access', $AppLocation).GetAttributeValue('sslFlags')) -Schema (
+                    $configuration.GetSection('system.webServer/security/access', $AppLocation).GetAttribute(
+                        'sslFlags').Schema)) -ne $expectedSslFlags) { return $false }
         }
         else {
             $currentState = Get-IisExactLocalState -AppLocation $AppLocation -AdminLocation $AdminLocation `
                 -AuthenticationDefinitions $allAuthenticationSections
-            $trackedTlsSections = @('system.webServer/security/access', 'system.web/httpCookies')
+            $trackedTlsSections = @('system.webServer/security/access')
             $currentTls = @($currentState.Attributes | Where-Object { $trackedTlsSections -contains $_.Section })
             $expectedTls = @($ExpectedState.Attributes | Where-Object { $trackedTlsSections -contains $_.Section })
             if (($currentTls | ConvertTo-Json -Depth 5 -Compress) -ne
@@ -390,7 +409,8 @@ function Test-IisDesiredLocalState {
         }
         $ipSection = $configuration.GetSection('system.webServer/security/ipSecurity', $AdminLocation)
         if ([bool]$ipSection.GetAttributeValue('allowUnlisted') -or
-            [string]$ipSection.GetAttributeValue('denyAction') -ne 'NotFound' -or
+            (ConvertTo-IisAttributeEffectiveValue -Value $ipSection.GetAttributeValue('denyAction') -Schema (
+                $ipSection.GetAttribute('denyAction').Schema)) -ne 'NotFound' -or
             [bool]$ipSection.GetAttributeValue('enableProxyMode') -or
             [bool]$ipSection.GetAttributeValue('enableReverseDns')) { return $false }
         $expectedAddresses = @($AdminIpv4Addresses | Sort-Object -Unique)
@@ -399,8 +419,8 @@ function Test-IisDesiredLocalState {
         $actualAddresses = [System.Collections.Generic.List[string]]::new()
         foreach ($ipRule in $ipRules) {
             if (-not [bool]$ipRule.GetAttributeValue('allowed') -or
-                $ipRule.RawAttributes.ContainsKey('subnetMask') -or
-                $ipRule.RawAttributes.ContainsKey('domainName')) { return $false }
+                [string]$ipRule.GetAttributeValue('subnetMask') -ne '255.255.255.255' -or
+                -not [string]::IsNullOrEmpty([string]$ipRule.GetAttributeValue('domainName'))) { return $false }
             $address = [string]$ipRule.GetAttributeValue('ipAddress')
             if ($expectedAddresses -notcontains $address -or $actualAddresses -contains $address) { return $false }
             $actualAddresses.Add($address)
@@ -444,8 +464,12 @@ function Set-IisApplicationPoolSettingsAtomic {
 }
 
 function ConvertTo-IisAttributeEffectiveValue {
-    param($Value)
+    param($Value, $Schema)
 
+    if ($null -ne $Schema -and $Schema.Type -in @('enum', 'flags')) {
+        $namedValue = @($Schema.GetEnumValues() | Where-Object { $_.Value -eq $Value }) | Select-Object -First 1
+        if ($null -ne $namedValue) { return [string]$namedValue.Name }
+    }
     if ($Value -is [TimeSpan]) { return [long]$Value.Ticks }
     if ($Value -is [bool]) { return [bool]$Value }
     return [string]$Value
@@ -454,15 +478,17 @@ function ConvertTo-IisAttributeEffectiveValue {
 function Get-IisRawAttributeSnapshot {
     param(
         $Element,
-        [string]$Name
+        [string]$Name,
+        $LocalElement
     )
 
-    $hasLocalValue = $Element.RawAttributes.ContainsKey($Name)
+    $hasLocalValue = $null -ne $LocalElement -and $LocalElement.HasAttribute($Name)
     return [PSCustomObject]@{
         Name = $Name
         HasLocalValue = $hasLocalValue
-        RawValue = if ($hasLocalValue) { [string]$Element.RawAttributes[$Name] } else { $null }
-        EffectiveValue = ConvertTo-IisAttributeEffectiveValue -Value ($Element.GetAttributeValue($Name))
+        RawValue = if ($hasLocalValue) { $LocalElement.GetAttribute($Name) } else { $null }
+        EffectiveValue = ConvertTo-IisAttributeEffectiveValue -Value ($Element.GetAttributeValue($Name)) `
+            -Schema ($Element.GetAttribute($Name).Schema)
     }
 }
 
@@ -511,6 +537,17 @@ function Get-IisAlwaysWarmStateFromManager {
     $pool = $Manager.ApplicationPools[$AppPoolName]
     if ($null -eq $pool) { throw "Application pool '$AppPoolName' disappeared." }
     $application = $site.Applications[$ApplicationPath]
+    $document = Read-OpenTimeStampXmlDocument -Path (
+        Join-Path $env:WINDIR 'System32\inetsrv\config\applicationHost.config')
+    $siteNode = @($document.SelectNodes('/configuration/system.applicationHost/sites/site') | Where-Object {
+        ([string]$_.GetAttribute('name')).Equals($SiteName, [System.StringComparison]::OrdinalIgnoreCase)
+    }) | Select-Object -First 1
+    $poolNode = @($document.SelectNodes('/configuration/system.applicationHost/applicationPools/add') | Where-Object {
+        ([string]$_.GetAttribute('name')).Equals($AppPoolName, [System.StringComparison]::OrdinalIgnoreCase)
+    }) | Select-Object -First 1
+    $applicationNode = @($siteNode.SelectNodes('./application') | Where-Object {
+        ([string]$_.GetAttribute('path')).Equals($ApplicationPath, [System.StringComparison]::OrdinalIgnoreCase)
+    }) | Select-Object -First 1
     $applicationState = if ($null -eq $application) {
         [PSCustomObject]@{ Present = $false; ServiceAutoStartEnabled = $null; ServiceAutoStartProvider = $null }
     }
@@ -518,9 +555,9 @@ function Get-IisAlwaysWarmStateFromManager {
         [PSCustomObject]@{
             Present = $true
             ServiceAutoStartEnabled = Get-IisRawAttributeSnapshot `
-                -Element $application -Name 'serviceAutoStartEnabled'
+                -Element $application -Name 'serviceAutoStartEnabled' -LocalElement $applicationNode
             ServiceAutoStartProvider = Get-IisRawAttributeSnapshot `
-                -Element $application -Name 'serviceAutoStartProvider'
+                -Element $application -Name 'serviceAutoStartProvider' -LocalElement $applicationNode
         }
     }
 
@@ -541,14 +578,17 @@ function Get-IisAlwaysWarmStateFromManager {
 
     return [PSCustomObject]@{
         Site = [PSCustomObject]@{
-            ServerAutoStart = Get-IisRawAttributeSnapshot -Element $site -Name 'serverAutoStart'
+            ServerAutoStart = Get-IisRawAttributeSnapshot -Element $site `
+                -Name 'serverAutoStart' -LocalElement $siteNode
         }
         Pool = [PSCustomObject]@{
-            AutoStart = Get-IisRawAttributeSnapshot -Element $pool -Name 'autoStart'
-            StartMode = Get-IisRawAttributeSnapshot -Element $pool -Name 'startMode'
-            IdleTimeout = Get-IisRawAttributeSnapshot -Element $pool.ProcessModel -Name 'idleTimeout'
+            AutoStart = Get-IisRawAttributeSnapshot -Element $pool -Name 'autoStart' -LocalElement $poolNode
+            StartMode = Get-IisRawAttributeSnapshot -Element $pool -Name 'startMode' -LocalElement $poolNode
+            IdleTimeout = Get-IisRawAttributeSnapshot -Element $pool.ProcessModel `
+                -Name 'idleTimeout' -LocalElement ($poolNode.SelectSingleNode('./processModel'))
             PeriodicRestartTime = Get-IisRawAttributeSnapshot `
-                -Element $pool.Recycling.PeriodicRestart -Name 'time'
+                -Element $pool.Recycling.PeriodicRestart -Name 'time' `
+                -LocalElement ($poolNode.SelectSingleNode('./recycling/periodicRestart'))
         }
         Application = $applicationState
         Provider = $providerState
@@ -765,9 +805,11 @@ function Test-IisConfigurationLocationIsEmpty {
     if ($matches.Count -ne 1) { return $false }
     $locationNode = $matches[0]
     if (@($locationNode.Attributes | Where-Object { $_.Name -ne 'path' }).Count -ne 0) { return $false }
-    return @($locationNode.ChildNodes | Where-Object {
-            $_.NodeType -eq [System.Xml.XmlNodeType]::Element
-        }).Count -eq 0
+    foreach ($element in @($locationNode.SelectNodes('.//*'))) {
+        if ($element.Attributes.Count -ne 0 -or $element.LocalName -in @('add', 'remove', 'clear') -or
+            -not [string]::IsNullOrWhiteSpace($element.InnerText)) { return $false }
+    }
+    return $true
 }
 
 function Restore-PrivateKeyAclChange {
@@ -793,7 +835,7 @@ function Restore-PrivateKeyAclChange {
     $restoredAcl = Get-Acl -LiteralPath $Change.PrivateKeyPath
     $restoredSddl = $restoredAcl.GetSecurityDescriptorSddlForm(
         [System.Security.AccessControl.AccessControlSections]::All)
-    if (-not $restoredSddl.Equals([string]$Change.PreviousSddl, [System.StringComparison]::Ordinal)) {
+    if (-not (Test-OpenTimeStampSecurityDescriptorEqual -First $restoredSddl -Second $Change.PreviousSddl)) {
         throw 'The prior private-key ACL could not be restored and verified exactly.'
     }
 }
@@ -941,7 +983,8 @@ function Initialize-IssuanceStateFromRelease {
         $assemblyBytes = [System.IO.File]::ReadAllBytes($assemblyPath)
         $assembly = [System.Reflection.Assembly]::Load($assemblyBytes)
         $type = $assembly.GetType('OpenTimeStamp.Issuance.IssuanceStateStore', $true)
-        $store = [System.Activator]::CreateInstance($type, @((Join-Path $EffectiveDataPath 'issuance.state')))
+        $store = [System.Activator]::CreateInstance(
+            $type, [object[]]@([string](Join-Path $EffectiveDataPath 'issuance.state')))
         $method = $type.GetMethod('Initialize', [System.Reflection.BindingFlags]::Instance -bor [System.Reflection.BindingFlags]::Public)
         if ($null -eq $method) { throw 'The published Core assembly does not expose IssuanceStateStore.Initialize().' }
         [void]$method.Invoke($store, @())
@@ -955,8 +998,13 @@ function Initialize-IssuanceStateFromRelease {
 function Get-PoolStateValue {
     param([string]$Name)
 
-    if (-not (Test-Path -LiteralPath "IIS:\AppPools\$Name")) { return 'Absent' }
-    return [string](Get-WebAppPoolState -Name $Name).Value
+    $manager = New-Object Microsoft.Web.Administration.ServerManager
+    try {
+        $pool = $manager.ApplicationPools[$Name]
+        if ($null -eq $pool) { return 'Absent' }
+        return [string]$pool.State
+    }
+    finally { $manager.Dispose() }
 }
 
 function Get-IisApplicationPoolSettingsSnapshot {
@@ -995,6 +1043,21 @@ function Test-IisApplicationMatchesSelection {
             (Get-OpenTimeStampCanonicalDirectoryPath -Path $PhysicalPath),
             [System.StringComparison]::OrdinalIgnoreCase) -and
         ([string]$item.applicationPool).Equals($ApplicationPool, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-IisApplicationVirtualDirectories {
+    param([string]$SiteName, [string]$ApplicationPath)
+
+    $manager = New-Object Microsoft.Web.Administration.ServerManager
+    try {
+        $site = $manager.Sites[$SiteName]
+        $application = if ($null -ne $site) { $site.Applications[$ApplicationPath] }
+        if ($null -eq $application) { return @() }
+        return @(foreach ($directory in $application.VirtualDirectories) {
+            [PSCustomObject]@{ path = $directory.Path; physicalPath = $directory.PhysicalPath }
+        })
+    }
+    finally { $manager.Dispose() }
 }
 
 function Wait-PoolState {
@@ -1332,6 +1395,26 @@ function Get-ValidatedSiteBindingEndpoints {
     return $endpoints
 }
 
+function Get-IisSiteBindings {
+    param([string]$SiteName)
+
+    $manager = New-Object Microsoft.Web.Administration.ServerManager
+    try {
+        $site = $manager.Sites[$SiteName]
+        if ($null -eq $site) { throw "IIS site '$SiteName' disappeared." }
+        return @(foreach ($binding in $site.Bindings) {
+            [PSCustomObject]@{
+                protocol = $binding.Protocol
+                bindingInformation = $binding.BindingInformation
+                certificateHash = $binding.CertificateHash
+                certificateStoreName = $binding.CertificateStoreName
+                sslFlags = [int]$binding.SslFlags
+            }
+        })
+    }
+    finally { $manager.Dispose() }
+}
+
 function Assert-LocalDedicatedPath {
     param(
         [string]$Path,
@@ -1444,7 +1527,7 @@ if (-not (Test-Path -LiteralPath "IIS:\Sites\$SiteName")) {
     throw "The IIS site '$SiteName' does not exist. Create its bindings and TLS certificate before installing this application."
 }
 
-$siteBindings = @(Get-WebBinding -Name $SiteName)
+$siteBindings = @(Get-IisSiteBindings -SiteName $SiteName)
 $siteBindingEndpoints = @(Get-ValidatedSiteBindingEndpoints -Bindings $siteBindings `
     -SiteName $SiteName -RequireHttps:$RequireHttps)
 
@@ -1483,8 +1566,7 @@ if ($applicationExists) {
     $existingWebSettings = Get-ExistingWebSettings -ApplicationPhysicalPath $existingApplicationPhysicalPath
     Assert-OpenTimeStampIntakeSettings -Settings $existingWebSettings
     $existingIisAuthentication = Get-IisAuthenticationMode -ConfigurationPath $configurationPath -Location $appLocation
-    $existingSslFlags = (Get-WebConfigurationProperty -PSPath $configurationPath -Location $appLocation `
-        -Filter 'system.webServer/security/access' -Name sslFlags).Value
+
 
     $currentPoolAssignments = @(Get-IisApplicationPoolAssignments -Name $existingApplicationPool)
     $unexpectedCurrentPoolAssignments = @($currentPoolAssignments |
@@ -1493,16 +1575,18 @@ if ($applicationExists) {
         throw "The existing application uses shared pool '$existingApplicationPool', which cannot be safely quiesced for state migration: $($unexpectedCurrentPoolAssignments -join ', '). Move OpenTimeStamp to a dedicated pool first."
     }
 }
-else {
-    if ($appLocationExistedBefore) {
-        $existingSslFlags = (Get-WebConfigurationProperty -PSPath $configurationPath -Location $appLocation `
-            -Filter 'system.webServer/security/access' -Name sslFlags).Value
+if ($applicationExists -and -not $PSBoundParameters.ContainsKey('RequireHttps')) {
+    $manager = New-Object Microsoft.Web.Administration.ServerManager
+    try {
+        $existingSslFlags = [uint32]$manager.GetApplicationHostConfiguration().GetSection(
+            'system.webServer/security/access', $appLocation).GetAttributeValue('sslFlags')
     }
+    finally { $manager.Dispose() }
 }
 
 $effectiveRequireHttps = [bool]$RequireHttps -or
     ($applicationExists -and -not $PSBoundParameters.ContainsKey('RequireHttps') -and
-        [string]$existingSslFlags -match 'Ssl')
+        ($existingSslFlags -band 8) -ne 0)
 if ($effectiveRequireHttps -and @($siteBindingEndpoints | Where-Object Scheme -EQ 'https').Count -eq 0) {
     throw "The existing or requested application policy requires HTTPS, but IIS site '$SiteName' has no usable HTTPS binding."
 }
@@ -1732,7 +1816,7 @@ try {
     $stageOwnedByInstaller = $true
     Set-OpenTimeStampStagedWebSettings -ReleasePath $stagePath -Mode $AuthenticationMode `
         -EffectiveDataPath $runtimeDataPath -EffectiveAdminHosts $effectiveAdminHostNames `
-        -ExistingSettings $existingWebSettings
+        -ExistingSettings $existingWebSettings -RequireHttps $effectiveRequireHttps
     New-OpenTimeStampDeploymentManifest -PayloadPath $stagePath -ReleaseId ([string]$manifest.ReleaseId) | Out-Null
     Assert-OpenTimeStampPublishedPayload -PayloadPath $stagePath | Out-Null
     Set-OpenTimeStampRestrictedDirectoryAcl -Path $stagePath -ApplicationPoolSid $poolSid `
@@ -2089,7 +2173,7 @@ try {
     # Recheck storage and dedicated-pool ownership at the final commit boundary.
     Assert-OpenTimeStampExclusiveIisStorage -TargetApplication $targetApplicationIdentity `
         -DeploymentRoot $PhysicalPath -DataPath $runtimeDataPath
-    $commitSiteBindings = @(Get-WebBinding -Name $SiteName)
+    $commitSiteBindings = @(Get-IisSiteBindings -SiteName $SiteName)
     $committedSiteBindingEndpoints = @(Get-ValidatedSiteBindingEndpoints -Bindings $commitSiteBindings `
         -SiteName $SiteName -RequireHttps:$effectiveRequireHttps)
     $commitIisLocalState = Get-IisExactLocalState -AppLocation $appLocation -AdminLocation $adminLocation `
@@ -2338,10 +2422,8 @@ catch {
                 $selectionMatches = $applicationPresent -and
                     (Test-IisApplicationMatchesSelection -Path $iisApplicationPath `
                         -PhysicalPath $releasePath -ApplicationPool $AppPoolName)
-                $virtualDirectories = if ($applicationPresent) {
-                    @(Get-WebVirtualDirectory -Site $SiteName -Application $applicationName)
-                }
-                else { @() }
+                $virtualDirectories = @(Get-IisApplicationVirtualDirectories -SiteName $SiteName `
+                    -ApplicationPath $ApplicationPath)
                 if (Test-OpenTimeStampNewIisApplicationRollbackCandidate `
                     -ApplicationPresent $applicationPresent -SelectionMatches $selectionMatches `
                     -VirtualDirectories $virtualDirectories -ExpectedPhysicalPath $releasePath) {
@@ -2436,8 +2518,8 @@ catch {
         try {
             $selectionMatches = Test-IisApplicationMatchesSelection -Path $iisApplicationPath `
                 -PhysicalPath $releasePath -ApplicationPool $AppPoolName
-            $virtualDirectories =
-                @(Get-WebVirtualDirectory -Site $SiteName -Application $applicationName)
+            $virtualDirectories = @(Get-IisApplicationVirtualDirectories -SiteName $SiteName `
+                -ApplicationPath $ApplicationPath)
             if (Test-OpenTimeStampNewIisApplicationRollbackCandidate -ApplicationPresent $true `
                 -SelectionMatches $selectionMatches -VirtualDirectories $virtualDirectories `
                 -ExpectedPhysicalPath $releasePath) {

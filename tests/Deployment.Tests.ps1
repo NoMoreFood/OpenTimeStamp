@@ -1639,7 +1639,7 @@ catch {
         }
         Assert-True ($installer -match 'Exit-OpenTimeStampDeploymentLock -Lock \$deploymentLock') `
             'Installer does not release its cross-process application lock in the outer finally.'
-        foreach ($rollbackToken in @('Restore-IisExactLocalState', 'RawAttributes',
+        foreach ($rollbackToken in @('Restore-IisExactLocalState', 'Read-OpenTimeStampXmlDocument',
                 'ChildElement', 'RevertToParent', 'SectionWasLocal')) {
             Assert-True ($installer -match [regex]::Escape($rollbackToken)) `
                 "Installer rollback does not retain '$rollbackToken'."
@@ -1732,6 +1732,145 @@ catch {
         }
     }
 
+    Invoke-Test 'Key ACL verification tolerates Windows bookkeeping but rejects permission changes' {
+        $before = 'O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)'
+        $persisted = 'O:BAG:BAD:PAI(A;;FA;;;SY)(A;;FA;;;BA)'
+        Assert-True (Test-OpenTimeStampSecurityDescriptorEqual -First $before -Second $persisted) `
+            'A Windows DACL auto-inherited flag caused an otherwise exact key grant to fail.'
+        foreach ($changed in @(
+                'O:BAG:BAD:PAI(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)',
+                'O:BAG:BAD:AI(A;;FA;;;SY)(A;;FA;;;BA)',
+                'O:SYG:BAD:PAI(A;;FA;;;SY)(A;;FA;;;BA)',
+                'O:BAG:SYD:PAI(A;;FA;;;SY)(A;;FA;;;BA)',
+                'O:BAG:BAD:PAI(A;;FR;;;SY)(A;;FA;;;BA)')) {
+            Assert-True (-not (Test-OpenTimeStampSecurityDescriptorEqual -First $before -Second $changed)) `
+                'A changed owner, group, protection policy, or permission was treated as the same key ACL.'
+        }
+    }
+    Invoke-Test 'HTTPS cookie policy is stored in the staged application web.config' {
+        $stage = Join-Path $testRoot 'https-cookie-stage'
+        New-TestPayload -Path $stage
+        $path = Join-Path $stage 'web.config'
+        [xml]$document = [IO.File]::ReadAllText($path)
+        $systemWeb = $document.CreateElement('system.web')
+        $cookies = $document.CreateElement('httpCookies')
+        $cookies.SetAttribute('requireSSL', 'false')
+        [void]$systemWeb.AppendChild($cookies)
+        [void]$document.DocumentElement.AppendChild($systemWeb)
+        $document.Save($path)
+        foreach ($requireHttps in @($true, $false)) {
+            Set-OpenTimeStampStagedWebSettings -ReleasePath $stage -Mode Anonymous `
+                -EffectiveDataPath 'C:\ProgramData\OpenTimeStamp' -EffectiveAdminHosts @('localhost') `
+                -RequireHttps $requireHttps
+            [xml]$document = [IO.File]::ReadAllText($path)
+            Assert-Equal $requireHttps.ToString().ToLowerInvariant() `
+                ($document.SelectSingleNode('/configuration/system.web/httpCookies').GetAttribute('requireSSL')) `
+                'The staged ASP.NET cookie policy does not match the HTTPS deployment policy.'
+        }
+        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1') -Raw
+        Assert-True ($installer -notmatch "GetSection\('system.web/httpCookies'") `
+            'The installer writes ASP.NET cookie settings into native IIS applicationHost.config.'
+    }
+    Invoke-Test 'Deployment invokes the published state initializer with a native string argument' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
+        $definition = $ast.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq 'Initialize-IssuanceStateFromRelease'
+        }, $true)
+        . ([scriptblock]::Create($definition.Extent.Text))
+        $release = Join-Path $testRoot 'initializer-release'
+        $data = Join-Path $testRoot 'initializer-data'
+        New-Item -ItemType Directory -Path (Join-Path $release 'bin'),$data | Out-Null
+        Add-Type -OutputAssembly (Join-Path $release 'bin\OpenTimeStamp.Core.dll') -TypeDefinition '
+namespace OpenTimeStamp.Issuance {
+    public sealed class IssuanceStateStore {
+        private readonly string path;
+        public IssuanceStateStore(string path) { this.path = path; }
+        public void Initialize() { System.IO.File.WriteAllText(path, "initialized"); }
+    }
+}'
+        Initialize-IssuanceStateFromRelease -ReleasePath $release -EffectiveDataPath $data
+        Assert-Equal 'initialized' ([IO.File]::ReadAllText((Join-Path $data 'issuance.state'))) `
+            'The published state initializer was not called with the requested state path.'
+    }
+
+    Invoke-Test 'IIS rollback removes empty section wrappers but preserves collection directives' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
+        $definition = $ast.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq 'Test-IisConfigurationLocationIsEmpty'
+        }, $true)
+        . ([scriptblock]::Create($definition.Extent.Text))
+        function Read-OpenTimeStampXmlDocument { param($Path) return $document }
+        [xml]$document = '<configuration><location path="site/app"><system.webServer><security><authentication /></security></system.webServer></location></configuration>'
+        Assert-True (Test-IisConfigurationLocationIsEmpty -Location 'site/app') `
+            'Empty section wrappers blocked removal of an installer-created location.'
+        $security = $document.SelectSingleNode('//security')
+        $security.SetAttribute('external', 'true')
+        Assert-True (-not (Test-IisConfigurationLocationIsEmpty -Location 'site/app')) `
+            'Rollback would remove an external attribute.'
+        $security.RemoveAttribute('external')
+        foreach ($name in @('clear','add','remove')) {
+            $directive = $document.CreateElement($name)
+            [void]$security.AppendChild($directive)
+            Assert-True (-not (Test-IisConfigurationLocationIsEmpty -Location 'site/app')) `
+                "Rollback would remove a $name collection directive."
+            [void]$security.RemoveChild($directive)
+        }
+    }
+    Invoke-Test 'IIS numeric enum settings retain their schema names' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
+        foreach ($name in @('ConvertTo-IisAttributeEffectiveValue', 'Get-IisRawAttributeSnapshot')) {
+            $definition = $ast.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+            }, $true)
+            . ([scriptblock]::Create($definition.Extent.Text))
+        }
+        $schema = [PSCustomObject]@{
+            Type = 'enum'
+            Values = @(
+                [PSCustomObject]@{ Name = 'OnDemand'; Value = 0 },
+                [PSCustomObject]@{ Name = 'AlwaysRunning'; Value = 1 })
+        }
+        $schema | Add-Member ScriptMethod GetEnumValues { return $this.Values }
+        Assert-Equal 'AlwaysRunning' (ConvertTo-IisAttributeEffectiveValue -Value 1 -Schema $schema) `
+            'IIS startMode lost its enum name.'
+        $schema.Type = 'flags'
+        $schema.Values = @([PSCustomObject]@{ Name = 'None'; Value = 0 },
+            [PSCustomObject]@{ Name = 'Ssl'; Value = 8 }, [PSCustomObject]@{ Name = 'NotFound'; Value = 404 })
+        foreach ($value in $schema.Values) {
+            Assert-Equal $value.Name (ConvertTo-IisAttributeEffectiveValue -Value $value.Value -Schema $schema) `
+                'An IIS numeric security setting lost its schema name.'
+        }
+        $schema.Type = 'enum'
+        $element = [PSCustomObject]@{
+            Value = 0; Schema = $schema; RawAttributes = @{ startMode = '0' }
+        }
+        $element | Add-Member ScriptMethod GetAttributeValue { param($name) return $this.Value }
+        $element | Add-Member ScriptMethod GetAttribute { param($name) return [PSCustomObject]@{ Schema = $this.Schema } }
+        [xml]$document = '<add name="OpenTimeStamp" />'
+        $snapshot = Get-IisRawAttributeSnapshot -Element $element -Name 'startMode' -LocalElement $document.DocumentElement
+        Assert-True (-not $snapshot.HasLocalValue -and $null -eq $snapshot.RawValue) `
+            'A schema default in RawAttributes became an explicit local override.'
+        $document.DocumentElement.SetAttribute('startMode', 'OnDemand')
+        $snapshot = Get-IisRawAttributeSnapshot -Element $element -Name 'startMode' -LocalElement $document.DocumentElement
+        Assert-True $snapshot.HasLocalValue 'An explicitly stored default was lost from the rollback snapshot.'
+        Assert-Equal 'OnDemand' $snapshot.RawValue 'The rollback snapshot changed the stored attribute text.'
+        $snapshot = Get-IisRawAttributeSnapshot -Element $element -Name 'startMode' -LocalElement $null
+        Assert-True (-not $snapshot.HasLocalValue) 'An absent local element produced a stored attribute.'
+    }
     Invoke-Test 'IIS always-warm configuration is atomic and exactly reversible' {
         $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1') -Raw
         $global = Get-Content -LiteralPath (Join-Path $repositoryRoot 'src\OpenTimeStamp.Web\Global.asax.cs') -Raw

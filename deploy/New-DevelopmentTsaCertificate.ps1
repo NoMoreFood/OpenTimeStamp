@@ -64,6 +64,12 @@ $certificateParameters = @{
     )
 }
 
+if ($StoreLocation -eq 'LocalMachine') {
+    $certificateParameters.SecurityDescriptor = New-Object System.Security.AccessControl.FileSecurity
+    $certificateParameters.SecurityDescriptor.SetSecurityDescriptorSddlForm(
+        'O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)')
+}
+
 if (-not $PSCmdlet.ShouldProcess("$StoreLocation\My", "Create short-lived development TSA certificate '$Subject'")) {
     return
 }
@@ -145,8 +151,9 @@ catch {
             Set-Acl -LiteralPath ([string]$grantResult.PrivateKeyPath) -AclObject $currentAcl
             $restoredSddl = (Get-Acl -LiteralPath ([string]$grantResult.PrivateKeyPath)).GetSecurityDescriptorSddlForm(
                 [System.Security.AccessControl.AccessControlSections]::All)
-            if (-not $restoredSddl.Equals(
-                    [string]$grantResult.PreviousSddl, [System.StringComparison]::Ordinal)) {
+            . (Join-Path $PSScriptRoot 'Deployment.Common.ps1')
+            if (-not (Test-OpenTimeStampSecurityDescriptorEqual `
+                    -First $restoredSddl -Second $grantResult.PreviousSddl)) {
                 throw 'The development-certificate private-key ACL was not restored exactly.'
             }
         }

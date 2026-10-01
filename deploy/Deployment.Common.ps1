@@ -505,7 +505,8 @@ function Set-OpenTimeStampStagedWebSettings {
         [string]$Mode,
         [string]$EffectiveDataPath,
         [string[]]$EffectiveAdminHosts,
-        [hashtable]$ExistingSettings
+        [hashtable]$ExistingSettings,
+        [bool]$RequireHttps
     )
 
     $path = Join-Path $ReleasePath 'web.config'
@@ -525,6 +526,11 @@ function Set-OpenTimeStampStagedWebSettings {
             throw "The published web.config does not contain the upgrade-preserved '$key' appSetting."
         }
         $node.SetAttribute('value', [string]$ExistingSettings[$key])
+    }
+    if ($PSBoundParameters.ContainsKey('RequireHttps')) {
+        $cookies = $document.SelectSingleNode('/configuration/system.web/httpCookies')
+        if ($null -eq $cookies) { throw 'The published web.config must contain its httpCookies settings.' }
+        $cookies.SetAttribute('requireSSL', $RequireHttps.ToString().ToLowerInvariant())
     }
     $document.Save($path)
 }
@@ -1529,6 +1535,19 @@ function Test-OpenTimeStampDeploymentRootMarker {
     catch {
         throw "The deployment-root marker '$markerPath' is invalid: $($_.Exception.Message)"
     }
+}
+
+function Test-OpenTimeStampSecurityDescriptorEqual {
+    param([string]$First, [string]$Second)
+
+    # Windows can set the DACL auto-inherited bookkeeping flag while persisting an unchanged ACL.
+    $descriptors = @(foreach ($sddl in @($First, $Second)) {
+        $descriptor = New-Object System.Security.AccessControl.RawSecurityDescriptor($sddl)
+        $autoInherited = [System.Security.AccessControl.ControlFlags]::DiscretionaryAclAutoInherited
+        $descriptor.SetFlags($descriptor.ControlFlags -band (-bnot $autoInherited))
+        $descriptor.GetSddlForm([System.Security.AccessControl.AccessControlSections]::All)
+    })
+    return $descriptors[0].Equals($descriptors[1], [System.StringComparison]::Ordinal)
 }
 
 function Get-OpenTimeStampAclLocalFingerprint {
