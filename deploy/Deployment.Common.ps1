@@ -437,6 +437,28 @@ function Get-OpenTimeStampValidatedBindingEndpoint {
     }
 }
 
+function Get-OpenTimeStampBindingProtocolPolicy {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Endpoints,
+        [uint32]$ExistingSslFlags = 0
+    )
+
+    $schemes = @($Endpoints | ForEach-Object { [string]$_.Scheme } | Sort-Object -Unique)
+    if ($schemes.Count -eq 0 -or @($schemes | Where-Object { $_ -notin @('http', 'https') }).Count -ne 0) {
+        throw 'The application requires at least one validated HTTP or HTTPS site binding.'
+    }
+    $requireHttps = $schemes -notcontains 'http'
+    return [PSCustomObject]@{
+        Schemes = $schemes
+        RequireHttps = $requireHttps
+        SslFlags = if ($requireHttps) { [uint32]($ExistingSslFlags -bor 264) } else { [uint32]0 }
+        # IIS buffers the body before client-certificate renegotiation; cap it at the app's request limit.
+        UploadReadAheadSize = if ($requireHttps -and ($ExistingSslFlags -band 96) -ne 0) {
+            [uint32]1048576
+        } else { [uint32]0 }
+    }
+}
+
 function Assert-OpenTimeStampWebConfig {
     param(
         [Parameter(Mandatory = $true)]
@@ -506,7 +528,8 @@ function Set-OpenTimeStampStagedWebSettings {
         [string]$EffectiveDataPath,
         [string[]]$EffectiveAdminHosts,
         [hashtable]$ExistingSettings,
-        [bool]$RequireHttps
+        [bool]$RequireHttps,
+        [string]$ApplicationPath
     )
 
     $path = Join-Path $ReleasePath 'web.config'
@@ -531,6 +554,22 @@ function Set-OpenTimeStampStagedWebSettings {
         $cookies = $document.SelectSingleNode('/configuration/system.web/httpCookies')
         if ($null -eq $cookies) { throw 'The published web.config must contain its httpCookies settings.' }
         $cookies.SetAttribute('requireSSL', $RequireHttps.ToString().ToLowerInvariant())
+    }
+    # IIS filters the dotted application name before redirecting its bare root URL.
+    $extension = [System.IO.Path]::GetExtension($ApplicationPath)
+    if (-not [string]::IsNullOrEmpty($extension) -and $extension -ne '.') {
+        $extensions = $document.SelectSingleNode(
+            '/configuration/system.webServer/security/requestFiltering/fileExtensions')
+        if ($null -eq $extensions) { throw 'The published web.config must define its file-extension allowlist.' }
+        $entry = @($extensions.SelectNodes('./add') | Where-Object {
+            $_.GetAttribute('fileExtension') -eq $extension
+        }) | Select-Object -First 1
+        if ($null -eq $entry) {
+            $entry = $document.CreateElement('add')
+            $entry.SetAttribute('fileExtension', $extension)
+            [void]$extensions.AppendChild($entry)
+        }
+        $entry.SetAttribute('allowed', 'true')
     }
     $document.Save($path)
 }

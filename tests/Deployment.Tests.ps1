@@ -444,6 +444,81 @@ catch {
         } 'An HTTPS binding without a certificate was accepted.'
     }
 
+    Invoke-Test 'Site binding protocols determine TLS requirements and preserve HTTPS client-certificate settings' {
+        foreach ($scenario in @(
+                @{ Schemes = @('http'); RequireHttps = $false },
+                @{ Schemes = @('https'); RequireHttps = $true },
+                @{ Schemes = @('https', 'http', 'https'); RequireHttps = $false })) {
+            $endpoints = @($scenario.Schemes | ForEach-Object { [pscustomobject]@{ Scheme = $_ } })
+            foreach ($existingFlags in @(0, 8, 32, 40, 104, 296)) {
+                $policy = Get-OpenTimeStampBindingProtocolPolicy -Endpoints $endpoints -ExistingSslFlags $existingFlags
+                Assert-Equal $scenario.RequireHttps $policy.RequireHttps 'HTTPS requirement differs from site bindings.'
+                $expectedFlags = if ($scenario.RequireHttps) { $existingFlags -bor 264 } else { 0 }
+                Assert-Equal $expectedFlags $policy.SslFlags 'Application SSL flags differ from site protocols.'
+                $expectedReadAhead = if ($scenario.RequireHttps -and ($existingFlags -band 96) -ne 0) {
+                    1048576
+                } else { 0 }
+                Assert-Equal $expectedReadAhead $policy.UploadReadAheadSize `
+                    'IIS read-ahead does not accommodate bounded client-certificate renegotiation.'
+                Assert-Equal (($scenario.Schemes | Sort-Object -Unique) -join ',') ($policy.Schemes -join ',') `
+                    'Allowed schemes are incomplete or duplicated.'
+            }
+        }
+    }
+
+    Invoke-Test 'Binding protocol policy rejects empty and unsupported endpoint sets' {
+        Assert-Throws { Get-OpenTimeStampBindingProtocolPolicy -Endpoints @() } `
+            'A site without usable bindings was accepted.'
+        Assert-Throws {
+            Get-OpenTimeStampBindingProtocolPolicy -Endpoints @([pscustomobject]@{ Scheme = 'ftp' })
+        } 'A non-HTTP application protocol was accepted.'
+    }
+
+    Invoke-Test 'Mixed bindings cannot silently downgrade an unusable HTTPS protocol to HTTP' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
+        $definition = $ast.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq 'Get-ValidatedSiteBindingEndpoints'
+        }, $true)
+        . ([scriptblock]::Create($definition.Extent.Text))
+        $http = [pscustomobject]@{ protocol = 'http'; bindingInformation = '*:8080:tsa.example.test' }
+        $https = [pscustomobject]@{
+            protocol = 'https'; bindingInformation = '*:443:tsa.example.test'
+            certificateHash = $null; certificateStoreName = 'My'
+        }
+        $endpoints = @(Get-ValidatedSiteBindingEndpoints -Bindings @($http) -SiteName 'Test')
+        Assert-Equal 'http' $endpoints[0].Scheme 'A usable HTTP-only site was rejected.'
+        Assert-Throws { Get-ValidatedSiteBindingEndpoints -Bindings @($http, $https) -SiteName 'Test' } `
+            'An unusable HTTPS binding on a mixed site was silently ignored.'
+        Assert-Throws { Get-ValidatedSiteBindingEndpoints -Bindings @($https) -SiteName 'Test' } `
+            'An HTTPS-only site without a valid binding certificate was accepted.'
+    }
+
+    Invoke-Test 'Deployment rechecks binding protocols before issuance and reports all application URLs' {
+        $installerPath = Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'
+        $installer = Get-Content -LiteralPath $installerPath -Raw
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $installerPath, [ref]$tokens, [ref]$parseErrors)
+        Assert-True ($ast.ParamBlock.Parameters.Name.VariablePath.UserPath -notcontains 'RequireHttps') `
+            'A manual HTTPS override can still conflict with the parent site bindings.'
+        $policyIndex = $installer.IndexOf('$bindingProtocolPolicy = Get-OpenTimeStampBindingProtocolPolicy')
+        $stageIndex = $installer.IndexOf('Set-OpenTimeStampStagedWebSettings -ReleasePath', $policyIndex)
+        $checkIndex = $installer.IndexOf('IIS site HTTP/HTTPS binding protocols changed during deployment.', $stageIndex)
+        $issuanceIndex = $installer.IndexOf('Initialize-IssuanceStateFromRelease -ReleasePath', $checkIndex)
+        Assert-True ($policyIndex -ge 0 -and $stageIndex -gt $policyIndex -and
+            $checkIndex -gt $stageIndex -and $issuanceIndex -gt $checkIndex) `
+            'Staging or issuance can use a stale binding protocol policy.'
+        Assert-True ($installer.Contains('BaseUrls = @($committedSiteBindingEndpoints') -and
+            $installer.Contains('Schemes = $bindingProtocolPolicy.Schemes')) `
+            'Deployment does not report every supported application protocol and URL.'
+    }
+
     Invoke-Test 'Root-only ACL snapshots avoid historical release traversal' {
         $aclRoot = Join-Path $testRoot 'acl-snapshot-root'
         New-Item -ItemType Directory -Path (Join-Path $aclRoot 'child') -Force | Out-Null
@@ -756,16 +831,13 @@ catch {
         Assert-Equal 1 $sharedConfigurationCalls.Count `
             'Installer must contain one top-level Shared Configuration precondition.'
         Assert-Equal 1 $serverManagerImports.Count 'Installer ServerManager import could not be identified.'
-        Assert-Equal 1 $featureMutations.Count 'Installer feature mutation could not be identified.'
+        Assert-Equal 0 $featureMutations.Count 'Application deployment must not install server features.'
         Assert-True ($bitnessCalls[0].Extent.StartOffset -lt
             $sharedConfigurationCalls[0].Extent.StartOffset) `
             'Shared Configuration is read before the process-bitness precondition.'
         Assert-True ($sharedConfigurationCalls[0].Extent.StartOffset -lt
             $serverManagerImports[0].Extent.StartOffset) `
             'ServerManager is imported before the Shared Configuration precondition.'
-        Assert-True ($sharedConfigurationCalls[0].Extent.StartOffset -lt
-            $featureMutations[0].Extent.StartOffset) `
-            'IIS role services can be mutated before the Shared Configuration precondition.'
 
         $rollbackCalls = @($topLevelCommands | Where-Object {
                 $_.GetCommandName() -eq 'Test-OpenTimeStampNewIisApplicationRollbackCandidate'
@@ -1495,7 +1567,7 @@ catch {
         }
         foreach ($installToken in @('Install-IisApplication.ps1', 'AllowUnsignedManifest',
                 '-SiteName $siteName', '-ApplicationPath $applicationPath',
-                '-InstallIisFeatures:$false', 'Microsoft IIS is not installed',
+                'Microsoft IIS is not installed',
                 "`$manager.Sites[`$siteName]")) {
             Assert-True ($msiInstall -match [regex]::Escape($installToken)) `
                 "MSI deployment integration '$installToken' is missing."
@@ -1614,9 +1686,6 @@ catch {
             'Installer does not use the guarded partial-application rollback decision.'
         Assert-True ($installer -notmatch 'newApplicationAppliedSnapshot') `
             'Partial-application rollback still depends on state captured only after New-WebApplication returns.'
-        Assert-True ($installer.IndexOf('Assert-OpenTimeStampIisSharedConfigurationDisabled') -lt `
-            $installer.IndexOf('Install-WindowsFeature')) `
-            'Installer checks IIS Shared Configuration only after it can mutate role services.'
         $authenticatedEvidenceStart = $installer.IndexOf('function Test-IssuanceStateHasAuthenticatedRuntimeEvidence')
         $artifactPresenceStart = $installer.IndexOf('function Test-IssuanceStateArtifactsPresent')
         $artifactNamesStart = $installer.IndexOf('function Get-IssuanceStateArtifactNames')
@@ -1758,7 +1827,10 @@ catch {
         [void]$systemWeb.AppendChild($cookies)
         [void]$document.DocumentElement.AppendChild($systemWeb)
         $document.Save($path)
-        foreach ($requireHttps in @($true, $false)) {
+        foreach ($schemes in @(@('https'), @('http'), @('http', 'https'))) {
+            $endpoints = @($schemes | ForEach-Object { [pscustomobject]@{ Scheme = $_ } })
+            $policy = Get-OpenTimeStampBindingProtocolPolicy -Endpoints $endpoints -ExistingSslFlags 264
+            $requireHttps = $policy.RequireHttps
             Set-OpenTimeStampStagedWebSettings -ReleasePath $stage -Mode Anonymous `
                 -EffectiveDataPath 'C:\ProgramData\OpenTimeStamp' -EffectiveAdminHosts @('localhost') `
                 -RequireHttps $requireHttps
@@ -1871,84 +1943,44 @@ namespace OpenTimeStamp.Issuance {
         $snapshot = Get-IisRawAttributeSnapshot -Element $element -Name 'startMode' -LocalElement $null
         Assert-True (-not $snapshot.HasLocalValue) 'An absent local element produced a stored attribute.'
     }
-    Invoke-Test 'IIS always-warm configuration is atomic and exactly reversible' {
+    Invoke-Test 'IIS application lifecycle is scoped and committed after durable initialization' {
         $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1') -Raw
-        $global = Get-Content -LiteralPath (Join-Path $repositoryRoot 'src\OpenTimeStamp.Web\Global.asax.cs') -Raw
-        foreach ($warmSetting in @(
-                "SetAttributeValue('serverAutoStart', `$true)",
-                "SetAttributeValue('autoStart', `$true)",
-                "SetAttributeValue('startMode', 'AlwaysRunning')",
-                "SetAttributeValue('idleTimeout', [TimeSpan]::Zero)",
-                "SetAttributeValue('time', [TimeSpan]::Zero)",
-                "SetAttributeValue('serviceAutoStartEnabled', `$true)",
-                "SetAttributeValue('serviceAutoStartProvider', `$ProviderName)")) {
-            Assert-True ($installer -match [regex]::Escape($warmSetting)) `
-                "Installer does not atomically enforce always-warm setting '$warmSetting'."
+        $uninstaller = Get-Content -LiteralPath (Join-Path $repositoryRoot 'setup\msi\Uninstall-Msi.ps1') -Raw
+        foreach ($script in @($installer, $uninstaller)) {
+            foreach ($forbidden in @('Install-WindowsFeature', 'Start-Website', 'Stop-Website',
+                    "SetAttributeValue('serverAutoStart'", 'system.applicationHost/serviceAutoStartProviders')) {
+                Assert-True (-not $script.Contains($forbidden)) "Deployment changes site/server state: $forbidden"
+            }
         }
-        foreach ($rollbackToken in @('Get-IisRawAttributeSnapshot', 'HasLocalValue',
-                'Restore-IisRawAttributeSnapshot', '.Delete()', 'ExpectedCurrentSnapshot',
-                'Test-IisAlwaysWarmPreMutationState', 'Restore-IisAlwaysWarmStateAtomic',
-                'iisWarmStateRestored')) {
-            Assert-True ($installer -match [regex]::Escape($rollbackToken)) `
-                "Always-warm rollback does not retain '$rollbackToken'."
+        foreach ($setting in @(
+                "SetAttributeValue('startMode', 'OnDemand')",
+                "SetAttributeValue('idleTimeout', [TimeSpan]::FromMinutes(20))",
+                "SetAttributeValue('time', [TimeSpan]::FromHours(29))",
+                "SetAttributeValue('requests', [uint32]35000)",
+                "SetAttributeValue('logEventOnRecycle', 'Time,Requests,OnDemand,ConfigChange')",
+                "SetAttributeValue('rapidFailProtection', `$true)",
+                "SetAttributeValue('rapidFailProtectionInterval', [TimeSpan]::FromMinutes(5))")) {
+            Assert-True $installer.Contains($setting) "Missing dedicated-pool setting: $setting"
         }
-        foreach ($providerToken in @('system.applicationHost/serviceAutoStartProviders',
-                'OpenTimeStamp.Web.OpenTimeStampPreloadClient, OpenTimeStamp.Web',
-                'Get-IisServiceAutoStartProviderReferencesFromManager',
-                'IIS service auto-start provider')) {
-            Assert-True ($installer -match [regex]::Escape($providerToken)) `
-                "Installer service auto-start provider safeguard '$providerToken' is missing."
-        }
-        $warmStateIndex = $installer.IndexOf('$iisWarmStatePreMutation = Get-IisAlwaysWarmState')
-        $issuanceCommitIndex = $installer.IndexOf(
-            'Initialize-IssuanceStateFromRelease -ReleasePath', $warmStateIndex)
-        $warmCommitIndex = $installer.IndexOf('Set-IisAlwaysWarmStateAtomic -SiteName', $issuanceCommitIndex)
-        $poolStopBoundaryIndex = $installer.IndexOf(
-            '# Recheck mutable IIS assignments immediately before quiescing pools')
-        $poolStopIndex = $installer.IndexOf('Stop-PoolForDeployment -Name $pool', $poolStopBoundaryIndex)
-        $poolStartIndex = $installer.IndexOf(
-            'Start-PoolForDeployment -Name $AppPoolName', $issuanceCommitIndex)
-        $siteStartIndex = $installer.IndexOf('-DesiredState Started', $issuanceCommitIndex)
-        Assert-True ($poolStopBoundaryIndex -ge 0 -and $poolStopIndex -gt $poolStopBoundaryIndex -and
-            $warmStateIndex -gt $poolStopIndex -and
-            $issuanceCommitIndex -gt $warmStateIndex -and $warmCommitIndex -gt $issuanceCommitIndex -and
-            $poolStartIndex -gt $warmCommitIndex -and $siteStartIndex -gt $poolStartIndex) `
-            'Always-warm activation is not ordered strictly after durable issuance initialization.'
-        Assert-True ($installer -match [regex]::Escape(
-                'must remain stopped before always-warm activation')) `
-            'The atomic always-warm commit does not recheck the dedicated pool activation boundary.'
-        $catchIndex = $installer.IndexOf('$caughtError = $_', $warmCommitIndex)
-        $warmRestoreIndex = $installer.IndexOf('Restore-IisAlwaysWarmStateAtomic -SiteName', $catchIndex)
-        $applicationRestoreIndex = $installer.IndexOf('Remove-WebApplication -Site', $catchIndex)
-        Assert-True ($warmRestoreIndex -gt $catchIndex -and $applicationRestoreIndex -gt $warmRestoreIndex) `
-            'Application rollback can remove the target before its always-warm attributes are restored exactly.'
-        Assert-True ($installer -match [regex]::Escape("-DesiredState Started")) `
-            'Successful deployment does not leave the selected IIS site started.'
-        Assert-True ($installer -notmatch 'existingApplicationWasRunning') `
-            'Successful deployment still preserves a stopped target application pool.'
-        $failureSiteRestoreIndex = $installer.IndexOf('$desiredSiteState = $initialSiteState')
-        $failClosedPoolIndex = $installer.IndexOf('-InitialState Stopped', $failureSiteRestoreIndex)
-        Assert-True ($failureSiteRestoreIndex -ge 0 -and $failClosedPoolIndex -gt $failureSiteRestoreIndex) `
-            'A post-migration activation failure does not preserve the site state and stop the target pool.'
-
-        foreach ($startupToken in @('IProcessHostPreloadClient', 'OpenTimeStampPreloadClient',
-                'ApplicationStartup.Initialize()', 'ServiceRuntime.Initialize',
-                'TimestampHandler.InitializeAdmission', 'HealthHandler.GetHealth()')) {
-            Assert-True ($global -match [regex]::Escape($startupToken)) `
-                "ASP.NET service auto-start implementation '$startupToken' is missing."
-        }
-        $routeIndex = $global.IndexOf('routes.Add("Home"')
-        $healthWarmIndex = $global.IndexOf('HealthHandler.GetHealth()', $routeIndex)
-        Assert-True ($routeIndex -ge 0 -and $healthWarmIndex -gt $routeIndex) `
-            'The non-blocking health warm-up runs before runtime routes are initialized.'
-        Assert-True ($installer -notmatch 'preloadEnabled') `
-            'Installer uses fake-request preload, which cannot warm an application that requires IIS SSL.'
+        $snapshotIndex = $installer.IndexOf('$iisLifecycleStatePreMutation = Get-IisApplicationLifecycleState')
+        $hardeningIndex = $installer.IndexOf('Assert-IisApplicationHardening -SiteName', $snapshotIndex)
+        $issuanceIndex = $installer.IndexOf('Initialize-IssuanceStateFromRelease -ReleasePath', $hardeningIndex)
+        $activationIndex = $installer.IndexOf('Set-IisApplicationLifecycleStateAtomic -SiteName', $issuanceIndex)
+        $startIndex = $installer.IndexOf('Start-PoolForDeployment -Name $AppPoolName', $activationIndex)
+        Assert-True ($snapshotIndex -ge 0 -and $hardeningIndex -gt $snapshotIndex -and
+            $issuanceIndex -gt $hardeningIndex -and $activationIndex -gt $issuanceIndex -and
+            $startIndex -gt $activationIndex) 'Application activation precedes validated configuration or durable state.'
+        $catchIndex = $installer.IndexOf('$caughtError = $_', $activationIndex)
+        $restoreIndex = $installer.IndexOf('Restore-IisApplicationLifecycleStateAtomic -SiteName', $catchIndex)
+        $removeIndex = $installer.IndexOf('Remove-WebApplication -Site', $catchIndex)
+        Assert-True ($restoreIndex -gt $catchIndex -and $removeIndex -gt $restoreIndex) `
+            'Application removal precedes exact lifecycle rollback.'
     }
 
     Invoke-Test 'IIS provisioning and application static surface are minimal' {
         $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1') -Raw
         $featuresStart = $installer.IndexOf('$features = @(')
-        $featuresEnd = $installer.IndexOf('if ($InstallIisFeatures)', $featuresStart)
+        $featuresEnd = $installer.IndexOf('$missingFeatures = @(', $featuresStart)
         Assert-True ($featuresStart -ge 0 -and $featuresEnd -gt $featuresStart) `
             'Installer IIS feature selection could not be isolated.'
         $featureBlock = $installer.Substring($featuresStart, $featuresEnd - $featuresStart)
@@ -1966,7 +1998,7 @@ namespace OpenTimeStamp.Issuance {
         Assert-True ($installer -notmatch '-IncludeManagementTools') `
             'Installer still requests the broad IIS management-tools set.'
         Assert-True ($installer -match '\$missingFeatures = @\(') `
-            'Installer does not verify the required IIS features after optional provisioning.'
+            'Installer does not verify the preinstalled IIS prerequisites.'
 
         $webConfigPath = Join-Path $repositoryRoot 'src\OpenTimeStamp.Web\Web.config'
         [xml]$webConfig = Get-Content -LiteralPath $webConfigPath -Raw
@@ -1982,6 +2014,66 @@ namespace OpenTimeStamp.Issuance {
             'Application does not explicitly reject double-escaped URLs.'
         Assert-Equal 'false' $requestFiltering.GetAttribute('allowHighBitCharacters') `
             'Application does not explicitly limit routes to their ASCII surface.'
+    }
+
+    Invoke-Test 'Dotted application root URLs retain their narrowly scoped extension allowlist' {
+        $payload = Join-Path $testRoot 'dotted-application'
+        New-TestPayload -Path $payload
+        Copy-Item -LiteralPath (Join-Path $repositoryRoot 'src\OpenTimeStamp.Web\Web.config') `
+            -Destination (Join-Path $payload 'Web.config') -Force
+        Set-OpenTimeStampStagedWebSettings -ReleasePath $payload -Mode Anonymous `
+            -EffectiveDataPath 'C:\OpenTimeStampData' -EffectiveAdminHosts @('localhost') `
+            -RequireHttps $true -ApplicationPath '/Scope.Tls'
+        Set-OpenTimeStampStagedWebSettings -ReleasePath $payload -Mode Anonymous `
+            -EffectiveDataPath 'C:\OpenTimeStampData' -EffectiveAdminHosts @('localhost') `
+            -RequireHttps $true -ApplicationPath '/Scope.Tls'
+        [xml]$config = Get-Content -LiteralPath (Join-Path $payload 'Web.config') -Raw
+        $extensions = $config.SelectSingleNode(
+            '/configuration/system.webServer/security/requestFiltering/fileExtensions')
+        Assert-Equal 'false' $extensions.GetAttribute('allowUnlisted') 'Unlisted extensions became allowed.'
+        $allowed = @($extensions.SelectNodes('./add') | ForEach-Object { $_.GetAttribute('fileExtension') })
+        Assert-Equal '.,.Tls' ($allowed -join ',') 'More than the extensionless routes and app suffix are allowed.'
+        $handlers = $config.SelectSingleNode('/configuration/system.webServer/handlers')
+        Assert-Equal 1 @($handlers.SelectNodes('./add')).Count 'The dotted-root exception added request handlers.'
+        Assert-Equal 0 @($config.SelectNodes('/configuration/system.webServer/staticContent/mimeMap')).Count `
+            'The dotted-root exception exposed static content.'
+    }
+
+    Invoke-Test 'Application config limits its request surface and suppresses inherited diagnostics' {
+        [xml]$config = Get-Content -LiteralPath (
+            Join-Path $repositoryRoot 'src\OpenTimeStamp.Web\Web.config') -Raw
+        $filter = $config.SelectSingleNode('/configuration/system.webServer/security/requestFiltering')
+        $extensions = $filter.SelectSingleNode('./fileExtensions')
+        Assert-Equal 'false' $extensions.GetAttribute('allowUnlisted') 'Unlisted file extensions are allowed.'
+        Assert-Equal '.' $extensions.SelectSingleNode('./add').GetAttribute('fileExtension') `
+            'The extensionless endpoint surface is missing.'
+        Assert-Equal 1 @($extensions.SelectNodes('./add')).Count 'A file extension is exposed unnecessarily.'
+        foreach ($name in @('fileExtensions', 'verbs')) {
+            Assert-Equal 1 @($filter.SelectNodes("./$name/clear")).Count `
+                "Inherited $name can conflict with the application allowlist."
+        }
+        $verbs = @($filter.SelectNodes('./verbs/add') | ForEach-Object { $_.GetAttribute('verb') })
+        Assert-Equal 'GET,HEAD,POST' ($verbs -join ',') 'The application permits unexpected HTTP methods.'
+        foreach ($segment in @('web.config', 'bin', 'App_Data', 'App_Code', '.git', '.svn')) {
+            Assert-Equal 1 @($filter.SelectNodes("./hiddenSegments/add[@segment='$segment']")).Count `
+                "Private segment '$segment' is not hidden."
+        }
+        $handlers = $config.SelectSingleNode('/configuration/system.webServer/handlers')
+        Assert-Equal 1 @($handlers.SelectNodes('./clear')).Count 'Inherited handlers are still exposed.'
+        Assert-Equal 1 @($handlers.SelectNodes('./add')).Count 'Unexpected request handlers are exposed.'
+        Assert-Equal 'Read,Script' $handlers.GetAttribute('accessPolicy') 'Native execute access is permitted.'
+        $web = $config.SelectSingleNode('/configuration/system.web')
+        Assert-Equal 'false' $web.SelectSingleNode('./trace').GetAttribute('enabled') 'Tracing is not disabled.'
+        Assert-Equal 'On' $web.SelectSingleNode('./customErrors').GetAttribute('mode') 'ASP.NET diagnostics can leak.'
+        $errors = $config.SelectSingleNode('/configuration/system.webServer/httpErrors')
+        Assert-Equal 'Custom' $errors.GetAttribute('errorMode') 'Native diagnostics can leak to local clients.'
+        Assert-Equal 'Auto' $errors.GetAttribute('existingResponse') 'Safe managed errors cannot bypass IIS replacement.'
+        $key = $web.SelectSingleNode('./machineKey')
+        Assert-Equal 'HMACSHA256' $key.GetAttribute('validation') 'ASP.NET key validation uses a weak algorithm.'
+        foreach ($attribute in @('validationKey', 'decryptionKey')) {
+            Assert-Equal 'AutoGenerate,IsolateApps,IsolateByAppId' $key.GetAttribute($attribute) `
+                'ASP.NET cryptographic keys are not isolated between applications.'
+        }
     }
 
     Invoke-Test 'Private-key helper requires pool identity and broad-ACL override' {

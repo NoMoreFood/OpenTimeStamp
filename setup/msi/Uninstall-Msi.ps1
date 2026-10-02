@@ -21,7 +21,6 @@ if ([string]::IsNullOrWhiteSpace($siteName) -or $siteName.Length -gt 128 -or
 }
 $applicationPath = '/' + $applicationName
 $appPoolName = 'OpenTimeStamp'
-$providerName = 'OpenTimeStamp'
 $commonScript = Join-Path $PSScriptRoot 'deploy\Deployment.Common.ps1'
 if (-not (Test-Path -LiteralPath $commonScript -PathType Leaf)) {
     throw 'The MSI cache is missing its deployment support script.'
@@ -88,28 +87,6 @@ try {
     }
     [void]$site.Applications.Remove($application)
     if ($null -ne $pool) { [void]$manager.ApplicationPools.Remove($pool) }
-
-    $remainingProviderReferences = @(foreach ($candidateSite in @($manager.Sites)) {
-        foreach ($candidateApplication in @($candidateSite.Applications)) {
-            if (([string]$candidateApplication.GetAttributeValue('serviceAutoStartProvider')).Equals(
-                    $providerName, [System.StringComparison]::OrdinalIgnoreCase)) {
-                "$($candidateSite.Name)$($candidateApplication.Path)"
-            }
-        }
-    })
-    if ($remainingProviderReferences.Count -eq 0) {
-        $configuration = $manager.GetApplicationHostConfiguration()
-        $providers = $configuration.GetSection(
-            'system.applicationHost/serviceAutoStartProviders').GetCollection()
-        $matchingProviders = @($providers | Where-Object {
-                ([string]$_.GetAttributeValue('name')).Equals(
-                    $providerName, [System.StringComparison]::OrdinalIgnoreCase)
-            })
-        if ($matchingProviders.Count -gt 1) {
-            throw "IIS contains duplicate service auto-start provider '$providerName' entries."
-        }
-        if ($matchingProviders.Count -eq 1) { [void]$providers.Remove($matchingProviders[0]) }
-    }
 
     $manager.CommitChanges()
 }

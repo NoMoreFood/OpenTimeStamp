@@ -52,6 +52,5 @@ Write-Host "Installing OpenTimeStamp as '$siteName$applicationPath'."
     -SiteName $siteName `
     -ApplicationPath $applicationPath `
     -AppPoolName 'OpenTimeStamp' `
-    -InstallIisFeatures:$false `
     -AllowUnsignedManifest `
     -Confirm:$false

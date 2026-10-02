@@ -35,10 +35,6 @@ param(
     [ValidateSet('Anonymous', 'Windows')]
     [string]$AuthenticationMode = 'Anonymous',
 
-    [bool]$InstallIisFeatures = $true,
-
-    [switch]$RequireHttps,
-
     [ValidatePattern('^[0-9A-Fa-f ]*$')]
     [string]$CertificateThumbprint,
 
@@ -282,8 +278,8 @@ function Set-IisDesiredLocalStateAtomic {
         $ExpectedState,
         [string]$AuthenticationMode,
         $UnsupportedAuthenticationSections,
-        [bool]$SetTlsSettings,
-        [bool]$RequireTls,
+        [uint32]$SslFlags,
+        [uint32]$UploadReadAheadSize,
         [string[]]$AdminIpv4Addresses
     )
 
@@ -317,11 +313,9 @@ function Set-IisDesiredLocalStateAtomic {
         $configuration.GetSection('system.webServer/security/requestFiltering', $AppLocation).GetChildElement(
             'requestLimits').SetAttributeValue('maxAllowedContentLength', 1048576)
         $configuration.GetSection('system.webServer/serverRuntime', $AppLocation).SetAttributeValue(
-            'uploadReadAheadSize', [uint32]0)
-        if ($SetTlsSettings) {
-            $configuration.GetSection('system.webServer/security/access', $AppLocation).SetAttributeValue(
-                'sslFlags', $(if ($RequireTls) { 'Ssl' } else { 'None' }))
-        }
+            'uploadReadAheadSize', $UploadReadAheadSize)
+        $configuration.GetSection('system.webServer/security/access', $AppLocation).SetAttributeValue(
+            'sslFlags', $SslFlags)
         $ipSection = $configuration.GetSection('system.webServer/security/ipSecurity', $AdminLocation)
         $ipSection.SetAttributeValue('allowUnlisted', $false)
         $ipSection.SetAttributeValue('denyAction', 'NotFound')
@@ -353,9 +347,8 @@ function Test-IisDesiredLocalState {
         [string]$AdminLocation,
         [string]$AuthenticationMode,
         $UnsupportedAuthenticationSections,
-        $ExpectedState,
-        [bool]$SetTlsSettings,
-        [bool]$RequireTls,
+        [uint32]$SslFlags,
+        [uint32]$UploadReadAheadSize,
         [string[]]$AdminIpv4Addresses
     )
     $manager = New-Object Microsoft.Web.Administration.ServerManager
@@ -390,23 +383,10 @@ function Test-IisDesiredLocalState {
         if ([uint64]$configuration.GetSection('system.webServer/security/requestFiltering', $AppLocation).GetChildElement(
                 'requestLimits').GetAttributeValue('maxAllowedContentLength') -ne 1048576) { return $false }
         if ([uint32]$configuration.GetSection('system.webServer/serverRuntime', $AppLocation).GetAttributeValue(
-                'uploadReadAheadSize') -ne 0) { return $false }
-        if ($SetTlsSettings) {
-            $expectedSslFlags = if ($RequireTls) { 'Ssl' } else { 'None' }
-            if ((ConvertTo-IisAttributeEffectiveValue -Value ($configuration.GetSection(
-                    'system.webServer/security/access', $AppLocation).GetAttributeValue('sslFlags')) -Schema (
-                    $configuration.GetSection('system.webServer/security/access', $AppLocation).GetAttribute(
-                        'sslFlags').Schema)) -ne $expectedSslFlags) { return $false }
-        }
-        else {
-            $currentState = Get-IisExactLocalState -AppLocation $AppLocation -AdminLocation $AdminLocation `
-                -AuthenticationDefinitions $allAuthenticationSections
-            $trackedTlsSections = @('system.webServer/security/access')
-            $currentTls = @($currentState.Attributes | Where-Object { $trackedTlsSections -contains $_.Section })
-            $expectedTls = @($ExpectedState.Attributes | Where-Object { $trackedTlsSections -contains $_.Section })
-            if (($currentTls | ConvertTo-Json -Depth 5 -Compress) -ne
-                ($expectedTls | ConvertTo-Json -Depth 5 -Compress)) { return $false }
-        }
+                'uploadReadAheadSize') -ne $UploadReadAheadSize) { return $false }
+        if ([uint32]$configuration.GetSection(
+                'system.webServer/security/access', $AppLocation).GetAttributeValue('sslFlags') -ne
+            $SslFlags) { return $false }
         $ipSection = $configuration.GetSection('system.webServer/security/ipSecurity', $AdminLocation)
         if ([bool]$ipSection.GetAttributeValue('allowUnlisted') -or
             (ConvertTo-IisAttributeEffectiveValue -Value $ipSection.GetAttributeValue('denyAction') -Schema (
@@ -428,6 +408,54 @@ function Test-IisDesiredLocalState {
         return (@($actualAddresses | Sort-Object) -join '|') -eq ($expectedAddresses -join '|')
     }
     catch { return $false }
+    finally { $manager.Dispose() }
+}
+
+function Assert-IisApplicationHardening {
+    param([string]$SiteName, [string]$ApplicationPath, [bool]$RequireHttps)
+
+    $manager = New-Object Microsoft.Web.Administration.ServerManager
+    try {
+        # Read effective settings before durable initialization; locked or invalid overrides fail closed.
+        $configuration = $manager.GetWebConfiguration($SiteName, $ApplicationPath)
+        $settings = @(
+            @{ Section = 'system.web/compilation'; Attribute = 'debug'; Value = $false },
+            @{ Section = 'system.web/trace'; Attribute = 'enabled'; Value = $false },
+            @{ Section = 'system.web/httpRuntime'; Attribute = 'enableHeaderChecking'; Value = $true },
+            @{ Section = 'system.web/httpRuntime'; Attribute = 'enableVersionHeader'; Value = $false },
+            @{ Section = 'system.web/httpCookies'; Attribute = 'httpOnlyCookies'; Value = $true },
+            @{ Section = 'system.web/httpCookies'; Attribute = 'requireSSL'; Value = $RequireHttps },
+            @{ Section = 'system.web/machineKey'; Attribute = 'validation'; Value = 'HMACSHA256' },
+            @{ Section = 'system.web/machineKey'; Attribute = 'decryption'; Value = 'Auto' },
+            @{ Section = 'system.web/customErrors'; Attribute = 'mode'; Value = 'On' },
+            @{ Section = 'system.web/sessionState'; Attribute = 'mode'; Value = 'Off' },
+            @{ Section = 'system.webServer/directoryBrowse'; Attribute = 'enabled'; Value = $false },
+            @{ Section = 'system.webServer/httpErrors'; Attribute = 'errorMode'; Value = 'Custom' },
+            @{ Section = 'system.webServer/httpErrors'; Attribute = 'existingResponse'; Value = 'Auto' },
+            @{ Section = 'system.webServer/security/requestFiltering'; Attribute = 'allowDoubleEscaping'; Value = $false },
+            @{ Section = 'system.webServer/security/requestFiltering'; Attribute = 'allowHighBitCharacters'; Value = $false },
+            @{ Section = 'system.webServer/security/requestFiltering'; Attribute = 'removeServerHeader'; Value = $true })
+        foreach ($setting in $settings) {
+            $element = $configuration.GetSection($setting.Section)
+            $value = ConvertTo-IisAttributeEffectiveValue -Value ($element.GetAttributeValue($setting.Attribute)) `
+                -Schema ($element.GetAttribute($setting.Attribute).Schema)
+            if ($value -ne $setting.Value) {
+                throw "The application setting '$($setting.Section)/$($setting.Attribute)' is not hardened."
+            }
+        }
+        $filter = $configuration.GetSection('system.webServer/security/requestFiltering')
+        foreach ($collectionName in @('verbs', 'fileExtensions')) {
+            $element = $filter.GetChildElement($collectionName)
+            if ([bool]$element.GetAttributeValue('allowUnlisted') -or
+                -not [bool]$element.GetAttributeValue('applyToWebDAV')) {
+                throw "The application '$collectionName' request filter is not restrictive."
+            }
+        }
+        if (@($configuration.GetSection('system.webServer/handlers').GetCollection()).Count -ne 1 -or
+            @($configuration.GetSection('system.webServer/staticContent').GetCollection()).Count -ne 0) {
+            throw 'The application exposes unexpected request handlers or static MIME mappings.'
+        }
+    }
     finally { $manager.Dispose() }
 }
 
@@ -506,36 +534,12 @@ function Restore-IisRawAttributeSnapshot {
     }
 }
 
-function Get-IisServiceAutoStartProviderReferencesFromManager {
-    param(
-        $Manager,
-        [string]$ProviderName
-    )
-
-    $references = @(foreach ($site in @($Manager.Sites)) {
-        foreach ($application in @($site.Applications)) {
-            $configuredProvider = [string]$application.GetAttributeValue('serviceAutoStartProvider')
-            if ($configuredProvider.Equals($ProviderName, [System.StringComparison]::OrdinalIgnoreCase)) {
-                "$($site.Name)$($application.Path)"
-            }
-        }
-    })
-    return @($references | Sort-Object -Unique)
-}
-
-function Get-IisAlwaysWarmStateFromManager {
-    param(
-        $Manager,
-        [string]$SiteName,
-        [string]$ApplicationPath,
-        [string]$AppPoolName,
-        [string]$ProviderName
-    )
+function Get-IisApplicationLifecycleStateFromManager {
+    param($Manager, [string]$SiteName, [string]$ApplicationPath, [string]$AppPoolName)
 
     $site = $Manager.Sites[$SiteName]
-    if ($null -eq $site) { throw "IIS site '$SiteName' disappeared." }
     $pool = $Manager.ApplicationPools[$AppPoolName]
-    if ($null -eq $pool) { throw "Application pool '$AppPoolName' disappeared." }
+    if ($null -eq $site -or $null -eq $pool) { throw 'The target IIS site or application pool disappeared.' }
     $application = $site.Applications[$ApplicationPath]
     $document = Read-OpenTimeStampXmlDocument -Path (
         Join-Path $env:WINDIR 'System32\inetsrv\config\applicationHost.config')
@@ -561,26 +565,7 @@ function Get-IisAlwaysWarmStateFromManager {
         }
     }
 
-    $configuration = $Manager.GetApplicationHostConfiguration()
-    $providerCollection = $configuration.GetSection(
-        'system.applicationHost/serviceAutoStartProviders').GetCollection()
-    $providers = @($providerCollection | Where-Object {
-            ([string]$_.GetAttributeValue('name')).Equals(
-                $ProviderName, [System.StringComparison]::OrdinalIgnoreCase)
-        })
-    if ($providers.Count -gt 1) { throw "IIS contains duplicate service auto-start provider '$ProviderName'." }
-    $providerState = if ($providers.Count -eq 0) {
-        [PSCustomObject]@{ Present = $false; Type = $null }
-    }
-    else {
-        [PSCustomObject]@{ Present = $true; Type = [string]$providers[0].GetAttributeValue('type') }
-    }
-
     return [PSCustomObject]@{
-        Site = [PSCustomObject]@{
-            ServerAutoStart = Get-IisRawAttributeSnapshot -Element $site `
-                -Name 'serverAutoStart' -LocalElement $siteNode
-        }
         Pool = [PSCustomObject]@{
             AutoStart = Get-IisRawAttributeSnapshot -Element $pool -Name 'autoStart' -LocalElement $poolNode
             StartMode = Get-IisRawAttributeSnapshot -Element $pool -Name 'startMode' -LocalElement $poolNode
@@ -589,207 +574,137 @@ function Get-IisAlwaysWarmStateFromManager {
             PeriodicRestartTime = Get-IisRawAttributeSnapshot `
                 -Element $pool.Recycling.PeriodicRestart -Name 'time' `
                 -LocalElement ($poolNode.SelectSingleNode('./recycling/periodicRestart'))
+            PeriodicRestartRequests = Get-IisRawAttributeSnapshot `
+                -Element $pool.Recycling.PeriodicRestart -Name 'requests' `
+                -LocalElement ($poolNode.SelectSingleNode('./recycling/periodicRestart'))
+            LogEventOnRecycle = Get-IisRawAttributeSnapshot -Element $pool.Recycling `
+                -Name 'logEventOnRecycle' -LocalElement ($poolNode.SelectSingleNode('./recycling'))
+            RapidFailProtection = Get-IisRawAttributeSnapshot -Element $pool.Failure `
+                -Name 'rapidFailProtection' -LocalElement ($poolNode.SelectSingleNode('./failure'))
+            RapidFailProtectionInterval = Get-IisRawAttributeSnapshot -Element $pool.Failure `
+                -Name 'rapidFailProtectionInterval' -LocalElement ($poolNode.SelectSingleNode('./failure'))
         }
         Application = $applicationState
-        Provider = $providerState
-        ProviderReferences = @(Get-IisServiceAutoStartProviderReferencesFromManager `
-            -Manager $Manager -ProviderName $ProviderName)
     }
 }
 
-function Get-IisAlwaysWarmState {
-    param(
-        [string]$SiteName,
-        [string]$ApplicationPath,
-        [string]$AppPoolName,
-        [string]$ProviderName
-    )
+function Get-IisApplicationLifecycleState {
+    param([string]$SiteName, [string]$ApplicationPath, [string]$AppPoolName)
 
     $manager = New-Object Microsoft.Web.Administration.ServerManager
     try {
-        return Get-IisAlwaysWarmStateFromManager -Manager $manager -SiteName $SiteName `
-            -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName -ProviderName $ProviderName
+        return Get-IisApplicationLifecycleStateFromManager -Manager $manager -SiteName $SiteName `
+            -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName
     }
     finally { $manager.Dispose() }
 }
 
-function Test-IisAlwaysWarmStateEqual {
+function Test-IisApplicationLifecycleStateEqual {
     param($First, $Second)
 
     if ($null -eq $First -or $null -eq $Second) { return $null -eq $First -and $null -eq $Second }
     return ($First | ConvertTo-Json -Depth 8 -Compress) -eq ($Second | ConvertTo-Json -Depth 8 -Compress)
 }
 
-function Test-IisAlwaysWarmPreMutationState {
-    param(
-        $Before,
-        $Current,
-        [bool]$ApplicationExisted,
-        [string]$ApplicationIdentity
-    )
+function Test-IisApplicationLifecyclePreMutationState {
+    param($Before, $Current, [bool]$ApplicationExisted)
 
     if ($ApplicationExisted) {
-        return (Test-IisAlwaysWarmStateEqual -First $Before -Second $Current)
+        return (Test-IisApplicationLifecycleStateEqual -First $Before -Second $Current)
     }
-    $projected = [PSCustomObject]@{
-        Site = $Current.Site
-        Pool = $Current.Pool
-        Application = $Before.Application
-        Provider = $Current.Provider
-        ProviderReferences = @($Current.ProviderReferences | Where-Object { $_ -ne $ApplicationIdentity })
-    }
-    return (Test-IisAlwaysWarmStateEqual -First $Before -Second $projected)
+    $projected = [PSCustomObject]@{ Pool = $Current.Pool; Application = $Before.Application }
+    return (Test-IisApplicationLifecycleStateEqual -First $Before -Second $projected)
 }
 
-function Assert-IisServiceAutoStartProviderCompatible {
-    param(
-        $State,
-        [string]$ProviderName,
-        [string]$ProviderType
-    )
+function Test-IisApplicationLifecycleStateDesired {
+    param($State)
 
-    if ($State.Provider.Present -and
-        -not ([string]$State.Provider.Type).Equals($ProviderType, [System.StringComparison]::Ordinal)) {
-        throw "IIS service auto-start provider '$ProviderName' is already registered with another type."
-    }
-    if (-not $State.Provider.Present -and @($State.ProviderReferences).Count -ne 0) {
-        throw "IIS application(s) reference missing service auto-start provider '$ProviderName'."
-    }
-}
-
-function Test-IisAlwaysWarmStateDesired {
-    param(
-        $State,
-        [string]$ApplicationIdentity,
-        [string]$ProviderName,
-        [string]$ProviderType
-    )
-
-    return $State.Site.ServerAutoStart.EffectiveValue -eq $true -and
-        $State.Pool.AutoStart.EffectiveValue -eq $true -and
-        [string]$State.Pool.StartMode.EffectiveValue -eq 'AlwaysRunning' -and
-        [long]$State.Pool.IdleTimeout.EffectiveValue -eq 0 -and
-        [long]$State.Pool.PeriodicRestartTime.EffectiveValue -eq 0 -and
+    return $State.Pool.AutoStart.EffectiveValue -eq $true -and
+        [string]$State.Pool.StartMode.EffectiveValue -eq 'OnDemand' -and
+        [long]$State.Pool.IdleTimeout.EffectiveValue -eq [TimeSpan]::FromMinutes(20).Ticks -and
+        [long]$State.Pool.PeriodicRestartTime.EffectiveValue -eq [TimeSpan]::FromHours(29).Ticks -and
+        [int]$State.Pool.PeriodicRestartRequests.EffectiveValue -eq 35000 -and
+        [int]$State.Pool.LogEventOnRecycle.EffectiveValue -eq 99 -and
+        $State.Pool.RapidFailProtection.EffectiveValue -eq $true -and
+        [long]$State.Pool.RapidFailProtectionInterval.EffectiveValue -eq [TimeSpan]::FromMinutes(5).Ticks -and
         $State.Application.Present -and
-        $State.Application.ServiceAutoStartEnabled.EffectiveValue -eq $true -and
-        ([string]$State.Application.ServiceAutoStartProvider.EffectiveValue).Equals(
-            $ProviderName, [System.StringComparison]::Ordinal) -and
-        $State.Provider.Present -and
-        ([string]$State.Provider.Type).Equals($ProviderType, [System.StringComparison]::Ordinal) -and
-        @($State.ProviderReferences) -contains $ApplicationIdentity
+        $State.Application.ServiceAutoStartEnabled.EffectiveValue -eq $false -and
+        [string]::IsNullOrEmpty([string]$State.Application.ServiceAutoStartProvider.EffectiveValue)
 }
 
-function Set-IisAlwaysWarmStateAtomic {
-    param(
-        [string]$SiteName,
-        [string]$ApplicationPath,
-        [string]$AppPoolName,
-        [string]$ApplicationIdentity,
-        [string]$ProviderName,
-        [string]$ProviderType,
-        $ExpectedState
-    )
+function Set-IisApplicationLifecycleStateAtomic {
+    param([string]$SiteName, [string]$ApplicationPath, [string]$AppPoolName, $ExpectedState)
 
     $manager = New-Object Microsoft.Web.Administration.ServerManager
     try {
-        $current = Get-IisAlwaysWarmStateFromManager -Manager $manager -SiteName $SiteName `
-            -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName -ProviderName $ProviderName
-        if (-not (Test-IisAlwaysWarmStateEqual -First $current -Second $ExpectedState)) {
-            throw ('IIS always-warm settings changed before the atomic commit; ' +
-                'refusing to overwrite the external change.')
+        $current = Get-IisApplicationLifecycleStateFromManager -Manager $manager -SiteName $SiteName `
+            -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName
+        if (-not (Test-IisApplicationLifecycleStateEqual -First $current -Second $ExpectedState)) {
+            throw 'IIS application lifecycle settings changed before the atomic commit.'
         }
-        Assert-IisServiceAutoStartProviderCompatible -State $current `
-            -ProviderName $ProviderName -ProviderType $ProviderType
-        if (-not $current.Application.Present) { throw "IIS application '$ApplicationIdentity' disappeared." }
-
-        $site = $manager.Sites[$SiteName]
         $pool = $manager.ApplicationPools[$AppPoolName]
-        if ([string]$pool.State -ne 'Stopped') {
-            throw 'The IIS application pool must remain stopped before always-warm activation.'
+        if (-not $current.Application.Present -or [string]$pool.State -ne 'Stopped') {
+            throw 'The target application must exist and its dedicated pool must remain stopped before activation.'
         }
 
-        $configuration = $manager.GetApplicationHostConfiguration()
-        $providerCollection = $configuration.GetSection(
-            'system.applicationHost/serviceAutoStartProviders').GetCollection()
-        if (-not $current.Provider.Present) {
-            $provider = $providerCollection.CreateElement('add')
-            $provider.SetAttributeValue('name', $ProviderName)
-            $provider.SetAttributeValue('type', $ProviderType)
-            [void]$providerCollection.Add($provider)
-        }
-
-        $application = $site.Applications[$ApplicationPath]
-        $site.SetAttributeValue('serverAutoStart', $true)
+        # Limit worker lifetime and log its configured recycling events without altering the parent site.
         $pool.SetAttributeValue('autoStart', $true)
-        $pool.SetAttributeValue('startMode', 'AlwaysRunning')
-        $pool.ProcessModel.SetAttributeValue('idleTimeout', [TimeSpan]::Zero)
-        $pool.Recycling.PeriodicRestart.SetAttributeValue('time', [TimeSpan]::Zero)
-        $application.SetAttributeValue('serviceAutoStartEnabled', $true)
-        $application.SetAttributeValue('serviceAutoStartProvider', $ProviderName)
+        $pool.SetAttributeValue('startMode', 'OnDemand')
+        $pool.ProcessModel.SetAttributeValue('idleTimeout', [TimeSpan]::FromMinutes(20))
+        $pool.Recycling.PeriodicRestart.SetAttributeValue('time', [TimeSpan]::FromHours(29))
+        $pool.Recycling.PeriodicRestart.SetAttributeValue('requests', [uint32]35000)
+        $pool.Recycling.SetAttributeValue('logEventOnRecycle', 'Time,Requests,OnDemand,ConfigChange')
+        $pool.Failure.SetAttributeValue('rapidFailProtection', $true)
+        $pool.Failure.SetAttributeValue('rapidFailProtectionInterval', [TimeSpan]::FromMinutes(5))
+        $application = $manager.Sites[$SiteName].Applications[$ApplicationPath]
+        $application.SetAttributeValue('serviceAutoStartEnabled', $false)
+        $application.SetAttributeValue('serviceAutoStartProvider', '')
         $manager.CommitChanges()
     }
     finally { $manager.Dispose() }
 }
 
-function Restore-IisAlwaysWarmStateAtomic {
+function Restore-IisApplicationLifecycleStateAtomic {
     param(
         [string]$SiteName,
         [string]$ApplicationPath,
         [string]$AppPoolName,
-        [string]$ProviderName,
         $Snapshot,
         $ExpectedCurrentSnapshot
     )
 
     $manager = New-Object Microsoft.Web.Administration.ServerManager
     try {
-        $current = Get-IisAlwaysWarmStateFromManager -Manager $manager -SiteName $SiteName `
-            -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName -ProviderName $ProviderName
-        if (-not (Test-IisAlwaysWarmStateEqual -First $current -Second $ExpectedCurrentSnapshot)) {
-            throw ('IIS always-warm settings changed after installer mutation; ' +
-                'refusing to overwrite the external change.')
+        $current = Get-IisApplicationLifecycleStateFromManager -Manager $manager -SiteName $SiteName `
+            -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName
+        if (-not (Test-IisApplicationLifecycleStateEqual -First $current -Second $ExpectedCurrentSnapshot) -or
+            -not $Snapshot.Application.Present) {
+            throw 'The target IIS application lifecycle settings changed; refusing a blind rollback.'
         }
-        if (-not $Snapshot.Application.Present) {
-            throw 'Exact always-warm rollback requires the pre-mutation IIS application.'
-        }
-
-        $site = $manager.Sites[$SiteName]
         $pool = $manager.ApplicationPools[$AppPoolName]
-        $application = $site.Applications[$ApplicationPath]
-        Restore-IisRawAttributeSnapshot -Element $site -Snapshot $Snapshot.Site.ServerAutoStart
+        $application = $manager.Sites[$SiteName].Applications[$ApplicationPath]
         Restore-IisRawAttributeSnapshot -Element $pool -Snapshot $Snapshot.Pool.AutoStart
         Restore-IisRawAttributeSnapshot -Element $pool -Snapshot $Snapshot.Pool.StartMode
         Restore-IisRawAttributeSnapshot -Element $pool.ProcessModel -Snapshot $Snapshot.Pool.IdleTimeout
         Restore-IisRawAttributeSnapshot `
             -Element $pool.Recycling.PeriodicRestart -Snapshot $Snapshot.Pool.PeriodicRestartTime
         Restore-IisRawAttributeSnapshot `
+            -Element $pool.Recycling.PeriodicRestart -Snapshot $Snapshot.Pool.PeriodicRestartRequests
+        Restore-IisRawAttributeSnapshot -Element $pool.Recycling -Snapshot $Snapshot.Pool.LogEventOnRecycle
+        Restore-IisRawAttributeSnapshot -Element $pool.Failure -Snapshot $Snapshot.Pool.RapidFailProtection
+        Restore-IisRawAttributeSnapshot -Element $pool.Failure -Snapshot $Snapshot.Pool.RapidFailProtectionInterval
+        Restore-IisRawAttributeSnapshot `
             -Element $application -Snapshot $Snapshot.Application.ServiceAutoStartEnabled
         Restore-IisRawAttributeSnapshot `
             -Element $application -Snapshot $Snapshot.Application.ServiceAutoStartProvider
-
-        if (-not $Snapshot.Provider.Present) {
-            $configuration = $manager.GetApplicationHostConfiguration()
-            $providerCollection = $configuration.GetSection(
-                'system.applicationHost/serviceAutoStartProviders').GetCollection()
-            $provider = @($providerCollection | Where-Object {
-                    ([string]$_.GetAttributeValue('name')).Equals(
-                        $ProviderName, [System.StringComparison]::OrdinalIgnoreCase)
-                }) | Select-Object -First 1
-            $references = @(Get-IisServiceAutoStartProviderReferencesFromManager `
-                -Manager $manager -ProviderName $ProviderName)
-            if ($references.Count -ne 0) {
-                throw "IIS service auto-start provider '$ProviderName' acquired another application reference."
-            }
-            if ($null -ne $provider) { [void]$providerCollection.Remove($provider) }
-        }
         $manager.CommitChanges()
     }
     finally { $manager.Dispose() }
 
-    $restored = Get-IisAlwaysWarmState -SiteName $SiteName -ApplicationPath $ApplicationPath `
-        -AppPoolName $AppPoolName -ProviderName $ProviderName
-    if (-not (Test-IisAlwaysWarmStateEqual -First $restored -Second $Snapshot)) {
-        throw 'IIS always-warm rollback did not restore the exact prior local state.'
+    $restored = Get-IisApplicationLifecycleState -SiteName $SiteName -ApplicationPath $ApplicationPath `
+        -AppPoolName $AppPoolName
+    if (-not (Test-IisApplicationLifecycleStateEqual -First $restored -Second $Snapshot)) {
+        throw 'IIS application lifecycle rollback did not restore the exact prior local state.'
     }
 }
 
@@ -1146,48 +1061,6 @@ function Wait-SiteState {
     throw "IIS site '$Name' did not reach state '$Desired' within $Seconds seconds."
 }
 
-function Restore-SiteStateOptimistic {
-    param(
-        [string]$Name,
-        [string]$DesiredState,
-        [string]$ExpectedCurrentState
-    )
-
-    $currentState = Get-SiteStateValue -Name $Name
-    $expectedStates = if ($ExpectedCurrentState -eq 'Starting') {
-        @('Starting', 'Started')
-    }
-    elseif ($ExpectedCurrentState -eq 'Stopping') {
-        @('Stopping', 'Stopped')
-    }
-    else {
-        @($ExpectedCurrentState)
-    }
-    if ($currentState -notin $expectedStates) {
-        throw ("IIS site '$Name' changed from installer-expected '$ExpectedCurrentState' to '$currentState'; " +
-            'refusing to overwrite the external change.')
-    }
-    if ($currentState -eq 'Starting') {
-        Wait-SiteState -Name $Name -Desired Started
-        $currentState = 'Started'
-    }
-    elseif ($currentState -eq 'Stopping') {
-        Wait-SiteState -Name $Name -Desired Stopped
-        $currentState = 'Stopped'
-    }
-    if ($DesiredState -eq 'Started' -or $DesiredState -eq 'Starting') {
-        if ($currentState -ne 'Started') {
-            Start-Website -Name $Name
-            Wait-SiteState -Name $Name -Desired Started
-        }
-    }
-    elseif ($currentState -ne 'Stopped') {
-        Stop-Website -Name $Name
-        Wait-SiteState -Name $Name -Desired Stopped
-    }
-    return Get-SiteStateValue -Name $Name
-}
-
 function Get-IisApplicationPoolAssignments {
     param([string]$Name)
 
@@ -1373,8 +1246,7 @@ function Initialize-DeploymentRootMarker {
 function Get-ValidatedSiteBindingEndpoints {
     param(
         [Parameter(Mandatory = $true)]$Bindings,
-        [Parameter(Mandatory = $true)][string]$SiteName,
-        [switch]$RequireHttps
+        [Parameter(Mandatory = $true)][string]$SiteName
     )
 
     $httpBindings = @($Bindings | Where-Object { $_.protocol -in @('http', 'https') })
@@ -1389,8 +1261,11 @@ function Get-ValidatedSiteBindingEndpoints {
     if ($endpoints.Count -eq 0) {
         throw "IIS site '$SiteName' has no usable HTTP or HTTPS binding: $($errors -join '; ')"
     }
-    if ($RequireHttps -and @($endpoints | Where-Object Scheme -EQ 'https').Count -eq 0) {
-        throw "IIS site '$SiteName' has no usable HTTPS binding: $($errors -join '; ')"
+    foreach ($protocol in @('http', 'https')) {
+        if (@($httpBindings | Where-Object protocol -EQ $protocol).Count -ne 0 -and
+            @($endpoints | Where-Object Scheme -EQ $protocol).Count -eq 0) {
+            throw "IIS site '$SiteName' has no usable $protocol binding: $($errors -join '; ')"
+        }
     }
     return $endpoints
 }
@@ -1466,7 +1341,7 @@ if ([int]$frameworkRelease -lt 528040) {
     throw ".NET Framework 4.8 or later is required; the installed release value is $frameworkRelease."
 }
 
-# Validate the complete payload before installing features, stopping a pool, or
+# Validate the complete payload before stopping a pool or
 # touching deployment/data ACLs.
 $SourcePath = (Resolve-Path -LiteralPath $SourcePath).ProviderPath
 $SourcePath = Get-OpenTimeStampCanonicalDirectoryPath -Path $SourcePath
@@ -1505,15 +1380,6 @@ Assert-OpenTimeStampIisSharedConfigurationDisabled
 Import-Module ServerManager
 $features = @('Web-Asp-Net45', 'Web-Windows-Auth', 'Web-IP-Security', 'Web-Filtering',
     'Web-Http-Errors', 'Web-Http-Logging', 'Web-Scripting-Tools')
-if ($InstallIisFeatures) {
-    if ($PSCmdlet.ShouldProcess($env:COMPUTERNAME, "Install IIS role services: $($features -join ', ')")) {
-        $featureResult = Install-WindowsFeature -Name $features
-        if (-not $featureResult.Success) { throw 'One or more required IIS role services could not be installed.' }
-        if ($featureResult.RestartNeeded -eq 'Yes') {
-            throw 'Windows reports that a restart is required. Restart, then rerun this script to finish deployment.'
-        }
-    }
-}
 $missingFeatures = @($features | Where-Object {
         $feature = Get-WindowsFeature -Name $_ -ErrorAction SilentlyContinue
         $null -eq $feature -or -not $feature.Installed
@@ -1528,8 +1394,7 @@ if (-not (Test-Path -LiteralPath "IIS:\Sites\$SiteName")) {
 }
 
 $siteBindings = @(Get-IisSiteBindings -SiteName $SiteName)
-$siteBindingEndpoints = @(Get-ValidatedSiteBindingEndpoints -Bindings $siteBindings `
-    -SiteName $SiteName -RequireHttps:$RequireHttps)
+$siteBindingEndpoints = @(Get-ValidatedSiteBindingEndpoints -Bindings $siteBindings -SiteName $SiteName)
 
 $applicationName = $ApplicationPath.TrimStart('/')
 $iisApplicationPath = "IIS:\Sites\$SiteName\$applicationName"
@@ -1575,21 +1440,18 @@ if ($applicationExists) {
         throw "The existing application uses shared pool '$existingApplicationPool', which cannot be safely quiesced for state migration: $($unexpectedCurrentPoolAssignments -join ', '). Move OpenTimeStamp to a dedicated pool first."
     }
 }
-if ($applicationExists -and -not $PSBoundParameters.ContainsKey('RequireHttps')) {
-    $manager = New-Object Microsoft.Web.Administration.ServerManager
-    try {
-        $existingSslFlags = [uint32]$manager.GetApplicationHostConfiguration().GetSection(
-            'system.webServer/security/access', $appLocation).GetAttributeValue('sslFlags')
-    }
-    finally { $manager.Dispose() }
+$manager = New-Object Microsoft.Web.Administration.ServerManager
+try {
+    $existingSslFlags = [uint32]$manager.GetApplicationHostConfiguration().GetSection(
+        'system.webServer/security/access', $appLocation).GetAttributeValue('sslFlags')
 }
+finally { $manager.Dispose() }
 
-$effectiveRequireHttps = [bool]$RequireHttps -or
-    ($applicationExists -and -not $PSBoundParameters.ContainsKey('RequireHttps') -and
-        ($existingSslFlags -band 8) -ne 0)
-if ($effectiveRequireHttps -and @($siteBindingEndpoints | Where-Object Scheme -EQ 'https').Count -eq 0) {
-    throw "The existing or requested application policy requires HTTPS, but IIS site '$SiteName' has no usable HTTPS binding."
-}
+$bindingProtocolPolicy = Get-OpenTimeStampBindingProtocolPolicy -Endpoints $siteBindingEndpoints `
+    -ExistingSslFlags $existingSslFlags
+$effectiveRequireHttps = $bindingProtocolPolicy.RequireHttps
+$requestedSslFlags = $bindingProtocolPolicy.SslFlags
+$uploadReadAheadSize = $bindingProtocolPolicy.UploadReadAheadSize
 
 if ($applicationExists -and -not $PSBoundParameters.ContainsKey('PhysicalPath')) {
     $parent = Split-Path -Parent $existingApplicationPhysicalPath
@@ -1692,8 +1554,6 @@ if ((Test-OpenTimeStampPathContained -Parent $releasesPath -Child $runtimeDataPa
 }
 
 $targetApplicationIdentity = "$SiteName$ApplicationPath"
-$serviceAutoStartProviderName = 'OpenTimeStamp'
-$serviceAutoStartProviderType = 'OpenTimeStamp.Web.OpenTimeStampPreloadClient, OpenTimeStamp.Web'
 Assert-OpenTimeStampExclusiveIisStorage -TargetApplication $targetApplicationIdentity `
     -DeploymentRoot $PhysicalPath -DataPath $runtimeDataPath
 
@@ -1776,7 +1636,9 @@ if ($WhatIfPreference) {
         PlannedReleasePath = $releasePath
         DataPath = $runtimeDataPath
         AuthenticationMode = $AuthenticationMode
-        AlwaysWarm = $true
+        IdleTimeoutMinutes = 20
+        Schemes = $bindingProtocolPolicy.Schemes
+        RequireHttps = $effectiveRequireHttps
         WhatIf = $true
     })
     return
@@ -1816,7 +1678,8 @@ try {
     $stageOwnedByInstaller = $true
     Set-OpenTimeStampStagedWebSettings -ReleasePath $stagePath -Mode $AuthenticationMode `
         -EffectiveDataPath $runtimeDataPath -EffectiveAdminHosts $effectiveAdminHostNames `
-        -ExistingSettings $existingWebSettings -RequireHttps $effectiveRequireHttps
+        -ExistingSettings $existingWebSettings -RequireHttps $effectiveRequireHttps `
+        -ApplicationPath $ApplicationPath
     New-OpenTimeStampDeploymentManifest -PayloadPath $stagePath -ReleaseId ([string]$manifest.ReleaseId) | Out-Null
     Assert-OpenTimeStampPublishedPayload -PayloadPath $stagePath | Out-Null
     Set-OpenTimeStampRestrictedDirectoryAcl -Path $stagePath -ApplicationPoolSid $poolSid `
@@ -1841,10 +1704,8 @@ try {
         $initialSiteState = 'Stopped'
     }
     $installerExpectedSiteState = $initialSiteState
-    $iisWarmStateBefore = Get-IisAlwaysWarmState -SiteName $SiteName -ApplicationPath $ApplicationPath `
-        -AppPoolName $AppPoolName -ProviderName $serviceAutoStartProviderName
-    Assert-IisServiceAutoStartProviderCompatible -State $iisWarmStateBefore `
-        -ProviderName $serviceAutoStartProviderName -ProviderType $serviceAutoStartProviderType
+    $iisLifecycleStateBefore = Get-IisApplicationLifecycleState -SiteName $SiteName -ApplicationPath $ApplicationPath `
+        -AppPoolName $AppPoolName
     $deploymentSucceeded = $false
     $applicationPointerChanged = $false
     $newApplicationCreated = $false
@@ -1862,10 +1723,10 @@ try {
     $iisConfigurationChanged = $false
     $iisLocalStateRestored = $false
     $iisLocalStateApplied = $null
-    $iisWarmConfigurationChanged = $false
-    $iisWarmStateRestored = $true
-    $iisWarmStatePreMutation = $null
-    $iisWarmStateApplied = $null
+    $iisLifecycleConfigurationChanged = $false
+    $iisLifecycleStateRestored = $true
+    $iisLifecycleStatePreMutation = $null
+    $iisLifecycleStateApplied = $null
     $dataPathExistedBefore = Test-Path -LiteralPath $runtimeDataPath -PathType Container
     $physicalPathExistedBefore = Test-Path -LiteralPath $PhysicalPath -PathType Container
     $dataAclSnapshotBefore = if ($dataPathExistedBefore) {
@@ -1955,10 +1816,10 @@ try {
     if ($currentSiteState -ne $initialSiteState) {
         throw "IIS site '$SiteName' changed after preflight from '$initialSiteState' to '$currentSiteState'."
     }
-    $currentWarmState = Get-IisAlwaysWarmState -SiteName $SiteName -ApplicationPath $ApplicationPath `
-        -AppPoolName $AppPoolName -ProviderName $serviceAutoStartProviderName
-    if (-not (Test-IisAlwaysWarmStateEqual -First $currentWarmState -Second $iisWarmStateBefore)) {
-        throw 'IIS always-warm settings changed after preflight; refusing to absorb the external change.'
+    $currentLifecycleState = Get-IisApplicationLifecycleState -SiteName $SiteName -ApplicationPath $ApplicationPath `
+        -AppPoolName $AppPoolName
+    if (-not (Test-IisApplicationLifecycleStateEqual -First $currentLifecycleState -Second $iisLifecycleStateBefore)) {
+        throw 'IIS application lifecycle settings changed after preflight; refusing to absorb the external change.'
     }
     foreach ($pool in @($initialPoolStates.Keys)) {
         $currentPoolState = Get-PoolStateValue -Name $pool
@@ -2102,20 +1963,18 @@ try {
             }
         }
     }
-    $setTlsSettings = $PSBoundParameters.ContainsKey('RequireHttps') -or -not $applicationExists
     try {
         Set-IisDesiredLocalStateAtomic -AppLocation $appLocation -AdminLocation $adminLocation `
             -ExpectedState $iisLocalStateBefore -AuthenticationMode $AuthenticationMode `
             -UnsupportedAuthenticationSections $unsupportedAuthenticationSections `
-            -SetTlsSettings:$setTlsSettings -RequireTls ([bool]$RequireHttps) `
+            -SslFlags $requestedSslFlags -UploadReadAheadSize $uploadReadAheadSize `
             -AdminIpv4Addresses $adminIpv4Addresses
         $observedIisLocalState = Get-IisExactLocalState -AppLocation $appLocation -AdminLocation $adminLocation `
             -AuthenticationDefinitions $allAuthenticationSections
         if (-not (Test-IisDesiredLocalState -AppLocation $appLocation -AdminLocation $adminLocation `
                 -AuthenticationMode $AuthenticationMode `
                 -UnsupportedAuthenticationSections $unsupportedAuthenticationSections `
-                -ExpectedState $iisLocalStateBefore `
-                -SetTlsSettings:$setTlsSettings -RequireTls ([bool]$RequireHttps) `
+                -SslFlags $requestedSslFlags -UploadReadAheadSize $uploadReadAheadSize `
                 -AdminIpv4Addresses $adminIpv4Addresses)) {
             throw 'The atomic IIS commit did not apply the complete desired local state.'
         }
@@ -2134,8 +1993,7 @@ try {
             elseif (Test-IisDesiredLocalState -AppLocation $appLocation -AdminLocation $adminLocation `
                     -AuthenticationMode $AuthenticationMode `
                     -UnsupportedAuthenticationSections $unsupportedAuthenticationSections `
-                    -ExpectedState $iisLocalStateBefore `
-                    -SetTlsSettings:$setTlsSettings -RequireTls ([bool]$RequireHttps) `
+                    -SslFlags $requestedSslFlags -UploadReadAheadSize $uploadReadAheadSize `
                     -AdminIpv4Addresses $adminIpv4Addresses) {
                 $iisLocalStateApplied = $observedIisLocalState
             }
@@ -2145,19 +2003,17 @@ try {
         throw $iisMutationError
     }
 
-    $iisWarmStatePreMutation = Get-IisAlwaysWarmState -SiteName $SiteName `
-        -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName `
-        -ProviderName $serviceAutoStartProviderName
-    if (-not (Test-IisAlwaysWarmPreMutationState -Before $iisWarmStateBefore `
-            -Current $iisWarmStatePreMutation -ApplicationExisted $applicationExists `
-            -ApplicationIdentity $targetApplicationIdentity)) {
-        throw 'IIS always-warm settings changed between application selection and the atomic commit.'
+    $iisLifecycleStatePreMutation = Get-IisApplicationLifecycleState -SiteName $SiteName `
+        -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName
+    if (-not (Test-IisApplicationLifecyclePreMutationState -Before $iisLifecycleStateBefore `
+            -Current $iisLifecycleStatePreMutation -ApplicationExisted $applicationExists)) {
+        throw 'IIS application lifecycle settings changed between application selection and the atomic commit.'
     }
-    Assert-IisServiceAutoStartProviderCompatible -State $iisWarmStatePreMutation `
-        -ProviderName $serviceAutoStartProviderName -ProviderType $serviceAutoStartProviderType
 
-    # This durable commit intentionally precedes always-warm activation because
-    # setting AlwaysRunning can cause WAS to load the service auto-start provider.
+    Assert-IisApplicationHardening -SiteName $SiteName -ApplicationPath $ApplicationPath `
+        -RequireHttps $effectiveRequireHttps
+
+    # Initialize durable state before allowing the dedicated pool to serve requests.
     # OTS1 -> OTS2 is never rolled back to a lagging backup.
     $currentDataClassification = Get-OpenTimeStampDataDirectoryClassification -Path $runtimeDataPath
     $newMarkerWithoutPriorIssuanceState = [bool]$dataInitialization.MarkerCreated -and
@@ -2175,7 +2031,11 @@ try {
         -DeploymentRoot $PhysicalPath -DataPath $runtimeDataPath
     $commitSiteBindings = @(Get-IisSiteBindings -SiteName $SiteName)
     $committedSiteBindingEndpoints = @(Get-ValidatedSiteBindingEndpoints -Bindings $commitSiteBindings `
-        -SiteName $SiteName -RequireHttps:$effectiveRequireHttps)
+        -SiteName $SiteName)
+    $committedBindingProtocolPolicy = Get-OpenTimeStampBindingProtocolPolicy -Endpoints $committedSiteBindingEndpoints
+    if (($committedBindingProtocolPolicy.Schemes -join ',') -ne ($bindingProtocolPolicy.Schemes -join ',')) {
+        throw 'IIS site HTTP/HTTPS binding protocols changed during deployment. Retry with the current bindings.'
+    }
     $commitIisLocalState = Get-IisExactLocalState -AppLocation $appLocation -AdminLocation $adminLocation `
         -AuthenticationDefinitions $allAuthenticationSections
     if ($null -eq $iisLocalStateApplied -or
@@ -2183,11 +2043,10 @@ try {
         ($iisLocalStateApplied | ConvertTo-Json -Depth 8 -Compress)) {
         throw 'IIS local configuration changed before issuance commit.'
     }
-    $commitWarmState = Get-IisAlwaysWarmState -SiteName $SiteName `
-        -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName `
-        -ProviderName $serviceAutoStartProviderName
-    if (-not (Test-IisAlwaysWarmStateEqual -First $commitWarmState -Second $iisWarmStatePreMutation)) {
-        throw 'IIS always-warm configuration changed before issuance initialization.'
+    $commitLifecycleState = Get-IisApplicationLifecycleState -SiteName $SiteName `
+        -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName
+    if (-not (Test-IisApplicationLifecycleStateEqual -First $commitLifecycleState -Second $iisLifecycleStatePreMutation)) {
+        throw 'IIS application lifecycle configuration changed before issuance initialization.'
     }
     $commitSiteState = Get-SiteStateValue -Name $SiteName
     if ($commitSiteState -ne $installerExpectedSiteState) {
@@ -2227,28 +2086,24 @@ try {
             (Test-IssuanceStateHasAuthenticatedRuntimeEvidence -EffectiveDataPath $runtimeDataPath)
     }
 
-    # AlwaysRunning can invoke the service auto-start provider as soon as IIS
-    # commits it, so enable the complete warm state only after issuance is durable.
-    $activationWarmState = Get-IisAlwaysWarmState -SiteName $SiteName `
-        -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName `
-        -ProviderName $serviceAutoStartProviderName
-    if (-not (Test-IisAlwaysWarmStateEqual -First $activationWarmState -Second $iisWarmStatePreMutation)) {
-        throw 'IIS always-warm configuration changed after issuance initialization.'
+    # Commit the complete application lifecycle policy only after issuance state is durable.
+    $activationLifecycleState = Get-IisApplicationLifecycleState -SiteName $SiteName `
+        -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName
+    if (-not (Test-IisApplicationLifecycleStateEqual -First $activationLifecycleState -Second $iisLifecycleStatePreMutation)) {
+        throw 'IIS application lifecycle configuration changed after issuance initialization.'
     }
     $activationSiteState = Get-SiteStateValue -Name $SiteName
     if ($activationSiteState -ne $installerExpectedSiteState) {
-        throw "IIS site '$SiteName' changed to '$activationSiteState' before always-warm activation."
+        throw "IIS site '$SiteName' changed to '$activationSiteState' before application lifecycle activation."
     }
-    Assert-IisServiceAutoStartProviderCompatible -State $activationWarmState `
-        -ProviderName $serviceAutoStartProviderName -ProviderType $serviceAutoStartProviderType
     if (-not (Test-IisApplicationMatchesSelection -Path $iisApplicationPath `
             -PhysicalPath $releasePath -ApplicationPool $AppPoolName)) {
-        throw 'The target IIS application changed before always-warm activation.'
+        throw 'The target IIS application changed before application lifecycle activation.'
     }
     $activationPoolSettings = Get-IisApplicationPoolSettingsSnapshot -Path $poolPath
     if (-not (Test-IisApplicationPoolSettingsEqual `
             -First $activationPoolSettings -Second $targetPoolAppliedSettings)) {
-        throw "Application pool '$AppPoolName' settings changed before always-warm activation."
+        throw "Application pool '$AppPoolName' settings changed before application lifecycle activation."
     }
     foreach ($poolName in @($existingApplicationPool, $AppPoolName) |
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique) {
@@ -2256,65 +2111,49 @@ try {
         $unexpectedActivationPoolAssignments = @($activationPoolAssignments |
             Where-Object { $_ -ne $targetApplicationIdentity })
         if ($unexpectedActivationPoolAssignments.Count -ne 0) {
-            throw ("Application pool '$poolName' acquired another assignment before always-warm activation: " +
+            throw ("Application pool '$poolName' acquired another assignment before application lifecycle activation: " +
                 "$($unexpectedActivationPoolAssignments -join ', ').")
         }
     }
 
-    $iisWarmConfigurationChanged = $true
+    $iisLifecycleConfigurationChanged = $true
     try {
-        Set-IisAlwaysWarmStateAtomic -SiteName $SiteName -ApplicationPath $ApplicationPath `
-            -AppPoolName $AppPoolName -ApplicationIdentity $targetApplicationIdentity `
-            -ProviderName $serviceAutoStartProviderName -ProviderType $serviceAutoStartProviderType `
-            -ExpectedState $iisWarmStatePreMutation
+        Set-IisApplicationLifecycleStateAtomic -SiteName $SiteName -ApplicationPath $ApplicationPath `
+            -AppPoolName $AppPoolName -ExpectedState $iisLifecycleStatePreMutation
     }
     catch {
-        $warmMutationError = $_
+        $lifecycleMutationError = $_
         try {
-            $observedWarmState = Get-IisAlwaysWarmState -SiteName $SiteName `
-                -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName `
-                -ProviderName $serviceAutoStartProviderName
-            if (Test-IisAlwaysWarmStateEqual -First $observedWarmState -Second $iisWarmStatePreMutation) {
-                $iisWarmConfigurationChanged = $false
-                $iisWarmStateApplied = $iisWarmStatePreMutation
+            $observedLifecycleState = Get-IisApplicationLifecycleState -SiteName $SiteName `
+                -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName
+            if (Test-IisApplicationLifecycleStateEqual -First $observedLifecycleState -Second $iisLifecycleStatePreMutation) {
+                $iisLifecycleConfigurationChanged = $false
+                $iisLifecycleStateApplied = $iisLifecycleStatePreMutation
             }
-            elseif (Test-IisAlwaysWarmStateDesired -State $observedWarmState `
-                    -ApplicationIdentity $targetApplicationIdentity `
-                    -ProviderName $serviceAutoStartProviderName -ProviderType $serviceAutoStartProviderType) {
-                $iisWarmStateApplied = $observedWarmState
+            elseif (Test-IisApplicationLifecycleStateDesired -State $observedLifecycleState) {
+                $iisLifecycleStateApplied = $observedLifecycleState
             }
-            else { $iisWarmStateApplied = $null }
+            else { $iisLifecycleStateApplied = $null }
         }
-        catch { $iisWarmStateApplied = $null }
-        throw $warmMutationError
+        catch { $iisLifecycleStateApplied = $null }
+        throw $lifecycleMutationError
     }
-    $observedWarmState = Get-IisAlwaysWarmState -SiteName $SiteName `
-        -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName `
-        -ProviderName $serviceAutoStartProviderName
-    if (-not (Test-IisAlwaysWarmStateDesired -State $observedWarmState `
-            -ApplicationIdentity $targetApplicationIdentity `
-            -ProviderName $serviceAutoStartProviderName -ProviderType $serviceAutoStartProviderType)) {
-        throw 'The atomic IIS commit did not apply the complete always-warm state.'
+    $observedLifecycleState = Get-IisApplicationLifecycleState -SiteName $SiteName `
+        -ApplicationPath $ApplicationPath -AppPoolName $AppPoolName
+    if (-not (Test-IisApplicationLifecycleStateDesired -State $observedLifecycleState)) {
+        throw 'The atomic IIS commit did not apply the complete application lifecycle state.'
     }
-    $iisWarmStateApplied = $observedWarmState
+    $iisLifecycleStateApplied = $observedLifecycleState
 
-    # A dynamic AlwaysRunning commit may start the site or pool. Issuance is
-    # safe now; retain any site activation and quiesce the dedicated pool once
-    # more before deliberate startup.
-    $warmSiteState = Get-SiteStateValue -Name $SiteName
-    if ($warmSiteState -ne $installerExpectedSiteState -and
-        $installerExpectedSiteState -eq 'Stopped' -and $warmSiteState -in @('Started', 'Starting')) {
-        $installerExpectedSiteState = $warmSiteState
+    if ((Get-SiteStateValue -Name $SiteName) -ne $installerExpectedSiteState) {
+        throw "The parent IIS site '$SiteName' changed during application activation."
     }
-    elseif ($warmSiteState -ne $installerExpectedSiteState) {
-        throw "Always-warm configuration left IIS site '$SiteName' in unexpected state '$warmSiteState'."
-    }
-    $warmPoolState = Get-PoolStateValue -Name $AppPoolName
-    if ($warmPoolState -ne 'Stopped') {
-        if ($warmPoolState -notin @('Started', 'Starting')) {
-            throw "Always-warm configuration left application pool '$AppPoolName' in unexpected state '$warmPoolState'."
+    $activatedPoolState = Get-PoolStateValue -Name $AppPoolName
+    if ($activatedPoolState -ne 'Stopped') {
+        if ($activatedPoolState -notin @('Started', 'Starting')) {
+            throw "Application lifecycle configuration left the pool '$AppPoolName' in unexpected state '$activatedPoolState'."
         }
-        $installerExpectedPoolStates[$AppPoolName] = $warmPoolState
+        $installerExpectedPoolStates[$AppPoolName] = $activatedPoolState
         try {
             Stop-PoolForDeployment -Name $AppPoolName
             $installerExpectedPoolStates[$AppPoolName] = 'Stopped'
@@ -2343,17 +2182,6 @@ try {
     if ((Get-SiteStateValue -Name $SiteName) -ne $installerExpectedSiteState) {
         throw "IIS site '$SiteName' changed before the committed application could be started."
     }
-    try {
-        $installerExpectedSiteState = Restore-SiteStateOptimistic -Name $SiteName `
-            -DesiredState Started -ExpectedCurrentState $installerExpectedSiteState
-    }
-    catch {
-        $observedSiteState = Get-SiteStateValue -Name $SiteName
-        if ($installerExpectedSiteState -eq 'Stopped' -and $observedSiteState -in @('Started', 'Starting')) {
-            $installerExpectedSiteState = $observedSiteState
-        }
-        throw
-    }
     if ($applicationExists -and $existingApplicationPool -ne $AppPoolName) {
         $installerExpectedPoolStates[$existingApplicationPool] = Restore-PoolStateOptimistic `
             -Name $existingApplicationPool -InitialState $initialPoolStates[$existingApplicationPool] `
@@ -2365,20 +2193,7 @@ try {
 catch {
     $caughtError = $_
     $activationBoundaryQuiesced = $true
-    if ($iisWarmConfigurationChanged) {
-        $failedSiteState = Get-SiteStateValue -Name $SiteName
-        if ($initialSiteState -eq 'Stopped' -and $failedSiteState -in @('Started', 'Starting', 'Stopping')) {
-            try {
-                $installerExpectedSiteState = $failedSiteState
-                $installerExpectedSiteState = Restore-SiteStateOptimistic -Name $SiteName `
-                    -DesiredState $initialSiteState -ExpectedCurrentState $installerExpectedSiteState
-            }
-            catch {
-                $installerExpectedSiteState = Get-SiteStateValue -Name $SiteName
-                Write-Warning ("Installer-initiated IIS site transition for '$SiteName' could not be restored: " +
-                    $_.Exception.Message)
-            }
-        }
+    if ($iisLifecycleConfigurationChanged) {
         try {
             $failedPoolState = Get-PoolStateValue -Name $AppPoolName
             if ($failedPoolState -eq 'Absent') { throw "Application pool '$AppPoolName' disappeared." }
@@ -2391,31 +2206,31 @@ catch {
         catch {
             $activationBoundaryQuiesced = $false
             $installerExpectedPoolStates[$AppPoolName] = Get-PoolStateValue -Name $AppPoolName
-            Write-Warning ("Application pool '$AppPoolName' could not be quiesced after always-warm failure: " +
+            Write-Warning ("Application pool '$AppPoolName' could not be quiesced after application lifecycle failure: " +
                 $_.Exception.Message)
         }
     }
     $oldApplicationSelectionRestored = $applicationExists -and -not $applicationPointerChanged
-    if ($iisWarmConfigurationChanged -and -not $issuanceMigrationCommitted) {
-        $iisWarmStateRestored = $false
+    if ($iisLifecycleConfigurationChanged -and -not $issuanceMigrationCommitted) {
+        $iisLifecycleStateRestored = $false
         if (-not $activationBoundaryQuiesced) {
-            Write-Warning 'Exact IIS always-warm rollback was suppressed because activation could not be quiesced.'
+            Write-Warning 'Exact IIS application lifecycle rollback was suppressed because activation could not be quiesced.'
         }
-        elseif ($null -eq $iisWarmStateApplied -or $null -eq $iisWarmStatePreMutation) {
-            Write-Warning ('IIS always-warm mutation failed before exact before/applied snapshots were captured; ' +
+        elseif ($null -eq $iisLifecycleStateApplied -or $null -eq $iisLifecycleStatePreMutation) {
+            Write-Warning ('IIS application lifecycle mutation failed before exact before/applied snapshots were captured; ' +
                 'refusing a blind rollback.')
         }
         else {
             try {
-                Restore-IisAlwaysWarmStateAtomic -SiteName $SiteName -ApplicationPath $ApplicationPath `
-                    -AppPoolName $AppPoolName -ProviderName $serviceAutoStartProviderName `
-                    -Snapshot $iisWarmStatePreMutation -ExpectedCurrentSnapshot $iisWarmStateApplied
-                $iisWarmStateRestored = $true
+                Restore-IisApplicationLifecycleStateAtomic -SiteName $SiteName -ApplicationPath $ApplicationPath `
+                    -AppPoolName $AppPoolName `
+                    -Snapshot $iisLifecycleStatePreMutation -ExpectedCurrentSnapshot $iisLifecycleStateApplied
+                $iisLifecycleStateRestored = $true
             }
-            catch { Write-Warning "Exact IIS always-warm rollback failed closed: $($_.Exception.Message)" }
+            catch { Write-Warning "Exact IIS application lifecycle rollback failed closed: $($_.Exception.Message)" }
         }
     }
-    if ($applicationPointerChanged -and -not $issuanceMigrationCommitted -and $iisWarmStateRestored) {
+    if ($applicationPointerChanged -and -not $issuanceMigrationCommitted -and $iisLifecycleStateRestored) {
         if ($newApplicationCreated) {
             try {
                 $applicationPresent = Test-Path -LiteralPath $iisApplicationPath
@@ -2504,14 +2319,14 @@ catch {
         }
     }
     elseif ($applicationPointerChanged -and -not $issuanceMigrationCommitted) {
-        Write-Warning ('The IIS application selection was preserved because always-warm configuration could not ' +
+        Write-Warning ('The IIS application selection was preserved because application lifecycle configuration could not ' +
             'be restored exactly.')
     }
     elseif ($applicationPointerChanged) {
         Write-Warning 'The issuance store is now OTS2. Binary rollback was suppressed because the prior release cannot safely read authenticated state; the new release remains selected.'
     }
 
-    if (-not $applicationExists -and -not $issuanceMigrationCommitted -and $iisWarmStateRestored -and
+    if (-not $applicationExists -and -not $issuanceMigrationCommitted -and $iisLifecycleStateRestored -and
         (Test-Path -LiteralPath $iisApplicationPath)) {
         # New-WebApplication can fail after apphost.config has been changed but
         # before the cmdlet returns, so detect and remove that partial creation.
@@ -2705,7 +2520,7 @@ finally {
         # critical rollback cannot be verified, fail closed with workers stopped.
         $criticalRollbackVerified = $newReleaseIsUnselected -and
             (-not $iisConfigurationChanged -or $iisLocalStateRestored) -and
-            $iisWarmStateRestored -and
+            $iisLifecycleStateRestored -and
             $dataAclRollbackVerified -and $deploymentRootAclRollbackVerified -and
             $privateKeyAclRollbackVerified -and $poolSettingsRollbackVerified
         if (-not $issuanceMigrationCommitted -and $criticalRollbackVerified -and $createdTargetPool -and
@@ -2728,12 +2543,6 @@ finally {
             catch { Write-Warning "New application pool '$AppPoolName' could not be removed after rollback: $($_.Exception.Message)" }
         }
         if ($issuanceMigrationCommitted -or $criticalRollbackVerified) {
-            try {
-                $desiredSiteState = $initialSiteState
-                $installerExpectedSiteState = Restore-SiteStateOptimistic -Name $SiteName `
-                    -DesiredState $desiredSiteState -ExpectedCurrentState $installerExpectedSiteState
-            }
-            catch { Write-Warning "IIS site '$SiteName' could not be restored: $($_.Exception.Message)" }
             foreach ($pool in @($initialPoolStates.Keys)) {
                 try {
                     if ($issuanceMigrationCommitted -and $pool -eq $AppPoolName) {
@@ -2779,17 +2588,7 @@ try {
 }
 catch { Write-Warning "Release retention could not be completed: $($_.Exception.Message)" }
 
-$resultEndpoint = if ($effectiveRequireHttps) {
-    $committedSiteBindingEndpoints | Where-Object Scheme -EQ 'https' | Select-Object -First 1
-}
-else {
-    $selected = $committedSiteBindingEndpoints | Where-Object Scheme -EQ 'http' | Select-Object -First 1
-    if ($null -eq $selected) {
-        $selected = $committedSiteBindingEndpoints | Where-Object Scheme -EQ 'https' | Select-Object -First 1
-    }
-    $selected
-}
-$scheme = $resultEndpoint.Scheme
+$resultEndpoint = $committedSiteBindingEndpoints | Sort-Object Scheme -Descending | Select-Object -First 1
 [PSCustomObject]@{
     Application = "$SiteName$ApplicationPath"
     ApplicationPool = $AppPoolName
@@ -2800,14 +2599,19 @@ $scheme = $resultEndpoint.Scheme
     RemovedReleaseCount = $removedReleases.Count
     DataPath = $runtimeDataPath
     AuthenticationMode = $AuthenticationMode
-    AlwaysWarm = $true
+    IdleTimeoutMinutes = 20
     AdminHostNames = $effectiveAdminHostNames -join ','
     Rfc3161Path = "$ApplicationPath/timestamp/rfc3161"
     AuthenticodePath = "$ApplicationPath/timestamp/authenticode"
     AdminPath = "$ApplicationPath/admin"
     HealthPath = "$ApplicationPath/health"
-    Scheme = $scheme
+    Scheme = $resultEndpoint.Scheme
+    Schemes = $bindingProtocolPolicy.Schemes
+    RequireHttps = $effectiveRequireHttps
     BaseUrl = $resultEndpoint.BaseUrl.TrimEnd('/') + $ApplicationPath
+    BaseUrls = @($committedSiteBindingEndpoints | ForEach-Object {
+        $_.BaseUrl.TrimEnd('/') + $ApplicationPath
+    } | Sort-Object -Unique)
 }
 }
 finally {
