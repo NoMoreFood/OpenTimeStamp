@@ -119,6 +119,9 @@ public sealed class ServiceConfiguration
     [DataMember(Order = 25)]
     public bool PruneAuditLogs { get; set; }
 
+    [DataMember(Order = 26)]
+    public bool WriteWindowsEventLog { get; set; }
+
     public bool UsesAutomaticCertificateSelection =>
         string.Equals(CertificateSelectionMode, AutomaticCertificateSelection, StringComparison.OrdinalIgnoreCase);
 

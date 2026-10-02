@@ -1389,6 +1389,7 @@ if ($missingFeatures.Count -ne 0) {
 }
 
 Import-Module WebAdministration
+Add-Type -Path (Join-Path $env:WINDIR 'System32\inetsrv\Microsoft.Web.Administration.dll')
 if (-not (Test-Path -LiteralPath "IIS:\Sites\$SiteName")) {
     throw "The IIS site '$SiteName' does not exist. Create its bindings and TLS certificate before installing this application."
 }
@@ -2581,6 +2582,14 @@ if ($null -ne $caughtError) {
     throw $caughtError
 }
 
+# Optional Event Viewer delivery must not roll back a working timestamp service.
+$eventLogRegistered = $false
+try {
+    Initialize-OpenTimeStampEventLog
+    $eventLogRegistered = $true
+}
+catch { Write-Warning "Optional Event Viewer logging could not be registered: $($_.Exception.Message)" }
+
 $removedReleases = @()
 try {
     $removedReleases = @(Remove-OpenTimeStampObsoleteReleases -ReleasesPath $releasesPath `
@@ -2598,6 +2607,8 @@ $resultEndpoint = $committedSiteBindingEndpoints | Sort-Object Scheme -Descendin
     ManifestSignerThumbprint = if ($null -eq $manifestSignature) { $null } else { $manifestSignature.SignerThumbprint }
     RemovedReleaseCount = $removedReleases.Count
     DataPath = $runtimeDataPath
+    WindowsEventLog = 'OpenTimeStamp'
+    WindowsEventLogRegistered = $eventLogRegistered
     AuthenticationMode = $AuthenticationMode
     IdleTimeoutMinutes = 20
     AdminHostNames = $effectiveAdminHostNames -join ','

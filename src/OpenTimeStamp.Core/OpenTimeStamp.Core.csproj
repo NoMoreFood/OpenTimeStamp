@@ -40,6 +40,7 @@
     <Compile Include="Asn1\DerReader.cs" />
     <Compile Include="Asn1\DerWriter.cs" />
     <Compile Include="Audit\AuditLogger.cs" />
+    <Compile Include="Audit\DiagnosticLogger.cs" />
     <Compile Include="Configuration\ConfigurationStore.cs" />
     <Compile Include="Configuration\ServiceConfiguration.cs" />
     <Compile Include="Cryptography\CertificateRepository.cs" />

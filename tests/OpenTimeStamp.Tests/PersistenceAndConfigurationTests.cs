@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Security.AccessControl;
@@ -47,6 +48,9 @@ internal static class PersistenceAndConfigurationTests
         tests.Add(new TestCase("Audit filesystem lock coordinates external handles", AuditFilesystemLock));
         tests.Add(new TestCase("Audit retention continues and retries at a bounded cadence", AuditRetentionRetryIsBounded));
         tests.Add(new TestCase("Audit rollover and pruning follow configuration", AuditRolloverAndPruning));
+        tests.Add(new TestCase("Audit observers cannot change durable commit outcomes", AuditObserversAreNonBlocking));
+        tests.Add(new TestCase("Diagnostic files and optional Event Viewer delivery fail independently",
+            DiagnosticDeliveryIsIndependent));
     }
 
     private static void FirstAllocationWithTolerance()
@@ -681,6 +685,7 @@ internal static class PersistenceAndConfigurationTests
             configuration.LogRetentionDays = 365;
             configuration.LogRolloverInterval = " Weekly ";
             configuration.PruneAuditLogs = false;
+            configuration.WriteWindowsEventLog = true;
             configuration.AdminAllowedWindowsGroups = [" BUILTIN\\Administrators ", "BUILTIN\\Administrators"];
             configuration.FailClosedOnAuditError = false;
             configuration.LogMessageImprints = false;
@@ -714,6 +719,7 @@ internal static class PersistenceAndConfigurationTests
             AssertEx.Equal(365, loaded.LogRetentionDays);
             AssertEx.Equal(ServiceConfiguration.WeeklyLogRollover, loaded.LogRolloverInterval);
             AssertEx.False(loaded.PruneAuditLogs);
+            AssertEx.True(loaded.WriteWindowsEventLog);
             AssertEx.Equal(1, loaded.AdminAllowedWindowsGroups.Count);
             AssertEx.False(loaded.FailClosedOnAuditError);
             AssertEx.False(loaded.LogMessageImprints);
@@ -967,7 +973,8 @@ internal static class PersistenceAndConfigurationTests
             File.WriteAllText(blocked, "{}" + Environment.NewLine, new UTF8Encoding(false));
             File.WriteAllText(removable, "{}" + Environment.NewLine, new UTF8Encoding(false));
             File.SetAttributes(blocked, File.GetAttributes(blocked) | FileAttributes.ReadOnly);
-            var logger = new AuditLogger(logDirectory, TimeSpan.FromSeconds(2));
+            List<AuditRecord> observed = [];
+            var logger = new AuditLogger(logDirectory, TimeSpan.FromSeconds(2), observed.Add);
             var record = new AuditRecord
             {
                 TimestampUtc = today.AddHours(12),
@@ -981,16 +988,20 @@ internal static class PersistenceAndConfigurationTests
                 AssertEx.True(File.Exists(blocked));
                 AssertEx.False(File.Exists(removable),
                     "One inaccessible expired log must not stop cleanup of other expired logs.");
+                AssertEx.Contains("could not be deleted", logger.RetentionWarning);
+                AssertEx.Equal(1, observed.Count(item => item.EventType == "audit-retention-failure"));
 
                 File.SetAttributes(blocked, File.GetAttributes(blocked) & ~FileAttributes.ReadOnly);
                 logger.Write(record, 1, true);
                 AssertEx.True(File.Exists(blocked),
                     "A failed retention pass must not be retried on every audit write.");
+                AssertEx.Equal(1, observed.Count(item => item.EventType == "audit-retention-failure"));
 
                 Thread.Sleep(2100);
                 logger.Write(record, 1, true);
                 AssertEx.False(File.Exists(blocked),
                     "A failed retention pass must be retried after the bounded delay.");
+                AssertEx.True(logger.RetentionWarning == null, "Successful cleanup must clear its warning.");
             }
             finally
             {
@@ -1071,5 +1082,110 @@ internal static class PersistenceAndConfigurationTests
             AssertEx.True(File.Exists(Path.Combine(logDirectory, "timestamp-week-20260713.jsonl")),
                 "Weekly rollover must use the Monday UTC week boundary.");
         }
+    }
+
+    private static void AuditObserversAreNonBlocking()
+    {
+        using var directory = new TemporaryDirectory();
+        var logDirectory = directory.File("Logs");
+        var record = new AuditRecord { EventType = "timestamp", Result = "granted", CorrelationId = "durable" };
+        var logger = new AuditLogger(logDirectory, _ => throw new InvalidOperationException("Observer unavailable."));
+        AssertEx.True(logger.Write(record, 365, true));
+        var active = Directory.GetFiles(logDirectory, "timestamp-*.jsonl").Single();
+        AssertEx.Contains("durable", File.ReadAllText(active));
+        AssertEx.Equal(1, File.ReadAllLines(active).Length);
+
+        // A failed append emits a diagnostic with the original correlation, never a granted mirror.
+        List<AuditRecord> observed = [];
+        logger = new AuditLogger(logDirectory, observed.Add);
+        using (new FileStream(active, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            AssertEx.Throws<AuditLogException>(() => logger.Write(record, 365, true));
+        }
+        AssertEx.Equal(1, observed.Count);
+        AssertEx.Equal("audit-write-failure", observed[0].EventType);
+        AssertEx.Equal(record.CorrelationId, observed[0].CorrelationId);
+
+        // Fail-open mode still returns the result to the client, so mirror that result as well as its audit failure.
+        observed.Clear();
+        using (new FileStream(active, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            AssertEx.False(logger.Write(record, 365, false));
+        }
+        AssertEx.Equal(2, observed.Count);
+        AssertEx.Equal("audit-write-failure", observed[0].EventType);
+        AssertEx.Equal("granted", observed[1].Result);
+    }
+
+    private static void DiagnosticDeliveryIsIndependent()
+    {
+        using var directory = new TemporaryDirectory();
+        var diagnosticDirectory = directory.File("Diagnostics");
+        var events = new List<(string Message, EventLogEntryType Severity, int Id)>();
+        var eventLogUnavailable = false;
+        var eventLogAttempts = 0;
+        var diagnostics = new DiagnosticLogger(diagnosticDirectory, "test-instance", (message, severity, id) =>
+        {
+            eventLogAttempts++;
+            if (eventLogUnavailable) throw new UnauthorizedAccessException("Event source write access denied.");
+            events.Add((message, severity, id));
+        });
+        var configuration = new ServiceConfiguration();
+        diagnostics.Configure(configuration);
+        diagnostics.Record(new AuditRecord
+        {
+            EventType = "unhandled-error", Result = "error", CorrelationId = "unexpected", Detail = "diagnostic detail"
+        });
+        var diagnosticFile = Directory.GetFiles(diagnosticDirectory, "timestamp-*.jsonl").Single();
+        AssertEx.Contains("unexpected", File.ReadAllText(diagnosticFile));
+        AssertEx.Equal(0, eventLogAttempts);
+
+        // Every durable result reaches the optional sink when enabled, with its identity and trace fields.
+        configuration.WriteWindowsEventLog = true;
+        diagnostics.Configure(configuration);
+        var audit = new AuditLogger(directory.File("Logs"), diagnostics.Record);
+        foreach (var result in new[] { "granted", "rejected", "error" })
+        {
+            AssertEx.True(audit.Write(new AuditRecord
+            {
+                EventType = "timestamp", Result = result, CorrelationId = result,
+                Username = "EXAMPLE\\Reviewer", Detail = "quoted \"value\"\nnext line"
+            }, 365, true));
+        }
+        AssertEx.Equal(3, events.Count);
+        AssertEx.Equal(EventLogEntryType.Information, events[0].Severity);
+        AssertEx.Equal(EventLogEntryType.Warning, events[1].Severity);
+        AssertEx.Equal(EventLogEntryType.Error, events[2].Severity);
+        AssertEx.Contains("test-instance", events[0].Message);
+        AssertEx.Contains("EXAMPLE\\\\Reviewer", events[0].Message);
+
+        // Event Log failure preserves issuance and leaves a disk diagnostic plus a visible warning.
+        eventLogUnavailable = true;
+        AssertEx.True(audit.Write(new AuditRecord { EventType = "timestamp", Result = "granted" }, 365, true));
+        AssertEx.Contains("Event Viewer logging is unavailable", diagnostics.Warning);
+        AssertEx.Contains("event-log-failure", File.ReadAllText(diagnosticFile));
+        AssertEx.Equal(4, eventLogAttempts);
+        AssertEx.True(audit.Write(new AuditRecord { EventType = "timestamp", Result = "granted" }, 365, true));
+        AssertEx.Equal(4, eventLogAttempts, "A broken optional sink must not be retried on every timestamp.");
+
+        configuration.WriteWindowsEventLog = false;
+        diagnostics.Configure(configuration);
+        AssertEx.True(diagnostics.Warning == null);
+        eventLogUnavailable = false;
+        configuration.WriteWindowsEventLog = true;
+        diagnostics.Configure(configuration);
+        AssertEx.True(audit.Write(new AuditRecord { EventType = "timestamp", Result = "granted" }, 365, true));
+        AssertEx.Equal(5, eventLogAttempts);
+
+        // Losing the diagnostic disk destination must not prevent a working Event Log from receiving the failure.
+        using (new FileStream(diagnosticFile, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            diagnostics.Record(new AuditRecord
+            {
+                EventType = "unhandled-error", Result = "error", CorrelationId = "disk-unavailable"
+            });
+        }
+        AssertEx.Contains("Operational diagnostics could not be written", diagnostics.Warning);
+        AssertEx.Contains("disk-unavailable", events.Last().Message);
     }
 }

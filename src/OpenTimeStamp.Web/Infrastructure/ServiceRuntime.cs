@@ -236,6 +236,8 @@ internal static class ServiceRuntime
 
     public static AuditLogger Audit { get; private set; }
 
+    public static DiagnosticLogger Diagnostics { get; private set; }
+
     public static string DataDirectory { get; private set; }
 
     internal static DateTime StartedUtc { get; private set; }
@@ -344,7 +346,8 @@ internal static class ServiceRuntime
             var configuration = new ConfigurationStore(Path.Combine(dataDirectory, "tsa.config"));
             var certificates = new CertificateRepository();
             var issuanceState = new IssuanceStateStore(Path.Combine(dataDirectory, "issuance.state"));
-            var audit = new AuditLogger(Path.Combine(dataDirectory, "Logs"));
+            var diagnostics = new DiagnosticLogger(Path.Combine(dataDirectory, "Diagnostics"), dataDirectory);
+            var audit = new AuditLogger(Path.Combine(dataDirectory, "Logs"), diagnostics.Record);
 
             Settings = settings;
             DataDirectory = dataDirectory;
@@ -352,9 +355,25 @@ internal static class ServiceRuntime
             Certificates = certificates;
             IssuanceState = issuanceState;
             Audit = audit;
+            Diagnostics = diagnostics;
             AdmissionScopeName = CreateAdmissionScopeName(dataDirectory);
             StartedUtc = DateTime.UtcNow;
             initialized = true;
+
+            // Configure diagnostic destinations before the first request can raise an error.
+            try
+            {
+                _ = LoadSnapshot();
+            }
+            catch (OpenTimeStamp.Configuration.ConfigurationErrorsException ex)
+            {
+                Diagnostics.Record(new AuditRecord
+                {
+                    EventType = "configuration-load-failure",
+                    Result = "error",
+                    Detail = ex.ToString()
+                });
+            }
         }
     }
 
@@ -365,15 +384,27 @@ internal static class ServiceRuntime
         string generation,
         long now)
     {
+        var firstConfiguration = cachedConfiguration == null;
         var published = new CachedConfiguration(
             configuration.Clone(),
             generation,
             Interlocked.Increment(ref configurationVersion));
         Volatile.Write(ref cachedConfiguration, published);
+        Diagnostics?.Configure(configuration);
         Interlocked.Exchange(
             ref nextConfigurationRefreshTimestamp,
             AddStopwatchTicks(now, ConfigurationRefreshTicks));
         Certificates?.InvalidateSelectionCache();
+        if (firstConfiguration)
+        {
+            // Record worker startup only after its configured diagnostic destinations are known.
+            Diagnostics?.Record(new AuditRecord
+            {
+                EventType = "service-started",
+                Result = "information",
+                Detail = "The timestamp service worker started."
+            });
+        }
         return published;
     }
 

@@ -38,6 +38,8 @@ public sealed class AuditLogger
     private readonly string lockPath;
     private readonly object cleanupGate = new();
     private readonly long cleanupRetryIntervalTicks;
+    private readonly Action<AuditRecord> observer;
+    private string retentionWarning;
     private DateTime lastCleanupPeriodUtc;
     private int lastCleanupRetentionDays;
     private string lastCleanupRolloverInterval;
@@ -45,11 +47,12 @@ public sealed class AuditLogger
     private bool cleanupRetryPending;
     private bool cleanupSuppressed;
 
-    public AuditLogger(string directory) : this(directory, DefaultCleanupRetryInterval)
+    public AuditLogger(string directory, Action<AuditRecord> observer = null)
+        : this(directory, DefaultCleanupRetryInterval, observer)
     {
     }
 
-    internal AuditLogger(string directory, TimeSpan cleanupRetryInterval)
+    internal AuditLogger(string directory, TimeSpan cleanupRetryInterval, Action<AuditRecord> observer = null)
     {
         if (string.IsNullOrWhiteSpace(directory))
         {
@@ -62,9 +65,12 @@ public sealed class AuditLogger
         }
 
         this.directory = Path.GetFullPath(directory);
+        this.observer = observer;
         lockPath = Path.Combine(this.directory, ".audit.lock");
         cleanupRetryIntervalTicks = ToStopwatchTicks(cleanupRetryInterval);
     }
+
+    public string RetentionWarning => Volatile.Read(ref retentionWarning);
 
     public bool Write(AuditRecord record, int retentionDays, bool failClosed) =>
         Write(record, ServiceConfiguration.DailyLogRollover, true, retentionDays, failClosed);
@@ -98,16 +104,26 @@ public sealed class AuditLogger
                 stream.Flush(true);
             }
 
+            Notify(record);
             if (pruneLogs) Cleanup(record.TimestampUtc, rolloverInterval, retentionDays);
             else SuppressCleanup();
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
+            Notify(new AuditRecord
+            {
+                EventType = "audit-write-failure",
+                Result = "error",
+                CorrelationId = record.CorrelationId,
+                Protocol = record.Protocol,
+                Detail = ex.ToString()
+            });
             if (failClosed)
                 throw new AuditLogException(
                     "The audit log entry could not be committed to disk. Verify the log directory permissions and free space.",
                     ex);
+            Notify(record);
             return false;
         }
     }
@@ -211,6 +227,7 @@ public sealed class AuditLogger
             // allowing one inaccessible file to leave independently removable files unaffected.
             var threshold = nowUtc.AddDays(-Math.Max(1, retentionDays));
             var cleanupComplete = true;
+            Exception cleanupFailure = null;
             try
             {
                 foreach (var file in Directory.EnumerateFiles(
@@ -228,6 +245,7 @@ public sealed class AuditLogger
                                                    System.Security.SecurityException)
                         {
                             cleanupComplete = false;
+                            cleanupFailure ??= ex;
                         }
                     }
                 }
@@ -236,23 +254,51 @@ public sealed class AuditLogger
                                        System.Security.SecurityException)
             {
                 cleanupComplete = false;
+                cleanupFailure ??= ex;
             }
 
             if (cleanupComplete)
             {
                 cleanupRetryPending = false;
+                Volatile.Write(ref retentionWarning, null);
             }
             else
             {
                 lastCleanupFailureTimestamp = attemptTimestamp;
                 cleanupRetryPending = true;
+                Volatile.Write(ref retentionWarning,
+                    "Expired audit logs could not be deleted. Check log file permissions and open file handles. " +
+                    "Cleanup will retry while timestamping continues.");
+                Notify(new AuditRecord
+                {
+                    EventType = "audit-retention-failure",
+                    Result = "warning",
+                    Detail = cleanupFailure?.ToString()
+                });
             }
         }
     }
 
     private void SuppressCleanup()
     {
-        lock (cleanupGate) cleanupSuppressed = true;
+        lock (cleanupGate)
+        {
+            cleanupSuppressed = true;
+            Volatile.Write(ref retentionWarning, null);
+        }
+    }
+
+    private void Notify(AuditRecord record)
+    {
+        try
+        {
+            observer?.Invoke(record);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and
+                                   not StackOverflowException and not ThreadAbortException)
+        {
+            // Optional diagnostics cannot change the durable audit outcome.
+        }
     }
 
     private string GetLogPath(DateTime timestampUtc, string rolloverInterval)
@@ -330,7 +376,7 @@ public sealed class AuditLogger
             contention => new IOException("Timed out waiting for the audit log lock.", contention),
             CancellationToken.None);
 
-    private static string Serialize(AuditRecord record)
+    internal static string Serialize(AuditRecord record)
     {
         // Keep field order stable so JSONL records remain easy to inspect and diff.
         List<string> fields =

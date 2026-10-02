@@ -27,6 +27,16 @@ internal static class HttpSupport
 {
     private static readonly TimeSpan AbortedReadObservationGrace = TimeSpan.FromMilliseconds(250);
 
+    internal static string GetCorrelationId(HttpContext context)
+    {
+        const string key = "OpenTimeStamp.CorrelationId";
+        if (context.Items[key] is string existing) return existing;
+        var correlationId = Guid.NewGuid().ToString("N");
+        context.Items[key] = correlationId;
+        if (!context.Response.HeadersWritten) context.Response.Headers["X-Correlation-ID"] = correlationId;
+        return correlationId;
+    }
+
     public static void ApplySecurityHeaders(HttpResponse response)
     {
         // Apply one restrictive response policy to protocol and administrative endpoints.

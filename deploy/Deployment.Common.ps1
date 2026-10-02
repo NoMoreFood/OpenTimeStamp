@@ -7,6 +7,27 @@ $script:OpenTimeStampPublishMarkerName = '.opentimestamp-publish.json'
 $script:OpenTimeStampDataMarkerName = '.opentimestamp-data.json'
 $script:OpenTimeStampDeploymentMarkerName = '.opentimestamp-deployment.json'
 
+function Initialize-OpenTimeStampEventLog {
+    $source = 'OpenTimeStamp'
+    $logName = 'OpenTimeStamp'
+    if ([System.Diagnostics.EventLog]::SourceExists($source)) {
+        $registeredLog = [System.Diagnostics.EventLog]::LogNameFromSourceName($source, '.')
+        if (-not $registeredLog.Equals($logName, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "The OpenTimeStamp event source is already registered to '$registeredLog'."
+        }
+        return
+    }
+
+    # Register once under elevated setup; preserve operator settings and event history on later deployments.
+    [System.Diagnostics.EventLog]::CreateEventSource($source, $logName)
+    $eventLog = New-Object System.Diagnostics.EventLog($logName)
+    try {
+        $eventLog.MaximumKilobytes = 65536
+        $eventLog.ModifyOverflowPolicy([System.Diagnostics.OverflowAction]::OverwriteAsNeeded, 0)
+    }
+    finally { $eventLog.Dispose() }
+}
+
 function Get-OpenTimeStampRequiredRuntimeAssemblies {
     return [string[]]@(
         'Microsoft.Bcl.Cryptography.dll',

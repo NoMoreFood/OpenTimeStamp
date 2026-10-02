@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.Globalization;
 using System.Linq;
 using System.Reflection;
@@ -20,6 +21,7 @@ internal sealed class AdminHandler : IHttpHandler
 {
     private const int RecentUserDisplayLimit = 20;
     private const int RecentRequestDisplayLimit = 50;
+    private NameValueCollection submittedForm;
     private static readonly PropertyInfo[] AuditedConfigurationProperties =
         typeof(ServiceConfiguration).GetProperties(BindingFlags.Instance | BindingFlags.Public)
             .Where(property => property.IsDefined(typeof(DataMemberAttribute), false))
@@ -77,9 +79,13 @@ internal sealed class AdminHandler : IHttpHandler
             return;
         }
 
+        // Validate bounded form values ourselves and HTML-encode them when redisplaying the draft.
+        // ASP.NET request validation would reject editable text before field validation can explain it.
+        var form = context.Request.Unvalidated.Form;
+
         // Authenticate the state-changing request independently of the Windows session.
         if (!ValidateOrigin(context.Request) ||
-            !CsrfTokenManager.Validate(context, context.Request.Form["csrf"], identity))
+            !CsrfTokenManager.Validate(context, form["csrf"], identity))
         {
             HttpSupport.WritePlainError(context, 403,
                 "The request could not be verified. Refresh the page and try again.");
@@ -88,7 +94,7 @@ internal sealed class AdminHandler : IHttpHandler
 
         try
         {
-            var submittedGeneration = Bounded(context.Request.Form["generation"], 80);
+            var submittedGeneration = Bounded(form["generation"], 80);
             if (string.IsNullOrEmpty(generation) ||
                 !string.Equals(submittedGeneration, generation, StringComparison.Ordinal))
             {
@@ -101,8 +107,9 @@ internal sealed class AdminHandler : IHttpHandler
             }
 
             // Parse and validate the complete candidate configuration before any durable write.
+            submittedForm = form;
             var fipsEnabled = PlatformSecurityPolicy.IsFipsEnabled;
-            var updated = ReadConfiguration(context.Request, configuration, fipsEnabled);
+            var updated = ReadConfiguration(form, configuration, fipsEnabled);
             var errors = updated.Validate();
             var signingHash = HashAlgorithmCatalog.FindByName(updated.SigningDigestAlgorithm);
             if (!PlatformSecurityPolicy.IsSigningHashAllowed(signingHash))
@@ -134,7 +141,13 @@ internal sealed class AdminHandler : IHttpHandler
             }
 
             // Fail closed if the proposed group list would exclude the administrator applying it.
-            if (!IsAuthorized(updated, context, identity)) return;
+            if (!IsAuthorized(updated, context, identity))
+            {
+                context.Response.ClearContent();
+                Render(context, updated, generation,
+                    "Keep at least one Windows group that includes your account.", "error");
+                return;
+            }
 
             var changeCorrelationId = Guid.NewGuid().ToString("N");
             var changeDetail = DescribeConfigurationChange(configuration, updated);
@@ -159,11 +172,12 @@ internal sealed class AdminHandler : IHttpHandler
                                        System.Security.Cryptography.CryptographicException)
             {
                 TryWriteConfigurationFailureAudit(context, identity, configuration, updated,
-                    changeCorrelationId, changeDetail, ex);
+                    changeCorrelationId, changeDetail, savedGeneration, ex);
 
                 if (ex is ConfigurationConflictException)
                 {
                     context.Response.StatusCode = 409;
+                    submittedForm = null;
                     ReloadForConflict(out configuration, out generation);
                     Render(context, configuration, generation, ex.Message, "error");
                     return;
@@ -172,6 +186,7 @@ internal sealed class AdminHandler : IHttpHandler
                 context.Response.StatusCode = ex is ConfigurationErrorsException ? 400 : 503;
                 if (configurationSaved)
                 {
+                    submittedForm = null;
                     Render(context, updated, savedGeneration,
                         "Settings were saved, but the change could not be recorded in the audit log. " +
                         "Verify the audit log before making additional changes.",
@@ -253,12 +268,16 @@ internal sealed class AdminHandler : IHttpHandler
         ServiceConfiguration targetConfiguration,
         string correlationId,
         string detail,
+        string savedGeneration,
         Exception exception)
     {
         try
         {
             WriteConfigurationAudit(context, identity, retentionConfiguration, targetConfiguration,
-                correlationId, "failed", detail + "; failure=" + exception.GetType().Name, false);
+                correlationId, savedGeneration == null ? "failed" : "applied",
+                detail + (savedGeneration == null ? string.Empty :
+                    "; generation=" + savedGeneration + "; auditOutcome=fallback") +
+                "; failure=" + exception.GetType().Name, false);
         }
         catch (AuditLogException)
         {
@@ -416,51 +435,52 @@ internal sealed class AdminHandler : IHttpHandler
     }
 
     private static ServiceConfiguration ReadConfiguration(
-        HttpRequest request,
+        NameValueCollection form,
         ServiceConfiguration original,
         bool fipsEnabled)
     {
         // Read protocol and policy controls while preserving FIPS-disabled legacy values.
         var updated = original.Clone();
-        updated.Rfc3161Enabled = IsChecked(request, "rfc3161");
+        updated.Rfc3161Enabled = IsChecked(form, "rfc3161");
         updated.AuthenticodeEnabled = ResolveAuthenticodeEnabled(
             fipsEnabled,
             original.AuthenticodeEnabled,
-            IsChecked(request, "authenticode"));
-        updated.DefaultPolicyOid = Bounded(request.Form["defaultPolicy"], 256);
-        updated.AcceptedPolicyOids = SplitList(request.Form["acceptedPolicies"], 64, 256);
+            IsChecked(form, "authenticode"));
+        updated.DefaultPolicyOid = Bounded(form["defaultPolicy"], 256);
+        updated.AcceptedPolicyOids = SplitList(form["acceptedPolicies"], 64, 256);
         if (!string.IsNullOrWhiteSpace(updated.DefaultPolicyOid) && !updated.AcceptedPolicyOids.Contains(updated.DefaultPolicyOid, StringComparer.Ordinal))
             updated.AcceptedPolicyOids.Add(updated.DefaultPolicyOid);
 
         updated.AllowedHashAlgorithms = ResolveAllowedHashAlgorithms(
             fipsEnabled,
             original.AllowedHashAlgorithms,
-            request.Form.GetValues("hash") ?? []);
+            form.GetValues("hash") ?? []);
 
         // Parse bounded operational and audit controls from the form.
-        updated.SigningDigestAlgorithm = Bounded(request.Form["signingHash"], 16);
-        updated.IncludeCertificateChain = IsChecked(request, "includeChain");
+        updated.SigningDigestAlgorithm = Bounded(form["signingHash"], 16);
+        updated.IncludeCertificateChain = IsChecked(form, "includeChain");
         updated.AccuracySeconds = ParseInteger(
-            request.Form["accuracySeconds"], 0, 86400, "Published time accuracy in seconds");
+            form["accuracySeconds"], 0, 86400, "Published time accuracy in seconds");
         updated.AccuracyMilliseconds = ParseInteger(
-            request.Form["accuracyMilliseconds"], 0, 999, "Published time accuracy in milliseconds");
-        updated.Ordering = IsChecked(request, "ordering");
+            form["accuracyMilliseconds"], 0, 999, "Published time accuracy in milliseconds");
+        updated.Ordering = IsChecked(form, "ordering");
         updated.MaxRequestBytes = ParseInteger(
-            request.Form["maxRequestBytes"], 1024, 1048576, "Maximum request size in bytes");
+            form["maxRequestBytes"], 1024, 1048576, "Maximum request size in bytes");
         updated.LogRetentionDays = ParseInteger(
-            request.Form["logRetentionDays"], 1, 3650, "Audit log retention in days");
-        updated.LogRolloverInterval = Bounded(request.Form["logRolloverInterval"], 16);
-        updated.PruneAuditLogs = IsChecked(request, "pruneAuditLogs");
-        updated.FailClosedOnAuditError = IsChecked(request, "failClosedAudit");
-        updated.LogMessageImprints = IsChecked(request, "logImprints");
+            form["logRetentionDays"], 1, 3650, "Audit log retention in days");
+        updated.LogRolloverInterval = Bounded(form["logRolloverInterval"], 16);
+        updated.PruneAuditLogs = IsChecked(form, "pruneAuditLogs");
+        updated.FailClosedOnAuditError = IsChecked(form, "failClosedAudit");
+        updated.LogMessageImprints = IsChecked(form, "logImprints");
+        updated.WriteWindowsEventLog = IsChecked(form, "windowsEventLog");
         updated.ClockRollbackToleranceSeconds = ParseInteger(
-            request.Form["clockTolerance"], 0, 300, "Allowed backward clock adjustment in seconds");
-        updated.AdminAllowedWindowsGroups = SplitList(request.Form["adminGroups"], 32, 256);
-        updated.AllowUntrustedDevelopmentCertificate = IsChecked(request, "allowUntrustedDevelopmentCertificate");
-        updated.CertificateSelectionMode = Bounded(request.Form["certificateSelectionMode"], 16);
+            form["clockTolerance"], 0, 300, "Allowed backward clock adjustment in seconds");
+        updated.AdminAllowedWindowsGroups = SplitList(form["adminGroups"], 32, 256);
+        updated.AllowUntrustedDevelopmentCertificate = IsChecked(form, "allowUntrustedDevelopmentCertificate");
+        updated.CertificateSelectionMode = Bounded(form["certificateSelectionMode"], 16);
 
         // Decode the compound store-location and thumbprint certificate selection.
-        var certificate = Bounded(request.Form["certificate"], 256);
+        var certificate = Bounded(form["certificate"], 256);
         if (string.Equals(certificate, "none", StringComparison.Ordinal))
         {
             updated.CertificateThumbprint = null;
@@ -511,7 +531,7 @@ internal sealed class AdminHandler : IHttpHandler
             .ToList();
     }
 
-    private static void Render(
+    private void Render(
         HttpContext context,
         ServiceConfiguration configuration,
         string generation,
@@ -543,6 +563,14 @@ internal sealed class AdminHandler : IHttpHandler
 
         AppendDashboard(builder, context, configuration, generation);
 
+        // Keep retention and optional diagnostic delivery failures visible to local administrators.
+        var retentionWarning = configuration.PruneAuditLogs ? ServiceRuntime.Audit.RetentionWarning : null;
+        foreach (var warning in new[] { retentionWarning, ServiceRuntime.Diagnostics.Warning })
+        {
+            if (!string.IsNullOrEmpty(warning))
+                builder.Append("<div class=\"warning\" role=\"alert\">").Append(H(warning)).Append("</div>");
+        }
+
         // Render service, algorithm, time, and audit policy controls.
         builder.Append("<form method=\"post\" action=\"").Append(H(CsrfTokenManager.AdminPath(context.Request)))
             .Append("\"><input type=\"hidden\" name=\"csrf\" value=\"").Append(H(csrf)).Append("\">")
@@ -551,8 +579,14 @@ internal sealed class AdminHandler : IHttpHandler
             .Append(Check("rfc3161", "Enable the RFC 3161 endpoint", configuration.Rfc3161Enabled, false))
             .Append(Check("authenticode", "Enable the legacy Authenticode endpoint", configuration.AuthenticodeEnabled,
                 PlatformSecurityPolicy.IsFipsEnabled && !configuration.AuthenticodeEnabled))
-            .Append("<label>Default RFC 3161 Policy OID<input name=\"defaultPolicy\" type=\"text\" maxlength=\"256\" value=\"").Append(H(configuration.DefaultPolicyOid)).Append("\" placeholder=\"Your organization’s assigned policy OID\"></label>")
-            .Append("<label>Allowed RFC 3161 Policy OIDs (One per Line)<textarea name=\"acceptedPolicies\" maxlength=\"8192\">").Append(H(string.Join(Environment.NewLine, configuration.AcceptedPolicyOids ?? []))).Append("</textarea></label></fieldset>")
+            .Append("<label>Default RFC 3161 Policy OID<input name=\"defaultPolicy\" type=\"text\" " +
+                "maxlength=\"256\" value=\"").Append(H(FormValue("defaultPolicy", configuration.DefaultPolicyOid)))
+            .Append("\" placeholder=\"Your organization’s assigned policy OID\"></label>")
+            .Append("<label>Allowed RFC 3161 Policy OIDs (One per Line)" +
+                "<textarea name=\"acceptedPolicies\" maxlength=\"8192\">")
+            .Append(H(FormValue("acceptedPolicies",
+                string.Join(Environment.NewLine, configuration.AcceptedPolicyOids ?? []))))
+            .Append("</textarea></label></fieldset>")
             .Append("<fieldset><legend>Cryptography</legend><p>Allowed request hash algorithms:</p>");
         foreach (var algorithm in HashAlgorithmCatalog.All)
         {
@@ -567,7 +601,9 @@ internal sealed class AdminHandler : IHttpHandler
         foreach (var algorithm in HashAlgorithmCatalog.All.Where(item => item.CmsSigningSupported && (!PlatformSecurityPolicy.IsFipsEnabled || !item.IsLegacy)))
         {
             builder.Append("<option value=\"").Append(H(algorithm.Name)).Append("\"")
-                .Append(string.Equals(algorithm.Name, HashAlgorithmCatalog.NormalizeName(configuration.SigningDigestAlgorithm), StringComparison.Ordinal) ? " selected" : string.Empty)
+                .Append(string.Equals(algorithm.Name,
+                    HashAlgorithmCatalog.NormalizeName(FormValue("signingHash", configuration.SigningDigestAlgorithm)),
+                    StringComparison.Ordinal) ? " selected" : string.Empty)
                 .Append(">").Append(H(FormatHashName(algorithm.Name))).Append("</option>");
         }
 
@@ -595,18 +631,34 @@ internal sealed class AdminHandler : IHttpHandler
             .Append(Number("clockTolerance", "Allowed Backward Clock Adjustment (Seconds)", configuration.ClockRollbackToleranceSeconds, 0, 300))
             .Append(Number("maxRequestBytes", "Maximum Request Size (Bytes)", configuration.MaxRequestBytes, 1024, 1048576)).Append("</fieldset>")
             .Append("<fieldset><legend>Audit Logging</legend><label>Audit Log Rotation<select name=\"logRolloverInterval\">")
-            .Append(Option(ServiceConfiguration.DailyLogRollover, configuration.LogRolloverInterval))
-            .Append(Option(ServiceConfiguration.HourlyLogRollover, configuration.LogRolloverInterval))
-            .Append(Option(ServiceConfiguration.WeeklyLogRollover, configuration.LogRolloverInterval))
+            .Append(Option(ServiceConfiguration.DailyLogRollover,
+                FormValue("logRolloverInterval", configuration.LogRolloverInterval)))
+            .Append(Option(ServiceConfiguration.HourlyLogRollover,
+                FormValue("logRolloverInterval", configuration.LogRolloverInterval)))
+            .Append(Option(ServiceConfiguration.WeeklyLogRollover,
+                FormValue("logRolloverInterval", configuration.LogRolloverInterval)))
             .Append("</select></label>")
             .Append(Check("pruneAuditLogs", "Automatically delete audit logs after the retention period", configuration.PruneAuditLogs, false))
             .Append(Number("logRetentionDays", "Keep Audit Logs (Days)", configuration.LogRetentionDays, 1, 3650))
             .Append(Check("failClosedAudit", "Stop timestamping if the audit log cannot be written", configuration.FailClosedOnAuditError, false))
             .Append(Check("logImprints", "Include request hashes in the audit log", configuration.LogMessageImprints, false))
-            .Append("<label>Windows Groups or SIDs Allowed to Administer OpenTimeStamp (One per Line)<textarea name=\"adminGroups\" maxlength=\"8192\">").Append(H(string.Join(Environment.NewLine, configuration.AdminAllowedWindowsGroups ?? []))).Append("</textarea></label></fieldset>")
+            .Append(Check("windowsEventLog", "Also write to Windows Event Viewer",
+                configuration.WriteWindowsEventLog, false))
+            .Append("<p class=\"muted\">Copies timestamp results, configuration changes, and operational events to " +
+                "Applications and Services Logs &rarr; OpenTimeStamp. Operational diagnostics are also saved in <code>")
+            .Append(H(System.IO.Path.Combine(ServiceRuntime.DataDirectory, "Diagnostics")))
+            .Append("</code> and follow the audit log retention settings. " +
+                "Windows manages the Event Viewer log’s retention.</p>")
+            .Append("<label>Windows Groups or SIDs Allowed to Administer OpenTimeStamp (One per Line)" +
+                "<textarea name=\"adminGroups\" maxlength=\"8192\">")
+            .Append(H(FormValue("adminGroups",
+                string.Join(Environment.NewLine, configuration.AdminAllowedWindowsGroups ?? []))))
+            .Append("</textarea></label></fieldset>")
             .Append("<fieldset><legend>Timestamp Signing Certificate</legend><label>Selection Mode<select name=\"certificateSelectionMode\">")
-            .Append(Option(ServiceConfiguration.ManualCertificateSelection, configuration.CertificateSelectionMode))
-            .Append(Option(ServiceConfiguration.AutomaticCertificateSelection, configuration.CertificateSelectionMode))
+            .Append(Option(ServiceConfiguration.ManualCertificateSelection,
+                FormValue("certificateSelectionMode", configuration.CertificateSelectionMode)))
+            .Append(Option(ServiceConfiguration.AutomaticCertificateSelection,
+                FormValue("certificateSelectionMode", configuration.CertificateSelectionMode)))
             .Append("</select></label><p class=\"muted\">Automatic mode uses the eligible certificate with the " +
                 "latest expiration date and checks again periodically. Manual mode uses the certificate selected below.</p>")
             .Append(Check("allowUntrustedDevelopmentCertificate",
@@ -629,30 +681,46 @@ internal sealed class AdminHandler : IHttpHandler
                 "</tr></thead><tbody>");
 
         var normalizedSelectedThumbprint = ConfigurationStore.NormalizeThumbprint(configuration.CertificateThumbprint);
+        var selectedValue = FormValue("certificate", string.IsNullOrEmpty(normalizedSelectedThumbprint) ? "none" :
+            configuration.CertificateStoreLocation + "|" + normalizedSelectedThumbprint);
         var selectedCertificateAvailable = certificates.Any(certificate =>
             certificate.IsEligible &&
-            string.Equals(certificate.Thumbprint, normalizedSelectedThumbprint, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(certificate.StoreLocation.ToString(), configuration.CertificateStoreLocation, StringComparison.OrdinalIgnoreCase));
-        builder.Append("<tr><td><input type=\"radio\" name=\"certificate\" value=\"none\"")
-            .Append(string.IsNullOrEmpty(normalizedSelectedThumbprint) || !selectedCertificateAvailable ? " checked" : string.Empty)
+            string.Equals(certificate.StoreLocation + "|" + certificate.Thumbprint, selectedValue,
+                StringComparison.OrdinalIgnoreCase));
+        builder.Append("<tr><td><input type=\"radio\" name=\"certificate\" value=\"none\" " +
+                "aria-label=\"No certificate selected for Manual mode\"")
+            .Append(selectedValue == "none" || string.IsNullOrEmpty(selectedValue) ? " checked" : string.Empty)
             .Append("></td><td colspan=\"4\">No certificate selected for Manual mode</td>" +
                 "<td>Automatic mode does not require a selected certificate. Manual mode does.</td></tr>");
+
+        // Retain an unavailable selection so an unrelated validation error cannot silently clear it.
+        if (!string.IsNullOrEmpty(selectedValue) && selectedValue != "none" && !selectedCertificateAvailable)
+        {
+            builder.Append("<tr><td><input type=\"radio\" name=\"certificate\" checked value=\"")
+                .Append(H(selectedValue)).Append("\" aria-label=\"Keep the unavailable certificate selection\"></td>" +
+                    "<td colspan=\"4\"><code>").Append(H(selectedValue)).Append("</code></td>" +
+                    "<td>The selected certificate is unavailable or ineligible. " +
+                    "Choose a usable certificate.</td></tr>");
+        }
 
         // Render eligible certificates and metadata from both supported Windows stores.
         foreach (var certificate in certificates)
         {
-            var selected = certificate.Thumbprint != null &&
-                string.Equals(certificate.Thumbprint, normalizedSelectedThumbprint, StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(certificate.StoreLocation.ToString(), configuration.CertificateStoreLocation, StringComparison.OrdinalIgnoreCase);
+            var selected = string.Equals(certificate.StoreLocation + "|" + certificate.Thumbprint,
+                selectedValue, StringComparison.OrdinalIgnoreCase);
             builder.Append("<tr><td>");
             if (certificate.IsEligible)
             {
-                builder.Append("<input type=\"radio\" name=\"certificate\" value=\"").Append(H(certificate.StoreLocation + "|" + certificate.Thumbprint)).Append("\"")
+                builder.Append("<input type=\"radio\" name=\"certificate\" value=\"")
+                    .Append(H(certificate.StoreLocation + "|" + certificate.Thumbprint)).Append("\"")
+                    .Append(" aria-label=\"").Append(H(certificate.Subject + ", " +
+                        FormatCertificateStore(certificate.StoreLocation) + ", " + certificate.Thumbprint)).Append("\"")
                     .Append(selected ? " checked" : string.Empty).Append(">");
             }
             builder.Append("</td><td>").Append(H(FormatCertificateStore(certificate.StoreLocation)))
                 .Append("</td><td>").Append(H(certificate.Subject))
-                .Append("</td><td>").Append(H(certificate.NotAfter == default ? string.Empty : certificate.NotAfter.ToString("u", CultureInfo.InvariantCulture)))
+                .Append("</td><td>").Append(H(certificate.NotAfter == default
+                    ? string.Empty : FormatAdminTime(certificate.NotAfter)))
                 .Append("</td><td><code>").Append(H(certificate.Thumbprint)).Append("</code></td><td>")
                 .Append(certificate.IsEligible
                     ? "Eligible; trust and private-key access are verified when settings are saved"
@@ -903,15 +971,26 @@ internal sealed class AdminHandler : IHttpHandler
             .ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture);
     }
 
-    private static string Check(string name, string label, bool isChecked, bool disabled, string value = "on") =>
-        "<label class=\"inline\"><input type=\"checkbox\" name=\"" + H(name) + "\" value=\"" + H(value) + "\"" +
-        (isChecked ? " checked" : string.Empty) + (disabled ? " disabled" : string.Empty) + "> " + H(label) + "</label>";
+    private string FormValue(string name, string fallback) =>
+        submittedForm == null ? fallback : submittedForm[name] ?? string.Empty;
 
-    private static string Number(string name, string label, int value, int minimum, int maximum) =>
+    private string Check(string name, string label, bool isChecked, bool disabled, string value = "on")
+    {
+        if (submittedForm != null)
+            isChecked = name == "hash"
+                ? (submittedForm.GetValues(name) ?? []).Select(HashAlgorithmCatalog.NormalizeName).Contains(value)
+                : IsChecked(submittedForm, name);
+        return "<label class=\"inline\"><input type=\"checkbox\" name=\"" + H(name) + "\" value=\"" + H(value) + "\"" +
+            (isChecked ? " checked" : string.Empty) + (disabled ? " disabled" : string.Empty) +
+            "> " + H(label) + "</label>";
+    }
+
+    private string Number(string name, string label, int value, int minimum, int maximum) =>
         "<label>" + H(label) + "<input name=\"" + H(name) + "\" type=\"number\" min=\"" + minimum.ToString(CultureInfo.InvariantCulture) +
-        "\" max=\"" + maximum.ToString(CultureInfo.InvariantCulture) + "\" value=\"" + value.ToString(CultureInfo.InvariantCulture) + "\"></label>";
+        "\" max=\"" + maximum.ToString(CultureInfo.InvariantCulture) + "\" value=\"" +
+        H(FormValue(name, value.ToString(CultureInfo.InvariantCulture))) + "\" required></label>";
 
-    private static bool IsChecked(HttpRequest request, string name) => request.Form.GetValues(name) != null;
+    private static bool IsChecked(NameValueCollection form, string name) => form.GetValues(name) != null;
 
     private static int ParseInteger(string value, int minimum, int maximum, string label)
     {

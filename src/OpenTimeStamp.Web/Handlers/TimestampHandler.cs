@@ -240,8 +240,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
     public override async Task ProcessRequestAsync(HttpContext context)
     {
         // Establish a response trace before enforcing endpoint-wide preconditions.
-        var correlationId = Guid.NewGuid().ToString("N");
-        context.Response.Headers["X-Correlation-ID"] = correlationId;
+        var correlationId = HttpSupport.GetCorrelationId(context);
         context.ThreadAbortOnTimeout = false;
         var stopwatch = Stopwatch.StartNew();
         ServiceConfiguration configuration = null;

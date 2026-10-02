@@ -2,6 +2,7 @@ using System;
 using System.Web;
 using System.Web.Hosting;
 using System.Web.Routing;
+using OpenTimeStamp.Audit;
 using OpenTimeStamp.Web.Handlers;
 using OpenTimeStamp.Web.Infrastructure;
 using OpenTimeStamp.Web.Routing;
@@ -12,8 +13,12 @@ public class Global : HttpApplication
 {
     protected void Application_Start(object sender, EventArgs e) => ApplicationStartup.Initialize();
 
-    protected void Application_BeginRequest(object sender, EventArgs e) =>
+    protected void Application_BeginRequest(object sender, EventArgs e)
+    {
+        // Give every endpoint a server-generated identifier for operational diagnostics.
         HttpSupport.ApplySecurityHeaders(Context.Response);
+        _ = HttpSupport.GetCorrelationId(Context);
+    }
 
     protected void Application_EndRequest(object sender, EventArgs e) => RemoveFrameworkHeaders();
 
@@ -21,6 +26,13 @@ public class Global : HttpApplication
 
     protected void Application_End(object sender, EventArgs e)
     {
+        // Preserve the host's shutdown reason while diagnostic destinations remain available.
+        ServiceRuntime.Diagnostics?.Record(new AuditRecord
+        {
+            EventType = "service-stopping",
+            Result = "information",
+            Detail = "The timestamp service worker is stopping: " + HostingEnvironment.ShutdownReason
+        });
         TimestampHandler.ShutdownAdmission();
         ServiceRuntime.Shutdown();
     }
@@ -28,13 +40,31 @@ public class Global : HttpApplication
     protected void Application_Error(object sender, EventArgs e)
     {
         var exception = Server.GetLastError();
-        if (exception == null || Context.Response.HeadersWritten) return;
+        if (exception == null) return;
+
+        // Preserve failures independently of the timestamp audit file before clearing the request error.
+        var invalidInput = exception.GetBaseException() is HttpRequestValidationException;
+        if (!invalidInput)
+        {
+            if (ServiceRuntime.Diagnostics == null) return;
+            ServiceRuntime.Diagnostics.Record(new AuditRecord
+            {
+                EventType = "unhandled-error",
+                Result = "error",
+                CorrelationId = HttpSupport.GetCorrelationId(Context),
+                Detail = Context.Request.HttpMethod + " " + Context.Request.Path + Environment.NewLine + exception
+            });
+        }
+        if (Context.Response.HeadersWritten) return;
 
         // Replace unhandled failures with a stable response that reveals no implementation detail.
         Server.ClearError();
         Context.Response.Clear();
         Context.Response.TrySkipIisCustomErrors = true;
-        HttpSupport.WritePlainError(Context, 500, "The timestamp service encountered an internal error.");
+        HttpSupport.WritePlainError(Context, invalidInput ? 400 : 500, invalidInput
+            ? "The request contains an invalid value."
+            : "The timestamp service encountered an internal error.");
+        CompleteRequest();
     }
 
     private void RemoveFrameworkHeaders()
