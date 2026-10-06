@@ -1,0 +1,22 @@
+; Generate the TSA signing key on the server where IIS will use it.
+[Version]
+Signature = "$Windows NT$"
+
+[NewRequest]
+Subject = "CN=OpenTimeStamp Timestamp Authority"
+RequestType = PKCS10
+MachineKeySet = TRUE
+Exportable = FALSE
+ProviderName = "Microsoft Software Key Storage Provider"
+KeyAlgorithm = RSA
+KeyLength = 3072
+HashAlgorithm = SHA256
+KeyUsage = 0x80
+KeyUsageProperty = 0x2
+SuppressDefaults = TRUE
+
+; The issuing template must enforce these extensions on the issued certificate.
+[Extensions]
+2.5.29.37 = "{text}1.3.6.1.5.5.7.3.8"
+2.5.29.19 = "{text}CA=FALSE"
+Critical = 2.5.29.37,2.5.29.19

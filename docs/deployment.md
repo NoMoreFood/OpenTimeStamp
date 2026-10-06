@@ -245,6 +245,8 @@ governance. An eligible certificate must:
 The legacy Authenticode endpoint must be disabled when an ML-DSA certificate is
 selected. Any configuration that enables Authenticode requires an RSA key.
 
+For an enterprise CA, follow [Timestamp Signing Certificate Template](timestamp-certificate-template.md) to create and publish the AD CS template, enroll a machine key, and inspect the issued critical EKU. Use [Signing Endpoints and Hash Policies](signing-endpoints.md) when separate application URLs need different certificates, hashes, policies, or authentication.
+
 Install the certificate and chain into `LocalMachine\My` (recommended), then
 grant only the application-pool identity access to its private key:
 

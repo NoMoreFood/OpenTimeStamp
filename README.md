@@ -75,6 +75,8 @@ before exposing the service.
 | Build prerequisites and release publishing | [Build Requirements and Publishing](docs/build-and-publish.md) |
 | MSI installation and signing | [MSI Installer](setup/msi/README.md) |
 | IIS installation, certificates, upgrades, and validation | [IIS Deployment](docs/deployment.md) |
+| AD CS timestamp signing template and enrollment | [Timestamp Signing Certificate Template](docs/timestamp-certificate-template.md) |
+| Separate signing profiles and request/signature hashes | [Signing Endpoints and Hash Policies](docs/signing-endpoints.md) |
 | Admin access, FIPS behavior, state, logs, and operations | [Administration and Operations](docs/administration.md) |
 | Microsoft Office, VBA, and Adobe Acrobat clients | [Client Configuration](docs/client-configuration.md) |
 | Product-signing interoperability tests | [Testing](docs/testing.md) |

@@ -12,6 +12,8 @@ For the default IIS application path `/OpenTimeStamp`:
 There is intentionally no content-sniffing `/timestamp` endpoint. Clients must
 select the protocol explicitly.
 
+For per-application certificate, digest, policy, and authentication settings, see [Signing Endpoints and Hash Policies](signing-endpoints.md). Distinct IIS application roots provide independent signing profiles while retaining these explicit protocol routes.
+
 RFC 3161/RFC 5816 message imprints support MD5, SHA-1, SHA-224, SHA-256,
 SHA-384, and SHA-512 OIDs. Safe defaults enable SHA-256, SHA-384, and SHA-512.
 SHA-224 is an accepted precomputed imprint algorithm, but it is not available as
