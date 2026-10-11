@@ -2,12 +2,16 @@
 
 <#
 .SYNOPSIS
-Configures OpenTimeStamp for the current Adobe Acrobat Continuous user.
+Configures OpenTimeStamp for an Adobe Acrobat or Reader signing user.
 
 .DESCRIPTION
 Adds or reuses an anonymous RFC 3161 timestamp server, selects it as Acrobat's
 default with SHA-256, and by default requires timestamp retrieval to succeed.
 Run this script as each signing user while Acrobat and Reader are closed.
+
+Product and Version select the application's preference branch. UserSid can
+target another user's already loaded registry hive; it defaults to the account
+running the script, including when using PowerShell remoting.
 
 Protected Mode does not require a timestamp URL exception. This script does not
 change Protected Mode, Protected View, Enhanced Security, trusted sites, or
@@ -16,15 +20,15 @@ read-only Protected View signable.
 
 .PARAMETER TimestampUrl
 The exact HTTP(S) RFC 3161 endpoint. HTTPS is required unless
-AllowInsecureHttp is supplied for a loopback development endpoint.
+AllowInsecureHttp is supplied explicitly for an HTTP endpoint.
 
 .PARAMETER AllowSigningWithoutTimestamp
 Allows Acrobat to create a signature using the local clock if timestamp
 retrieval fails. Omit this switch to fail closed when no timestamp is available.
 
 .PARAMETER AllowInsecureHttp
-Permits HTTP only when TimestampUrl is a loopback URL. Use this solely for local
-development; production timestamping should use HTTPS.
+Permits an HTTP timestamp endpoint, including a server on another computer.
+Prefer HTTPS when the network connection needs transport protection.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
@@ -34,6 +38,15 @@ param(
 
     [ValidateNotNullOrEmpty()]
     [string]$ServerName = 'OpenTimeStamp',
+
+    [ValidateSet('Acrobat', 'Reader')]
+    [string]$Product = 'Acrobat',
+
+    [ValidateSet('DC', '2024')]
+    [string]$Version = 'DC',
+
+    [ValidatePattern('^S-1-5-(\d+-)*\d+$')]
+    [string]$UserSid,
 
     [switch]$AllowSigningWithoutTimestamp,
 
@@ -50,7 +63,19 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:acrobatRegistryRoot = $RegistryRoot
+$effectiveRegistryRoot = $RegistryRoot
+if ($UserSid -or $Product -ne 'Acrobat' -or $Version -ne 'DC') {
+    if ($PSBoundParameters.ContainsKey('RegistryRoot')) {
+        throw 'RegistryRoot cannot be combined with UserSid, Product, or Version.'
+    }
+    $userRoot = if ($UserSid) { "Registry::HKEY_USERS\$UserSid" } else { 'Registry::HKEY_CURRENT_USER' }
+    if (-not (Test-Path -LiteralPath $userRoot)) {
+        throw "The registry hive '$userRoot' is not loaded. Run as that user or keep that user signed in."
+    }
+    $productName = if ($Product -eq 'Reader') { 'Acrobat Reader' } else { 'Adobe Acrobat' }
+    $effectiveRegistryRoot = "$userRoot\Software\Adobe\$productName\$Version"
+}
+$script:acrobatRegistryRoot = $effectiveRegistryRoot
 $script:registryJournal = [System.Collections.Generic.List[object]]::new()
 $script:createdRegistryPaths = @{}
 
@@ -61,8 +86,8 @@ function Get-CanonicalTimestampUrl {
         [string]::IsNullOrWhiteSpace($Url.Host)) {
         throw 'TimestampUrl must be an absolute HTTP or HTTPS URL.'
     }
-    if ($Url.Scheme -eq 'http' -and (-not $AllowInsecureHttp -or -not $Url.IsLoopback)) {
-        throw 'TimestampUrl must use HTTPS. -AllowInsecureHttp permits only a loopback development endpoint.'
+    if ($Url.Scheme -eq 'http' -and -not $AllowInsecureHttp) {
+        throw 'TimestampUrl must use HTTPS, or explicitly permit HTTP with -AllowInsecureHttp.'
     }
     if (-not [string]::IsNullOrEmpty($Url.UserInfo) -or
         -not [string]::IsNullOrEmpty($Url.Query) -or
@@ -254,7 +279,7 @@ function Get-AcrobatTimestampServerKey {
         $comparableUrl = $existingUrl
         try { $comparableUrl = Get-CanonicalTimestampUrl -Url ([uri]$existingUrl) }
         catch { }
-        $sameUrl = $comparableUrl.Equals($Url, [StringComparison]::OrdinalIgnoreCase)
+        $sameUrl = $comparableUrl.Equals($Url, [StringComparison]::Ordinal)
         if ($existingName.Equals($ServerName, [StringComparison]::OrdinalIgnoreCase) -and
             -not $sameUrl) {
             throw "Acrobat timestamp server name '$ServerName' already refers to '$existingUrl'."
@@ -275,9 +300,9 @@ if ([string]::IsNullOrWhiteSpace($ServerName) -or $ServerName.IndexOfAny([char[]
     throw 'ServerName must contain visible text on one line.'
 }
 
-$operation = "Configure Adobe Acrobat Continuous timestamping for '$canonicalUrl'"
+$operation = "Configure Adobe $Product $Version timestamping for '$canonicalUrl'"
 if (-not $PSCmdlet.ShouldProcess($script:acrobatRegistryRoot, $operation)) { return }
-if ($RegistryRoot -eq 'Registry::HKEY_CURRENT_USER\Software\Adobe\Adobe Acrobat\DC' -and
+if ($script:acrobatRegistryRoot -notmatch '\\OpenTimeStamp-AcrobatSetupTests-' -and
     (Get-Process -Name 'Acrobat', 'AcroRd32' -ErrorAction SilentlyContinue)) {
     throw 'Close Adobe Acrobat and Reader before changing their current-user timestamp settings.'
 }
@@ -319,7 +344,8 @@ catch {
 }
 
 [PSCustomObject]@{
-    Product = 'Adobe Acrobat Continuous'
+    Product = "Adobe $Product $Version"
+    UserSid = if ($UserSid) { $UserSid } else { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
     TimestampUrl = $canonicalUrl
     ServerRegistryPath = $serverPath
     TimestampRequired = -not [bool]$AllowSigningWithoutTimestamp

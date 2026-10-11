@@ -808,9 +808,11 @@ function Get-ExistingWebSettings {
     return $result
 }
 
-function Test-IssuanceStateUsesAuthenticatedFormat {
+function Test-IssuanceStateUsesCurrentFormat {
     param([string]$EffectiveDataPath)
 
+    # The current release publishes an OTS3 record, which earlier releases cannot read. Its
+    # presence is therefore the point after which the previous binaries must not be reselected.
     $statePath = Join-Path $EffectiveDataPath 'issuance.state'
     if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { return $false }
     try {
@@ -822,7 +824,7 @@ function Test-IssuanceStateUsesAuthenticatedFormat {
         try {
             $magic = New-Object byte[] 4
             if ($stream.Read($magic, 0, 4) -ne 4) { return $false }
-            return $magic[0] -eq 0x4f -and $magic[1] -eq 0x54 -and $magic[2] -eq 0x53 -and $magic[3] -eq 0x32
+            return $magic[0] -eq 0x4f -and $magic[1] -eq 0x54 -and $magic[2] -eq 0x53 -and $magic[3] -eq 0x33
         }
         finally {
             $stream.Dispose()
@@ -833,36 +835,22 @@ function Test-IssuanceStateUsesAuthenticatedFormat {
     }
 }
 
-function Test-IssuanceStateHasAuthenticatedRuntimeEvidence {
-    param([string]$EffectiveDataPath)
-
-    if (Test-IssuanceStateUsesAuthenticatedFormat -EffectiveDataPath $EffectiveDataPath) {
-        return $true
-    }
-    foreach ($name in @('issuance.state.meta', 'issuance.state.meta.bak', 'issuance.state.meta.new')) {
-        if (Test-Path -LiteralPath (Join-Path $EffectiveDataPath $name) -PathType Leaf) {
-            return $true
-        }
-    }
-    return $false
+function Get-IssuanceStateFileNames {
+    # Every file an issuance store may leave behind, apart from its coordination lock. The first
+    # three are current and must stay aligned with IssuanceStateStore; the rest were written only
+    # by earlier releases and still prove that a data directory holds issuance state.
+    return @(
+        'issuance.state', 'issuance.state.bak', 'issuance.state.new',
+        'issuance.state.bak.new', 'issuance.state.migrate', 'issuance.state.migrate.new',
+        'issuance.state.meta', 'issuance.state.meta.bak', 'issuance.state.meta.new')
 }
 
 function Test-IssuanceStateArtifactsPresent {
     param([string]$EffectiveDataPath)
 
-    # Keep this list aligned with IssuanceStateStore.PersistentArtifactPaths().
-    # A marked data directory with none of these files is not a fresh install:
-    # silently reseeding it would destroy serial-number continuity after data loss.
-    foreach ($name in @(
-        'issuance.state',
-        'issuance.state.bak',
-        'issuance.state.new',
-        'issuance.state.bak.new',
-        'issuance.state.migrate',
-        'issuance.state.migrate.new',
-        'issuance.state.meta',
-        'issuance.state.meta.bak',
-        'issuance.state.meta.new')) {
+    # A marked data directory with none of these files is not a fresh install: silently
+    # recreating its state would discard the issuance clock that rollback and ordering checks use.
+    foreach ($name in @(Get-IssuanceStateFileNames)) {
         if (Test-Path -LiteralPath (Join-Path $EffectiveDataPath $name) -PathType Leaf) {
             return $true
         }
@@ -875,10 +863,7 @@ function Get-IssuanceStateArtifactNames {
     param([string]$EffectiveDataPath)
 
     $names = @()
-    foreach ($name in @(
-        'issuance.state', 'issuance.state.bak', 'issuance.state.new', 'issuance.state.bak.new',
-        'issuance.state.migrate', 'issuance.state.migrate.new', 'issuance.state.meta',
-        'issuance.state.meta.bak', 'issuance.state.meta.new', 'issuance.state.lock')) {
+    foreach ($name in @(Get-IssuanceStateFileNames) + 'issuance.state.lock') {
         if (Test-Path -LiteralPath (Join-Path $EffectiveDataPath $name) -PathType Leaf) { $names += $name }
     }
     return $names
@@ -890,24 +875,34 @@ function Initialize-IssuanceStateFromRelease {
         [string]$EffectiveDataPath
     )
 
-    $assemblyPath = Join-Path $ReleasePath 'bin\OpenTimeStamp.Core.dll'
+    $assemblyPath = (Join-Path $ReleasePath 'bin\OpenTimeStamp.Core.dll').Replace("'", "''")
+    $statePath = (Join-Path $EffectiveDataPath 'issuance.state').Replace("'", "''")
+
+    # A fresh process resolves packaged dependencies beside Core and cannot reuse an earlier release's assemblies.
+    $command = @"
+`$ErrorActionPreference = 'Stop'
+try {
+    `$assembly = [Reflection.Assembly]::LoadFrom('$assemblyPath')
+    `$type = `$assembly.GetType('OpenTimeStamp.Issuance.IssuanceStateStore', `$true)
+    `$store = [Activator]::CreateInstance(`$type, [object[]]@([string]'$statePath'))
+    [void]`$type.GetMethod('Initialize').Invoke(`$store, @())
+}
+catch { [Console]::Error.WriteLine(`$_.Exception.GetBaseException().Message); exit 1 }
+"@
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $startInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' +
+        [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($startInfo)
     try {
-        # Load the selected release bytes without LoadFrom identity unification.
-        # That guarantees a second deployment in the same PowerShell process
-        # cannot accidentally reuse an older, same-version Core assembly.
-        $assemblyBytes = [System.IO.File]::ReadAllBytes($assemblyPath)
-        $assembly = [System.Reflection.Assembly]::Load($assemblyBytes)
-        $type = $assembly.GetType('OpenTimeStamp.Issuance.IssuanceStateStore', $true)
-        $store = [System.Activator]::CreateInstance(
-            $type, [object[]]@([string](Join-Path $EffectiveDataPath 'issuance.state')))
-        $method = $type.GetMethod('Initialize', [System.Reflection.BindingFlags]::Instance -bor [System.Reflection.BindingFlags]::Public)
-        if ($null -eq $method) { throw 'The published Core assembly does not expose IssuanceStateStore.Initialize().' }
-        [void]$method.Invoke($store, @())
+        $detail = $process.StandardError.ReadToEnd().Trim()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { throw "Issuance-state initialization failed: $detail" }
     }
-    catch [System.Reflection.TargetInvocationException] {
-        $detail = if ($null -eq $_.Exception.InnerException) { $_.Exception.Message } else { $_.Exception.InnerException.Message }
-        throw "Issuance-state initialization failed: $detail"
-    }
+    finally { $process.Dispose() }
 }
 
 function Get-PoolStateValue {
@@ -1569,7 +1564,7 @@ if ($dataClassification.Kind -eq 'Marked' -and
     -not (Test-IssuanceStateArtifactsPresent -EffectiveDataPath $runtimeDataPath) -and
     -not (Test-OpenTimeStampDataDirectoryUninitializedScaffolding `
         -Classification $dataClassification)) {
-    throw "The marked DataPath '$runtimeDataPath' contains no issuance-state artifacts. Refusing to reseed serial state; restore the complete state set from a known-good backup or use a genuinely new data directory for a new installation."
+    throw "The marked DataPath '$runtimeDataPath' contains no issuance-state artifacts. Refusing to recreate issuance state; restore issuance.state from a backup or use a genuinely new data directory for a new installation."
 }
 
 $hostCandidates = [System.Collections.Generic.List[string]]::new()
@@ -1713,7 +1708,7 @@ try {
     $dataInitialization = $null
     $dataDirectoryInitialization = $null
     $caughtError = $null
-    $issuanceStateWasAuthenticatedFormat = Test-IssuanceStateUsesAuthenticatedFormat -EffectiveDataPath $runtimeDataPath
+    $issuanceStateWasCurrentFormat = Test-IssuanceStateUsesCurrentFormat -EffectiveDataPath $runtimeDataPath
     $issuanceMigrationCommitted = $false
     $targetPoolConfigurationChanged = $false
     $dataAclChanged = $false
@@ -2015,7 +2010,7 @@ try {
         -RequireHttps $effectiveRequireHttps
 
     # Initialize durable state before allowing the dedicated pool to serve requests.
-    # OTS1 -> OTS2 is never rolled back to a lagging backup.
+    # A committed migration to the current state format is never rolled back.
     $currentDataClassification = Get-OpenTimeStampDataDirectoryClassification -Path $runtimeDataPath
     $newMarkerWithoutPriorIssuanceState = [bool]$dataInitialization.MarkerCreated -and
         $issuanceArtifactsBefore.Count -eq 0
@@ -2024,7 +2019,7 @@ try {
         -not $newMarkerWithoutPriorIssuanceState -and
         -not (Test-OpenTimeStampDataDirectoryUninitializedScaffolding `
             -Classification $currentDataClassification)) {
-        throw 'All issuance-state artifacts disappeared from the existing marked DataPath during deployment. Refusing to create a replacement serial sequence.'
+        throw 'All issuance-state artifacts disappeared from the existing marked DataPath during deployment. Refusing to recreate issuance state.'
     }
     # External IIS administrators are not serialized by the deployment mutex.
     # Recheck storage and dedicated-pool ownership at the final commit boundary.
@@ -2083,8 +2078,8 @@ try {
             -ExpectedDataDirectoryId ([string]$dataInitialization.MarkerId) | Out-Null
     }
     finally {
-        $issuanceMigrationCommitted = -not $issuanceStateWasAuthenticatedFormat -and
-            (Test-IssuanceStateHasAuthenticatedRuntimeEvidence -EffectiveDataPath $runtimeDataPath)
+        $issuanceMigrationCommitted = -not $issuanceStateWasCurrentFormat -and
+            (Test-IssuanceStateUsesCurrentFormat -EffectiveDataPath $runtimeDataPath)
     }
 
     # Commit the complete application lifecycle policy only after issuance state is durable.
@@ -2324,7 +2319,7 @@ catch {
             'be restored exactly.')
     }
     elseif ($applicationPointerChanged) {
-        Write-Warning 'The issuance store is now OTS2. Binary rollback was suppressed because the prior release cannot safely read authenticated state; the new release remains selected.'
+        Write-Warning 'The issuance state is now in the current format. Binary rollback was suppressed because the prior release cannot read it; the new release remains selected.'
     }
 
     if (-not $applicationExists -and -not $issuanceMigrationCommitted -and $iisLifecycleStateRestored -and
