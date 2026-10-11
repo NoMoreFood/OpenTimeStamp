@@ -34,7 +34,6 @@ internal static class WebHandlerTests
         tests.Add(new TestCase("Timestamp body intake does not consume processing capacity", TimestampAdmissionUsesIndependentTiers));
         tests.Add(new TestCase("Timestamp body intake is bounded per transport peer", TimestampAdmissionUsesPerPeerLimit));
         tests.Add(new TestCase("Timestamp processing is bounded per transport peer", TimestampProcessingUsesPerPeerLimit));
-        tests.Add(new TestCase("Timestamp admission limits span worker processes", TimestampAdmissionUsesNamedSharedLimits));
         tests.Add(new TestCase("Timestamp body deadline aborts and observes pending read", TimestampBodyDeadlineAbortsPendingRead));
         tests.Add(new TestCase("Timestamp body deadline releases a non-cancelable read", TimestampBodyDeadlineBoundsAbortObservation));
         tests.Add(new TestCase(
@@ -322,9 +321,20 @@ internal static class WebHandlerTests
             property.SetValue(changed, replacement);
             var detail = AdminHandler.DescribeConfigurationChange(baseline, changed);
             AssertEx.True(
-                detail.EndsWith("; changed=" + property.Name, StringComparison.Ordinal),
-                property.Name + " is missing from the configuration audit descriptor.");
+                detail.StartsWith("changed=" + property.Name + ": ", StringComparison.Ordinal) &&
+                detail.IndexOf(" -> ", StringComparison.Ordinal) > 0 &&
+                detail.IndexOf(';') < 0,
+                property.Name + " is missing from the configuration audit descriptor: " + detail);
         }
+
+        AssertEx.Equal("changed=none", AdminHandler.DescribeConfigurationChange(baseline, baseline.Clone()));
+        var edited = baseline.Clone();
+        edited.FailClosedOnAuditError = false;
+        edited.AdminAllowedWindowsGroups = ["CONTOSO\\TSA Admins", "S-1-5-32-544"];
+        AssertEx.Equal(
+            "changed=AdminAllowedWindowsGroups: [BUILTIN\\Administrators] -> [CONTOSO\\TSA Admins, S-1-5-32-544]; " +
+            "FailClosedOnAuditError: True -> False",
+            AdminHandler.DescribeConfigurationChange(baseline, edited));
     }
 
     private static void FipsLegacyHashTransitionIsFailSafe()
@@ -535,7 +545,7 @@ internal static class WebHandlerTests
 
     private static void TimestampAdmissionUsesIndependentTiers()
     {
-        using var admission = new TimestampAdmissionController(8, 2, 8);
+        var admission = new TimestampAdmissionController(8, 2, 8);
         List<IDisposable> bodyLeases = [];
         IDisposable firstProcessing = null;
         IDisposable secondProcessing = null;
@@ -576,7 +586,7 @@ internal static class WebHandlerTests
 
     private static void TimestampAdmissionUsesPerPeerLimit()
     {
-        using var admission = new TimestampAdmissionController(6, 1, 2);
+        var admission = new TimestampAdmissionController(6, 1, 2);
         var firstA = admission.TryEnterBodyIntake("192.0.2.10");
         var secondA = admission.TryEnterBodyIntake("192.0.2.10");
         var firstB = admission.TryEnterBodyIntake("192.0.2.11");
@@ -616,7 +626,7 @@ internal static class WebHandlerTests
 
     private static void TimestampProcessingUsesPerPeerLimit()
     {
-        using var admission = new TimestampAdmissionController(6, 4, 6, 2);
+        var admission = new TimestampAdmissionController(6, 4, 6, 2);
         var firstA = admission.TryEnterProcessing("192.0.2.10");
         var secondA = admission.TryEnterProcessing("192.0.2.10");
         var firstB = admission.TryEnterProcessing("192.0.2.11");
@@ -641,41 +651,6 @@ internal static class WebHandlerTests
         }
 
         AssertEx.Equal(0, admission.ActiveProcessingClientCount);
-    }
-
-    private static void TimestampAdmissionUsesNamedSharedLimits()
-    {
-        var scope = "Local\\OpenTimeStamp-Tests-" + Guid.NewGuid().ToString("N");
-        using var workerA = new TimestampAdmissionController(2, 2, 1, 1, scope);
-        using var workerB = new TimestampAdmissionController(2, 2, 1, 1, scope);
-        var bodyA = workerA.TryEnterBodyIntake("192.0.2.10");
-        IDisposable bodyB = null;
-        var processingA = workerA.TryEnterProcessing("192.0.2.10");
-        IDisposable processingB = null;
-        try
-        {
-            AssertEx.NotNull(bodyA);
-            AssertEx.True(workerB.TryEnterBodyIntake("192.0.2.10") is null,
-                "The per-peer body limit must span controllers that simulate separate workers.");
-            bodyB = workerB.TryEnterBodyIntake("192.0.2.11");
-            AssertEx.NotNull(bodyB);
-            AssertEx.True(workerA.TryEnterBodyIntake("192.0.2.12") is null,
-                "The global body limit must span controllers that simulate separate workers.");
-            AssertEx.NotNull(processingA);
-            AssertEx.True(workerB.TryEnterProcessing("192.0.2.10") is null,
-                "The per-peer processing limit must span controllers that simulate separate workers.");
-            processingB = workerB.TryEnterProcessing("192.0.2.11");
-            AssertEx.NotNull(processingB);
-            AssertEx.True(workerA.TryEnterProcessing("192.0.2.12") is null,
-                "The global processing limit must span controllers that simulate separate workers.");
-        }
-        finally
-        {
-            bodyA?.Dispose();
-            bodyB?.Dispose();
-            processingA?.Dispose();
-            processingB?.Dispose();
-        }
     }
 
     private static void TimestampBodyDeadlineAbortsPendingRead()

@@ -31,57 +31,9 @@ public sealed class AuthenticodeTimestampProcessor
     private const int MaximumSignatureLength = 1048576;
 
     public const string CounterSignatureTypeOid = KnownOids.AuthenticodeCounterSignature;
-    public const string DataContentTypeOid = KnownOids.Pkcs7DataValue;
+    public const string DataContentTypeOid = KnownOids.Pkcs7Data;
 
-    public AuthenticodeResult Process(
-        byte[] encodedRequest,
-        ServiceConfiguration configuration,
-        X509Certificate2 certificate,
-        IssuanceStateStore stateStore,
-        DateTime utcNow) =>
-        Process(encodedRequest, configuration, certificate, stateStore, utcNow, CancellationToken.None);
-
-    public AuthenticodeResult Process(
-        byte[] encodedRequest,
-        ServiceConfiguration configuration,
-        X509Certificate2 certificate,
-        IssuanceStateStore stateStore,
-        DateTime utcNow,
-        CancellationToken cancellationToken)
-    {
-        ValidateInvocation(configuration);
-        return ProcessParsedSignatureCore(
-            ParseRequest(encodedRequest),
-            configuration,
-            certificate,
-            stateStore,
-            () => utcNow,
-            cancellationToken);
-    }
-
-    public AuthenticodeResult ProcessParsedSignature(
-        byte[] signature,
-        ServiceConfiguration configuration,
-        X509Certificate2 certificate,
-        IssuanceStateStore stateStore,
-        DateTime utcNow) =>
-        ProcessParsedSignature(
-            signature,
-            configuration,
-            certificate,
-            stateStore,
-            utcNow,
-            CancellationToken.None);
-
-    public AuthenticodeResult ProcessParsedSignature(
-        byte[] signature,
-        ServiceConfiguration configuration,
-        X509Certificate2 certificate,
-        IssuanceStateStore stateStore,
-        DateTime utcNow,
-        CancellationToken cancellationToken) =>
-        ProcessParsedSignature(signature, configuration, certificate, stateStore, () => utcNow, cancellationToken);
-
+    /// <summary>Countersigns a signature already extracted by <see cref="ParseRequest"/>.</summary>
     public AuthenticodeResult ProcessParsedSignature(
         byte[] signature,
         ServiceConfiguration configuration,
@@ -98,23 +50,6 @@ public sealed class AuthenticodeTimestampProcessor
                 "The parsed Authenticode signature must contain between 1 byte and 1 MiB.");
         }
 
-        return ProcessParsedSignatureCore(
-            signature,
-            configuration,
-            certificate,
-            stateStore,
-            utcNowProvider,
-            cancellationToken);
-    }
-
-    private static AuthenticodeResult ProcessParsedSignatureCore(
-        byte[] signature,
-        ServiceConfiguration configuration,
-        X509Certificate2 certificate,
-        IssuanceStateStore stateStore,
-        Func<DateTime> utcNowProvider,
-        CancellationToken cancellationToken)
-    {
         var signingHash = HashAlgorithmCatalog.FindByName(configuration.SigningDigestAlgorithm);
         if (!PlatformSecurityPolicy.IsSigningHashAllowed(signingHash))
         {
@@ -225,10 +160,6 @@ public sealed class AuthenticodeTimestampProcessor
 
             return signature;
         }
-        catch (AuthenticodeProtocolException)
-        {
-            throw;
-        }
         catch (Exception ex) when (ex is DerEncodingException or ArgumentException or OverflowException)
         {
             throw new AuthenticodeProtocolException("The Authenticode timestamp request is malformed.", ex);
@@ -236,15 +167,5 @@ public sealed class AuthenticodeTimestampProcessor
     }
 }
 
-public sealed class AuthenticodeProtocolException : Exception
-{
-    public AuthenticodeProtocolException(string message)
-        : base(message)
-    {
-    }
-
-    public AuthenticodeProtocolException(string message, Exception innerException)
-        : base(message, innerException)
-    {
-    }
-}
+public sealed class AuthenticodeProtocolException(string message, Exception innerException = null)
+    : Exception(message, innerException);

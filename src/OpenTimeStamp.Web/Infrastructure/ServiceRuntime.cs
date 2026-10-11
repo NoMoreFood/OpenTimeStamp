@@ -6,12 +6,13 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography.X509Certificates;
-using System.Text;
 using System.Threading;
 using OpenTimeStamp.Audit;
 using OpenTimeStamp.Configuration;
 using OpenTimeStamp.Cryptography;
+using OpenTimeStamp.Infrastructure;
 using OpenTimeStamp.Issuance;
+using ConfigurationErrorsException = OpenTimeStamp.Configuration.ConfigurationErrorsException;
 
 namespace OpenTimeStamp.Web.Infrastructure;
 
@@ -156,10 +157,9 @@ internal sealed class WebRuntimeSettings
     internal static WebRuntimeSettings Load()
     {
         var authenticationMode = (ConfigurationManager.AppSettings["AuthenticationMode"] ?? string.Empty).Trim();
-        if (!string.Equals(authenticationMode, "Anonymous", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(authenticationMode, "Windows", StringComparison.OrdinalIgnoreCase))
+        if (!ServiceConfiguration.IsAuthenticationMode(authenticationMode))
         {
-            throw new OpenTimeStamp.Configuration.ConfigurationErrorsException(
+            throw new ConfigurationErrorsException(
                 "The IIS authentication setting must be Anonymous or Windows and cannot be changed while the service is running.");
         }
 
@@ -207,7 +207,7 @@ internal sealed class WebRuntimeSettings
             return parsed;
         }
 
-        throw new OpenTimeStamp.Configuration.ConfigurationErrorsException(
+        throw new ConfigurationErrorsException(
             key + " must be an integer between " + minimum.ToString(CultureInfo.InvariantCulture) + " and " +
             maximum.ToString(CultureInfo.InvariantCulture) + ".");
     }
@@ -244,8 +244,6 @@ internal static class ServiceRuntime
 
     internal static WebRuntimeSettings Settings { get; private set; }
 
-    internal static string AdmissionScopeName { get; private set; }
-
     internal static long ConfigurationVersion => Interlocked.Read(ref configurationVersion);
 
     internal static IReadOnlyList<RecentRequestActivity> GetRecentRequests(int maximum) =>
@@ -257,9 +255,7 @@ internal static class ServiceRuntime
         {
             RecentRequests.Record(record);
         }
-        catch (Exception ex) when (ex is not OutOfMemoryException and
-                                   not StackOverflowException and
-                                   not ThreadAbortException)
+        catch (Exception ex) when (ex.IsContainable())
         {
             // Dashboard activity is explicitly non-authoritative and must not affect issuance.
         }
@@ -279,16 +275,16 @@ internal static class ServiceRuntime
         EnsureInitialized();
         var now = Stopwatch.GetTimestamp();
         var cached = Volatile.Read(ref cachedConfiguration);
-        if (cached != null && IsBefore(now, Interlocked.Read(ref nextConfigurationRefreshTimestamp)))
+        if (cached is not null && IsBefore(now, Interlocked.Read(ref nextConfigurationRefreshTimestamp)))
             return CreateSnapshot(cached);
 
         lock (ConfigurationGate)
         {
             now = Stopwatch.GetTimestamp();
             cached = cachedConfiguration;
-            if (cached != null && IsBefore(now, nextConfigurationRefreshTimestamp)) return CreateSnapshot(cached);
+            if (cached is not null && IsBefore(now, nextConfigurationRefreshTimestamp)) return CreateSnapshot(cached);
 
-            if (cached != null)
+            if (cached is not null)
             {
                 var currentGeneration = Configuration.GetGeneration();
                 if (string.Equals(currentGeneration, cached.Generation, StringComparison.Ordinal))
@@ -356,7 +352,6 @@ internal static class ServiceRuntime
             IssuanceState = issuanceState;
             Audit = audit;
             Diagnostics = diagnostics;
-            AdmissionScopeName = CreateAdmissionScopeName(dataDirectory);
             StartedUtc = DateTime.UtcNow;
             initialized = true;
 
@@ -365,7 +360,7 @@ internal static class ServiceRuntime
             {
                 _ = LoadSnapshot();
             }
-            catch (OpenTimeStamp.Configuration.ConfigurationErrorsException ex)
+            catch (ConfigurationErrorsException ex)
             {
                 Diagnostics.Record(new AuditRecord
                 {
@@ -384,7 +379,7 @@ internal static class ServiceRuntime
         string generation,
         long now)
     {
-        var firstConfiguration = cachedConfiguration == null;
+        var firstConfiguration = cachedConfiguration is null;
         var published = new CachedConfiguration(
             configuration.Clone(),
             generation,
@@ -416,16 +411,6 @@ internal static class ServiceRuntime
         var configuration = Configuration.Load(out generation);
         configuration.AuthenticationMode = Settings.AuthenticationMode;
         return configuration;
-    }
-
-    private static string CreateAdmissionScopeName(string dataDirectory)
-    {
-        var canonicalPath = Path.GetFullPath(dataDirectory).TrimEnd(Path.DirectorySeparatorChar).ToUpperInvariant();
-        var digest = WindowsHash.ComputeSha256(Encoding.Unicode.GetBytes(canonicalPath));
-        var builder = new StringBuilder(32);
-        for (var index = 0; index < 16; index++)
-            builder.Append(digest[index].ToString("x2", CultureInfo.InvariantCulture));
-        return "Local\\OpenTimeStamp-" + builder;
     }
 
     private static bool IsBefore(long timestamp, long deadline)

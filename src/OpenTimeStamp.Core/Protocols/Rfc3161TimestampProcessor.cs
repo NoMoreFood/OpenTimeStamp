@@ -28,64 +28,15 @@ public sealed class Rfc3161TimestampProcessor
         }
         catch (Rfc3161ProtocolException ex)
         {
-            rejection = Rejection(ex.FailureInfo, ex.Message, request);
+            rejection = CreateRejection(ex.FailureInfo, ex.Message, request);
             return false;
         }
         catch (InvalidOperationException ex)
         {
-            rejection = Rejection(Rfc3161FailureInfo.SystemFailure, ex.Message, request);
+            rejection = CreateRejection(Rfc3161FailureInfo.SystemFailure, ex.Message, request);
             return false;
         }
     }
-
-    public Rfc3161Result Process(
-        byte[] encodedRequest,
-        ServiceConfiguration configuration,
-        X509Certificate2 certificate,
-        IssuanceStateStore stateStore,
-        DateTime utcNow) =>
-        Process(encodedRequest, configuration, certificate, stateStore, utcNow, CancellationToken.None);
-
-    public Rfc3161Result Process(
-        byte[] encodedRequest,
-        ServiceConfiguration configuration,
-        X509Certificate2 certificate,
-        IssuanceStateStore stateStore,
-        DateTime utcNow,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            return Process(
-                Rfc3161Request.Parse(encodedRequest),
-                configuration,
-                certificate,
-                stateStore,
-                utcNow,
-                cancellationToken);
-        }
-        catch (Rfc3161ProtocolException ex)
-        {
-            return Rejection(ex.FailureInfo, ex.Message, null);
-        }
-    }
-
-    public Rfc3161Result Process(
-        Rfc3161Request request,
-        ServiceConfiguration configuration,
-        X509Certificate2 certificate,
-        IssuanceStateStore stateStore,
-        DateTime utcNow) =>
-        Process(request, configuration, certificate, stateStore, utcNow, CancellationToken.None);
-
-    public Rfc3161Result Process(
-        Rfc3161Request request,
-        ServiceConfiguration configuration,
-        X509Certificate2 certificate,
-        IssuanceStateStore stateStore,
-        DateTime utcNow,
-        CancellationToken cancellationToken) =>
-        Process(request, configuration, certificate, stateStore, () => utcNow, cancellationToken);
 
     public Rfc3161Result Process(
         Rfc3161Request request,
@@ -153,15 +104,15 @@ public sealed class Rfc3161TimestampProcessor
         }
         catch (Rfc3161ProtocolException ex)
         {
-            return Rejection(ex.FailureInfo, ex.Message, request);
+            return CreateRejection(ex.FailureInfo, ex.Message, request);
         }
         catch (ClockRollbackException ex)
         {
-            return Rejection(Rfc3161FailureInfo.TimeNotAvailable, ex.Message, request);
+            return CreateRejection(Rfc3161FailureInfo.TimeNotAvailable, ex.Message, request);
         }
         catch (Exception ex) when (ex is CryptographicException or InvalidOperationException or IssuanceStateException)
         {
-            return Rejection(Rfc3161FailureInfo.SystemFailure, ex.Message, request);
+            return CreateRejection(Rfc3161FailureInfo.SystemFailure, ex.Message, request);
         }
     }
 
@@ -260,7 +211,7 @@ public sealed class Rfc3161TimestampProcessor
             }
 
             if (configuration.Ordering) tstInfo.WriteBoolean(true);
-            if (request.Nonce is not null) tstInfo.WritePositiveInteger(request.Nonce);
+            if (request.Nonce is not null) tstInfo.WriteInteger(request.Nonce);
         });
         return writer.Encode();
     }
@@ -277,9 +228,15 @@ public sealed class Rfc3161TimestampProcessor
         return writer.Encode();
     }
 
-    private static Rfc3161Result Rejection(Rfc3161FailureInfo failure, string detail, Rfc3161Request request)
+    /// <summary>
+    /// Builds a standards-shaped rejection. <paramref name="detail"/> is retained for server
+    /// auditing only; the encoded response carries a generic status string.
+    /// </summary>
+    public static Rfc3161Result CreateRejection(
+        Rfc3161FailureInfo failure,
+        string detail,
+        Rfc3161Request request = null)
     {
-        // Return a standards-shaped rejection while retaining private detail for server auditing.
         DerWriter writer = new();
         writer.WriteSequence(response => response.WriteSequence(status =>
         {

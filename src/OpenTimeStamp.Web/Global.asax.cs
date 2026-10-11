@@ -33,20 +33,19 @@ public class Global : HttpApplication
             Result = "information",
             Detail = "The timestamp service worker is stopping: " + HostingEnvironment.ShutdownReason
         });
-        TimestampHandler.ShutdownAdmission();
         ServiceRuntime.Shutdown();
     }
 
     protected void Application_Error(object sender, EventArgs e)
     {
         var exception = Server.GetLastError();
-        if (exception == null) return;
+        if (exception is null) return;
 
         // Preserve failures independently of the timestamp audit file before clearing the request error.
         var invalidInput = exception.GetBaseException() is HttpRequestValidationException;
         if (!invalidInput)
         {
-            if (ServiceRuntime.Diagnostics == null) return;
+            if (ServiceRuntime.Diagnostics is null) return;
             ServiceRuntime.Diagnostics.Record(new AuditRecord
             {
                 EventType = "unhandled-error",

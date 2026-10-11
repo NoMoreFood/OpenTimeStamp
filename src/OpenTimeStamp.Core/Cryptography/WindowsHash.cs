@@ -14,37 +14,24 @@ public static class WindowsHash
         return difference == 0;
     }
 
-    public static byte[] ComputeSha1(byte[] value)
+    public static byte[] ComputeSha256(byte[] value) => Compute("SHA256", value);
+
+    /// <summary>
+    /// Hashes with the Windows CNG provider for a catalog name that CMS signing supports
+    /// (SHA1, SHA256, SHA384, or SHA512) rather than a managed implementation.
+    /// </summary>
+    public static byte[] Compute(string algorithmName, byte[] value)
     {
         if (value is null) throw new ArgumentNullException(nameof(value));
 
-        // Use the Windows CNG provider rather than a managed hash implementation.
-        using SHA1Cng algorithm = new();
-        return algorithm.ComputeHash(value);
-    }
-
-    public static byte[] ComputeSha256(byte[] value)
-    {
-        if (value is null) throw new ArgumentNullException(nameof(value));
-
-        // Use the Windows CNG provider rather than a managed hash implementation.
-        using SHA256Cng algorithm = new();
-        return algorithm.ComputeHash(value);
-    }
-
-    public static byte[] ComputeSha384(byte[] value)
-    {
-        if (value is null) throw new ArgumentNullException(nameof(value));
-
-        using SHA384Cng algorithm = new();
-        return algorithm.ComputeHash(value);
-    }
-
-    public static byte[] ComputeSha512(byte[] value)
-    {
-        if (value is null) throw new ArgumentNullException(nameof(value));
-
-        using SHA512Cng algorithm = new();
+        using HashAlgorithm algorithm = algorithmName switch
+        {
+            "SHA1" => new SHA1Cng(),
+            "SHA256" => new SHA256Cng(),
+            "SHA384" => new SHA384Cng(),
+            "SHA512" => new SHA512Cng(),
+            _ => throw new CryptographicException("The hash algorithm is not supported.")
+        };
         return algorithm.ComputeHash(value);
     }
 }

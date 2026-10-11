@@ -7,22 +7,47 @@ using OpenTimeStamp.Cryptography;
 
 namespace OpenTimeStamp.Configuration;
 
+public enum LogRollover
+{
+    Daily,
+    Hourly,
+    Weekly
+}
+
 [DataContract(Name = "OpenTimeStampConfiguration", Namespace = "urn:opentimestamp:configuration:v1")]
 public sealed class ServiceConfiguration
 {
+    public const string AnonymousAuthentication = "Anonymous";
+    public const string WindowsAuthentication = "Windows";
     public const string ManualCertificateSelection = "Manual";
     public const string AutomaticCertificateSelection = "Automatic";
     public const string DailyLogRollover = "Daily";
     public const string HourlyLogRollover = "Hourly";
     public const string WeeklyLogRollover = "Weekly";
 
-    public ServiceConfiguration()
+    public ServiceConfiguration() => ApplyDefaults();
+
+    // DataContractSerializer bypasses constructors. Without this hook an element that is absent
+    // from the settings file would silently load as false, zero, or null instead of its default,
+    // turning off fail-closed auditing and log retention among others.
+    [OnDeserializing]
+    private void OnDeserializing(StreamingContext context)
+    {
+        ApplyDefaults();
+
+        // A settings file must state its own schema version, and one written before selection
+        // modes existed pinned a thumbprint; ConfigurationStore maps that absence to Manual.
+        SchemaVersion = 0;
+        CertificateSelectionMode = null;
+    }
+
+    private void ApplyDefaults()
     {
         // Start disabled with modern digest defaults so setup must explicitly select a certificate and policy.
         SchemaVersion = 1;
         Rfc3161Enabled = false;
         AuthenticodeEnabled = false;
-        AuthenticationMode = "Anonymous";
+        AuthenticationMode = AnonymousAuthentication;
         CertificateStoreLocation = StoreLocation.LocalMachine.ToString();
         CertificateStoreName = StoreName.My.ToString();
         CertificateSelectionMode = AutomaticCertificateSelection;
@@ -125,6 +150,22 @@ public sealed class ServiceConfiguration
     public bool UsesAutomaticCertificateSelection =>
         string.Equals(CertificateSelectionMode, AutomaticCertificateSelection, StringComparison.OrdinalIgnoreCase);
 
+    public bool RequiresWindowsAuthentication => IsWindowsAuthentication(AuthenticationMode);
+
+    public static bool IsWindowsAuthentication(string mode) =>
+        string.Equals(mode, WindowsAuthentication, StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsAuthenticationMode(string mode) =>
+        IsWindowsAuthentication(mode) ||
+        string.Equals(mode, AnonymousAuthentication, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Maps a saved rotation name to its schedule, or null when the name is not recognized.</summary>
+    public static LogRollover? ParseLogRollover(string interval) =>
+        string.Equals(interval, DailyLogRollover, StringComparison.OrdinalIgnoreCase) ? LogRollover.Daily :
+        string.Equals(interval, HourlyLogRollover, StringComparison.OrdinalIgnoreCase) ? LogRollover.Hourly :
+        string.Equals(interval, WeeklyLogRollover, StringComparison.OrdinalIgnoreCase) ? LogRollover.Weekly :
+        null;
+
     public ServiceConfiguration Clone()
     {
         var clone = (ServiceConfiguration)MemberwiseClone();
@@ -141,8 +182,7 @@ public sealed class ServiceConfiguration
         // Validate schema, authentication, and certificate-store selectors.
         if (SchemaVersion != 1) errors.Add("The settings file version is not supported by this release.");
 
-        if (!string.Equals(AuthenticationMode, "Anonymous", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(AuthenticationMode, "Windows", StringComparison.OrdinalIgnoreCase))
+        if (!IsAuthenticationMode(AuthenticationMode))
         {
             errors.Add("The IIS authentication mode must be Anonymous or Windows.");
         }
@@ -221,9 +261,7 @@ public sealed class ServiceConfiguration
             errors.Add("Audit log retention must be from 1 through 3,650 days.");
         }
 
-        if (!string.Equals(LogRolloverInterval, DailyLogRollover, StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(LogRolloverInterval, HourlyLogRollover, StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(LogRolloverInterval, WeeklyLogRollover, StringComparison.OrdinalIgnoreCase))
+        if (ParseLogRollover(LogRolloverInterval) is null)
         {
             errors.Add("Audit log rotation must be Daily, Hourly, or Weekly.");
         }

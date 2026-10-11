@@ -69,18 +69,10 @@ internal static class CsrfTokenManager
 
     internal static bool ValidatePayload(byte[] payload, RequestIdentity identity, DateTime utcNow)
     {
-        if (payload == null || payload.Length != PayloadLength || payload[0] != PayloadVersion) return false;
+        if (payload is null || payload.Length != PayloadLength || payload[0] != PayloadVersion) return false;
 
-        long issuedTicks;
-        try
-        {
-            issuedTicks = BitConverter.ToInt64(payload, 1);
-            if (issuedTicks < DateTime.MinValue.Ticks || issuedTicks > DateTime.MaxValue.Ticks) return false;
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
+        var issuedTicks = BitConverter.ToInt64(payload, 1);
+        if (issuedTicks < DateTime.MinValue.Ticks || issuedTicks > DateTime.MaxValue.Ticks) return false;
 
         utcNow = utcNow.ToUniversalTime();
         var issuedUtc = new DateTime(issuedTicks, DateTimeKind.Utc);
@@ -89,12 +81,9 @@ internal static class CsrfTokenManager
             : utcNow.Ticks + FutureClockTolerance.Ticks;
         if (issuedUtc.Ticks > latestIssuedTicks || utcNow - issuedUtc > TokenLifetime) return false;
 
-        var expectedIdentity = GetIdentityDigest(identity);
-        var difference = 0;
-        var identityOffset = 1 + sizeof(long);
-        for (var index = 0; index < IdentityDigestLength; index++)
-            difference |= payload[identityOffset + index] ^ expectedIdentity[index];
-        return difference == 0;
+        var identityDigest = new byte[IdentityDigestLength];
+        Buffer.BlockCopy(payload, 1 + sizeof(long), identityDigest, 0, IdentityDigestLength);
+        return WindowsHash.FixedTimeEquals(identityDigest, GetIdentityDigest(identity));
     }
 
     private static bool TryUnprotect(byte[] protectedToken, out byte[] payload)
@@ -103,7 +92,7 @@ internal static class CsrfTokenManager
         try
         {
             payload = MachineKey.Unprotect(protectedToken, ProtectionPurpose);
-            return payload != null;
+            return payload is not null;
         }
         catch (Exception ex) when (ex is CryptographicException or ArgumentException)
         {
@@ -120,11 +109,7 @@ internal static class CsrfTokenManager
         return WindowsHash.ComputeSha256(Encoding.UTF8.GetBytes(identityKey));
     }
 
-    internal static string AdminPath(HttpRequest request)
-    {
-        var applicationPath = request.ApplicationPath == "/" ? string.Empty : request.ApplicationPath.TrimEnd('/');
-        return applicationPath + "/admin";
-    }
+    internal static string AdminPath(HttpRequest request) => request.ApplicationBasePath + "/admin";
 
     private static string Encode(byte[] value) =>
         Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');

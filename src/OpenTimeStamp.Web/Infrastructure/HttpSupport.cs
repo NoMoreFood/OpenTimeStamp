@@ -2,13 +2,11 @@ using System;
 using System.Buffers;
 using System.Configuration;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Principal;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
@@ -26,6 +24,13 @@ internal sealed class RequestIdentity
 internal static class HttpSupport
 {
     private static readonly TimeSpan AbortedReadObservationGrace = TimeSpan.FromMilliseconds(250);
+
+    extension(HttpRequest request)
+    {
+        /// <summary>The application's virtual path without a trailing slash; empty at a site root.</summary>
+        internal string ApplicationBasePath =>
+            request.ApplicationPath == "/" ? string.Empty : request.ApplicationPath.TrimEnd('/');
+    }
 
     internal static string GetCorrelationId(HttpContext context)
     {
@@ -234,7 +239,7 @@ internal static class HttpSupport
         finally
         {
             // A detached read still owns its destination buffer until it completes.
-            if (pooled && readTask != null && !readTask.IsCompleted)
+            if (pooled && readTask is not null && !readTask.IsCompleted)
             {
                 _ = readTask.ContinueWith(
                     _ => bufferPool.Return(output, true),
@@ -387,27 +392,12 @@ internal static class HttpSupport
         context.Response.ContentType = "text/plain; charset=utf-8";
         context.Response.Write(message ?? "Request failed.");
     }
-
-    public static string ToHex(byte[] value)
-    {
-        if (value is null) return null;
-
-        var builder = new StringBuilder(value.Length * 2);
-        foreach (var item in value) builder.Append(item.ToString("x2", CultureInfo.InvariantCulture));
-
-        return builder.ToString();
-    }
 }
 
-internal sealed class RequestBodyException : Exception
+internal sealed class RequestBodyException(int statusCode, bool connectionAborted, string message)
+    : Exception(message)
 {
-    internal RequestBodyException(int statusCode, bool connectionAborted, string message)
-        : base(message)
-    {
-        StatusCode = statusCode;
-        ConnectionAborted = connectionAborted;
-    }
+    internal int StatusCode { get; } = statusCode;
 
-    internal int StatusCode { get; }
-    internal bool ConnectionAborted { get; }
+    internal bool ConnectionAborted { get; } = connectionAborted;
 }

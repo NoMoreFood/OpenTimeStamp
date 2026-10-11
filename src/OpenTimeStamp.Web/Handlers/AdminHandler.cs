@@ -12,6 +12,7 @@ using System.Web;
 using OpenTimeStamp.Audit;
 using OpenTimeStamp.Configuration;
 using OpenTimeStamp.Cryptography;
+using OpenTimeStamp.Infrastructure;
 using OpenTimeStamp.Issuance;
 using OpenTimeStamp.Web.Infrastructure;
 
@@ -21,6 +22,71 @@ internal sealed class AdminHandler : IHttpHandler
 {
     private const int RecentUserDisplayLimit = 20;
     private const int RecentRequestDisplayLimit = 50;
+    private const string Styles = """
+        :root{color-scheme:light;--ink:#17212b;--muted:#5b6b7c;--primary:#0b5cab;--primary-dark:#08477f;--accent:#0e8a76;--border:#d7e0e8;--surface:#fff;--surface-soft:#f7f9fc;--shadow:0 12px 30px rgba(32,55,79,.08)}
+        *{box-sizing:border-box}
+        body{margin:0;background:linear-gradient(180deg,#edf4fb 0,#f5f7fa 18rem);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+        main{overflow-wrap:anywhere;max-width:92rem;margin:auto;padding:clamp(1rem,3vw,2.5rem)}
+        h1,h2{line-height:1.2}
+        h1{margin:.1rem 0 .35rem;font-size:clamp(1.7rem,3vw,2.35rem);letter-spacing:-.035em}
+        h2{margin:0;font-size:1.35rem;letter-spacing:-.015em}
+        a{color:var(--primary);text-underline-offset:.18em}
+        .page-header{display:flex;flex-wrap:wrap;gap:1rem;align-items:center;margin-bottom:2rem;padding:1.35rem 1.5rem;background:linear-gradient(135deg,#fff 35%,#f1f7fc);border:1px solid rgba(11,92,171,.16);border-radius:1rem;box-shadow:var(--shadow)}
+        .page-header>div:last-child{flex:1 1 18rem;min-width:0}
+        .brand-mark{display:grid;place-items:center;flex:0 0 3.25rem;height:3.25rem;border-radius:.8rem;background:linear-gradient(135deg,var(--primary),#1785bd);color:#fff;font-size:.8rem;font-weight:800;letter-spacing:.08em;box-shadow:0 8px 18px rgba(11,92,171,.22)}
+        .eyebrow{margin:0 0 .25rem;color:var(--primary);font-size:.72rem;font-weight:800;letter-spacing:.11em;text-transform:uppercase}
+        .page-header .muted{margin:0}
+        .section-title{display:flex;align-items:end;justify-content:space-between;gap:1rem;margin:0 0 1rem}
+        .section-title .muted{margin:.35rem 0 0}
+        .refresh{display:inline-flex;align-items:center;flex:0 0 auto;padding:.5rem .8rem;border:1px solid #b9cee2;border-radius:999px;background:rgba(255,255,255,.8);font-weight:700;text-decoration:none}
+        .refresh:hover{background:#fff;border-color:var(--primary)}
+        .dashboard{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1rem;margin:0 0 1rem}
+        .card{min-width:0;padding:1rem 1.1rem;background:var(--surface);border:1px solid var(--border);border-top:3px solid #8da4b8;border-radius:.75rem;box-shadow:0 5px 16px rgba(32,55,79,.045)}
+        .card.status{border-top-color:#d29222}
+        .card.certificate{border-top-color:#7867b7}
+        .card.outcomes{border-top-color:var(--accent)}
+        .card.worker{border-top-color:var(--primary)}
+        .card-label{color:var(--muted);font-size:.76rem;font-weight:750;letter-spacing:.055em;text-transform:uppercase}
+        .card strong{display:block;margin:.3rem 0 .1rem;font-size:1.2rem;line-height:1.25}
+        .card .muted{display:block;overflow-wrap:anywhere}
+        .generation{display:block;margin-top:.15rem;color:#40586e}
+        .section,fieldset{background:var(--surface);border:1px solid var(--border);border-radius:.8rem;box-shadow:0 5px 18px rgba(32,55,79,.04)}
+        .section{margin:1rem 0;padding:1.25rem 1.4rem}
+        .section h2{margin-bottom:.4rem}
+        .section .muted{margin-top:0}
+        form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}
+        fieldset{min-width:0;margin:0;padding:1rem 1.25rem 1.2rem}
+        fieldset:last-of-type{grid-column:1/-1}
+        legend{max-width:100%;padding:0 .35rem;color:#26394a;font-weight:800}
+        label{display:block;margin:.75rem 0;color:#314355;font-weight:650}
+        .inline{display:inline-flex;align-items:flex-start;gap:.3rem;margin:.35rem 1rem .35rem 0;font-weight:500}
+        input[type=checkbox],input[type=radio]{margin-top:.28rem;accent-color:var(--primary)}
+        input[type=text],input[type=number],select,textarea{display:block;width:100%;max-width:48rem;margin-top:.3rem;padding:.62rem .7rem;background:#fbfcfe;border:1px solid #aebbc7;border-radius:.4rem;color:var(--ink);font:inherit;transition:border-color .15s,box-shadow .15s}
+        input[type=text]:focus,input[type=number]:focus,select:focus,textarea:focus{outline:0;border-color:var(--primary);box-shadow:0 0 0 3px rgba(11,92,171,.14)}
+        textarea{min-height:5.5rem;resize:vertical}
+        .help{margin:.2rem 0 1rem;padding:.85rem 1rem;background:#eef6fd;border:1px solid #c9deef;border-radius:.55rem;color:#314b61}
+        .help p{margin:0 0 .45rem}
+        .help ul{margin:.35rem 0 0;padding-left:1.2rem}
+        .help li+li{margin-top:.35rem}
+        .table-wrap{overflow:auto;overflow-wrap:normal;border:1px solid #e0e6ec;border-radius:.55rem}
+        table{border-collapse:collapse;width:100%;font-size:.9rem}
+        th,td{text-align:left;border-bottom:1px solid #e0e6ec;padding:.65rem .7rem;vertical-align:top}
+        th{background:var(--surface-soft);color:#314355;font-size:.78rem;letter-spacing:.025em}
+        tbody tr:last-child td{border-bottom:0}
+        tbody tr:hover td{background:#fafcfe}
+        td[colspan]{color:var(--muted)}
+        .muted{color:var(--muted)}
+        .notice,.warning{margin:1rem 0;padding:.8rem 1rem;border-radius:.45rem}
+        .notice{background:#e8f5e9;border-left:4px solid #2e7d32}
+        .notice.error{background:#ffebee;border-color:#b71c1c}
+        .warning{background:#fff8e1;border-left:4px solid #d99a12}
+        button{max-width:100%;grid-column:1/-1;justify-self:start;padding:.75rem 1.15rem;background:linear-gradient(135deg,var(--primary),var(--primary-dark));color:#fff;border:0;border-radius:.45rem;font:inherit;font-weight:750;box-shadow:0 7px 16px rgba(11,92,171,.2);cursor:pointer}
+        button:hover{filter:brightness(1.08)}
+        button:focus-visible,.refresh:focus-visible{outline:3px solid rgba(11,92,171,.28);outline-offset:2px}
+        code{font-size:.9em;overflow-wrap:anywhere}
+        @media(max-width:64rem){.dashboard{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        @media(max-width:46rem){main{padding:1rem}.page-header{align-items:flex-start;padding:1rem}.brand-mark{flex-basis:2.75rem;height:2.75rem}.section-title{align-items:flex-start;flex-direction:column}.dashboard,form{grid-template-columns:minmax(0,1fr)}fieldset:last-of-type{grid-column:auto}.section{padding:1rem}.refresh{align-self:flex-start}}
+        """;
     private NameValueCollection submittedForm;
     private static readonly PropertyInfo[] AuditedConfigurationProperties =
         typeof(ServiceConfiguration).GetProperties(BindingFlags.Instance | BindingFlags.Public)
@@ -68,7 +134,7 @@ internal sealed class AdminHandler : IHttpHandler
         if (string.Equals(context.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
         {
             var notice = context.Request.QueryString["saved"] == "1" ? "Settings saved." : loadError;
-            Render(context, configuration, generation, notice, loadError == null ? null : "error");
+            Render(context, configuration, generation, notice, loadError is null ? null : "error");
             return;
         }
 
@@ -150,7 +216,8 @@ internal sealed class AdminHandler : IHttpHandler
             }
 
             var changeCorrelationId = Guid.NewGuid().ToString("N");
-            var changeDetail = DescribeConfigurationChange(configuration, updated);
+            var changeDetail = "baseGeneration=" + generation + "; " +
+                DescribeConfigurationChange(configuration, updated);
             var auditFailClosed = configuration.FailClosedOnAuditError || updated.FailClosedOnAuditError;
             var configurationSaved = false;
             string savedGeneration = null;
@@ -200,7 +267,7 @@ internal sealed class AdminHandler : IHttpHandler
                 return;
             }
 
-            var adminPath = (context.Request.ApplicationPath == "/" ? string.Empty : context.Request.ApplicationPath.TrimEnd('/')) + "/admin?saved=1";
+            var adminPath = CsrfTokenManager.AdminPath(context.Request) + "?saved=1";
             context.Response.StatusCode = 303;
             context.Response.RedirectLocation = adminPath;
             context.Response.TrySkipIisCustomErrors = true;
@@ -274,8 +341,8 @@ internal sealed class AdminHandler : IHttpHandler
         try
         {
             WriteConfigurationAudit(context, identity, retentionConfiguration, targetConfiguration,
-                correlationId, savedGeneration == null ? "failed" : "applied",
-                detail + (savedGeneration == null ? string.Empty :
+                correlationId, savedGeneration is null ? "failed" : "applied",
+                detail + (savedGeneration is null ? string.Empty :
                     "; generation=" + savedGeneration + "; auditOutcome=fallback") +
                 "; failure=" + exception.GetType().Name, false);
         }
@@ -285,27 +352,31 @@ internal sealed class AdminHandler : IHttpHandler
         }
     }
 
+    // Records each changed setting with its old and new value. The settings file holds no secrets,
+    // and the surrounding audit records carry the store generations that identify both versions.
     internal static string DescribeConfigurationChange(ServiceConfiguration before, ServiceConfiguration after)
     {
         List<string> changed = [];
         foreach (var property in AuditedConfigurationProperties)
         {
-            if (!SameConfigurationValue(property, property.GetValue(before), property.GetValue(after)))
-                changed.Add(property.Name);
+            var oldValue = property.GetValue(before);
+            var newValue = property.GetValue(after);
+            if (!SameConfigurationValue(property, oldValue, newValue))
+            {
+                changed.Add(property.Name + ": " + FormatConfigurationValue(oldValue) + " -> " +
+                    FormatConfigurationValue(newValue));
+            }
         }
 
-        return "before=" + ConfigurationDigest(before) +
-               "; after=" + ConfigurationDigest(after) +
-               "; changed=" + (changed.Count == 0 ? "none" : string.Join(",", changed));
+        return "changed=" + (changed.Count == 0 ? "none" : string.Join("; ", changed));
     }
 
-    private static string ConfigurationDigest(ServiceConfiguration configuration)
+    private static string FormatConfigurationValue(object value) => value switch
     {
-        StringBuilder canonical = new();
-        foreach (var property in AuditedConfigurationProperties)
-            AppendConfigurationDigestValue(canonical, property, property.GetValue(configuration));
-        return HttpSupport.ToHex(WindowsHash.ComputeSha256(Encoding.UTF8.GetBytes(canonical.ToString())));
-    }
+        null => "(none)",
+        IEnumerable<string> items => "[" + string.Join(", ", items) + "]",
+        _ => Convert.ToString(value, CultureInfo.InvariantCulture)
+    };
 
     private static bool SameConfigurationValue(PropertyInfo property, object left, object right)
     {
@@ -313,42 +384,6 @@ internal sealed class AdminHandler : IHttpHandler
         if (typeof(IEnumerable<string>).IsAssignableFrom(property.PropertyType))
             return SameList((IEnumerable<string>)left, (IEnumerable<string>)right);
         return Equals(left, right);
-    }
-
-    private static void AppendConfigurationDigestValue(StringBuilder builder, PropertyInfo property, object value)
-    {
-        if (property.PropertyType == typeof(string))
-        {
-            var text = (string)value;
-            if (property.Name == nameof(ServiceConfiguration.CertificateThumbprint))
-                text = ConfigurationStore.NormalizeThumbprint(text);
-            AppendComparableDigestValue(builder, text);
-            return;
-        }
-
-        if (typeof(IEnumerable<string>).IsAssignableFrom(property.PropertyType))
-        {
-            AppendComparableDigestList(builder, (IEnumerable<string>)value);
-            return;
-        }
-
-        AppendDigestValue(builder, value);
-    }
-
-    private static void AppendComparableDigestList(StringBuilder builder, IEnumerable<string> values)
-    {
-        var list = values?.ToList() ?? [];
-        AppendDigestValue(builder, list.Count);
-        foreach (var value in list) AppendComparableDigestValue(builder, value);
-    }
-
-    private static void AppendComparableDigestValue(StringBuilder builder, string value) =>
-        AppendDigestValue(builder, Comparable(value));
-
-    private static void AppendDigestValue(StringBuilder builder, object value)
-    {
-        var text = Convert.ToString(value, CultureInfo.InvariantCulture) ?? "<null>";
-        builder.Append(text.Length.ToString(CultureInfo.InvariantCulture)).Append(':').Append(text).Append('|');
     }
 
     private static bool Same(string left, string right) =>
@@ -373,7 +408,7 @@ internal sealed class AdminHandler : IHttpHandler
             // The authorization check below fails closed when IIS withholds the token.
         }
 
-        if (!identity.IsAuthenticated || windowsIdentity == null || !windowsIdentity.IsAuthenticated)
+        if (!identity.IsAuthenticated || windowsIdentity is null || !windowsIdentity.IsAuthenticated)
         {
             context.Response.Headers["WWW-Authenticate"] = "Negotiate";
             HttpSupport.WritePlainError(context, 401, "Windows authentication is required to open the admin console.");
@@ -403,7 +438,7 @@ internal sealed class AdminHandler : IHttpHandler
 
     private static bool IsInRole(WindowsPrincipal principal, string configuredGroup)
     {
-        if (principal == null || string.IsNullOrWhiteSpace(configuredGroup)) return false;
+        if (principal is null || string.IsNullOrWhiteSpace(configuredGroup)) return false;
 
         try
         {
@@ -427,7 +462,7 @@ internal sealed class AdminHandler : IHttpHandler
         if (string.IsNullOrWhiteSpace(source)) return false;
 
         return Uri.TryCreate(source, UriKind.Absolute, out var parsed) &&
-               request.Url != null &&
+               request.Url is not null &&
                string.Equals(parsed.Scheme, request.Url.Scheme, StringComparison.OrdinalIgnoreCase) &&
                string.Equals(parsed.Host, request.Url.Host, StringComparison.OrdinalIgnoreCase) &&
                parsed.Port == request.Url.Port &&
@@ -523,7 +558,7 @@ internal sealed class AdminHandler : IHttpHandler
             .Where(value =>
             {
                 var algorithm = HashAlgorithmCatalog.FindByName(value);
-                return algorithm != null &&
+                return algorithm is not null &&
                        (!fipsEnabled || !algorithm.IsLegacy || originalLegacy.Contains(value));
             })
             .Distinct(StringComparer.Ordinal)
@@ -540,14 +575,14 @@ internal sealed class AdminHandler : IHttpHandler
     {
         var csrf = CsrfTokenManager.GetOrCreate(context, HttpSupport.GetRequestIdentity(context.Request));
         var certificates = ServiceRuntime.Certificates.ListCertificates(
-            false,
+            true,
             configuration.SigningDigestAlgorithm,
             configuration.AuthenticodeEnabled);
 
         // Build the fixed administrative shell and its current status notices.
         var builder = new StringBuilder(16384);
         builder.Append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>OpenTimeStamp Administration</title>")
-            .Append("<style>:root{color-scheme:light;--ink:#17212b;--muted:#5b6b7c;--primary:#0b5cab;--primary-dark:#08477f;--accent:#0e8a76;--border:#d7e0e8;--surface:#fff;--surface-soft:#f7f9fc;--shadow:0 12px 30px rgba(32,55,79,.08)}*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#edf4fb 0,#f5f7fa 18rem);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}main{overflow-wrap:anywhere;max-width:92rem;margin:auto;padding:clamp(1rem,3vw,2.5rem)}h1,h2{line-height:1.2}h1{margin:.1rem 0 .35rem;font-size:clamp(1.7rem,3vw,2.35rem);letter-spacing:-.035em}h2{margin:0;font-size:1.35rem;letter-spacing:-.015em}a{color:var(--primary);text-underline-offset:.18em}.page-header{display:flex;flex-wrap:wrap;gap:1rem;align-items:center;margin-bottom:2rem;padding:1.35rem 1.5rem;background:linear-gradient(135deg,#fff 35%,#f1f7fc);border:1px solid rgba(11,92,171,.16);border-radius:1rem;box-shadow:var(--shadow)}.page-header>div:last-child{flex:1 1 18rem;min-width:0}.brand-mark{display:grid;place-items:center;flex:0 0 3.25rem;height:3.25rem;border-radius:.8rem;background:linear-gradient(135deg,var(--primary),#1785bd);color:#fff;font-size:.8rem;font-weight:800;letter-spacing:.08em;box-shadow:0 8px 18px rgba(11,92,171,.22)}.eyebrow{margin:0 0 .25rem;color:var(--primary);font-size:.72rem;font-weight:800;letter-spacing:.11em;text-transform:uppercase}.page-header .muted{margin:0}.section-title{display:flex;align-items:end;justify-content:space-between;gap:1rem;margin:0 0 1rem}.section-title .muted{margin:.35rem 0 0}.refresh{display:inline-flex;align-items:center;flex:0 0 auto;padding:.5rem .8rem;border:1px solid #b9cee2;border-radius:999px;background:rgba(255,255,255,.8);font-weight:700;text-decoration:none}.refresh:hover{background:#fff;border-color:var(--primary)}.dashboard{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1rem;margin:0 0 1rem}.card{min-width:0;padding:1rem 1.1rem;background:var(--surface);border:1px solid var(--border);border-top:3px solid #8da4b8;border-radius:.75rem;box-shadow:0 5px 16px rgba(32,55,79,.045)}.card.status{border-top-color:#d29222}.card.certificate{border-top-color:#7867b7}.card.outcomes{border-top-color:var(--accent)}.card.worker{border-top-color:var(--primary)}.card-label{color:var(--muted);font-size:.76rem;font-weight:750;letter-spacing:.055em;text-transform:uppercase}.card strong{display:block;margin:.3rem 0 .1rem;font-size:1.2rem;line-height:1.25}.card .muted{display:block;overflow-wrap:anywhere}.generation{display:block;margin-top:.15rem;color:#40586e}.section,fieldset{background:var(--surface);border:1px solid var(--border);border-radius:.8rem;box-shadow:0 5px 18px rgba(32,55,79,.04)}.section{margin:1rem 0;padding:1.25rem 1.4rem}.section h2{margin-bottom:.4rem}.section .muted{margin-top:0}form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}fieldset{min-width:0;margin:0;padding:1rem 1.25rem 1.2rem}fieldset:last-of-type{grid-column:1/-1}legend{max-width:100%;padding:0 .35rem;color:#26394a;font-weight:800}label{display:block;margin:.75rem 0;color:#314355;font-weight:650}.inline{display:inline-flex;align-items:flex-start;gap:.3rem;margin:.35rem 1rem .35rem 0;font-weight:500}input[type=checkbox],input[type=radio]{margin-top:.28rem;accent-color:var(--primary)}input[type=text],input[type=number],select,textarea{display:block;width:100%;max-width:48rem;margin-top:.3rem;padding:.62rem .7rem;background:#fbfcfe;border:1px solid #aebbc7;border-radius:.4rem;color:var(--ink);font:inherit;transition:border-color .15s,box-shadow .15s}input[type=text]:focus,input[type=number]:focus,select:focus,textarea:focus{outline:0;border-color:var(--primary);box-shadow:0 0 0 3px rgba(11,92,171,.14)}textarea{min-height:5.5rem;resize:vertical}.help{margin:.2rem 0 1rem;padding:.85rem 1rem;background:#eef6fd;border:1px solid #c9deef;border-radius:.55rem;color:#314b61}.help p{margin:0 0 .45rem}.help ul{margin:.35rem 0 0;padding-left:1.2rem}.help li+li{margin-top:.35rem}.table-wrap{overflow:auto;overflow-wrap:normal;border:1px solid #e0e6ec;border-radius:.55rem}table{border-collapse:collapse;width:100%;font-size:.9rem}th,td{text-align:left;border-bottom:1px solid #e0e6ec;padding:.65rem .7rem;vertical-align:top}th{background:var(--surface-soft);color:#314355;font-size:.78rem;letter-spacing:.025em}tbody tr:last-child td{border-bottom:0}tbody tr:hover td{background:#fafcfe}td[colspan]{color:var(--muted)}.muted{color:var(--muted)}.notice,.warning{margin:1rem 0;padding:.8rem 1rem;border-radius:.45rem}.notice{background:#e8f5e9;border-left:4px solid #2e7d32}.notice.error{background:#ffebee;border-color:#b71c1c}.warning{background:#fff8e1;border-left:4px solid #d99a12}button{max-width:100%;grid-column:1/-1;justify-self:start;padding:.75rem 1.15rem;background:linear-gradient(135deg,var(--primary),var(--primary-dark));color:#fff;border:0;border-radius:.45rem;font:inherit;font-weight:750;box-shadow:0 7px 16px rgba(11,92,171,.2);cursor:pointer}button:hover{filter:brightness(1.08)}button:focus-visible,.refresh:focus-visible{outline:3px solid rgba(11,92,171,.28);outline-offset:2px}code{font-size:.9em;overflow-wrap:anywhere}@media(max-width:64rem){.dashboard{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:46rem){main{padding:1rem}.page-header{align-items:flex-start;padding:1rem}.brand-mark{flex-basis:2.75rem;height:2.75rem}.section-title{align-items:flex-start;flex-direction:column}.dashboard,form{grid-template-columns:minmax(0,1fr)}fieldset:last-of-type{grid-column:auto}.section{padding:1rem}.refresh{align-self:flex-start}}</style></head><body><main>")
+            .Append("<style>").Append(Styles).Append("</style></head><body><main>")
             .Append("<header class=\"page-header\"><div class=\"brand-mark\" aria-hidden=\"true\">OTS</div><div><p class=\"eyebrow\">Local Management Console</p><h1>OpenTimeStamp Administration</h1><p class=\"muted\">This console is available only on the local server. IIS controls authentication; it cannot be changed here.</p></div></header>");
         if (!string.IsNullOrEmpty(notice))
         {
@@ -703,7 +738,8 @@ internal sealed class AdminHandler : IHttpHandler
                     "Choose a usable certificate.</td></tr>");
         }
 
-        // Render eligible certificates and metadata from both supported Windows stores.
+        // List every certificate in both supported stores; only eligible ones can be selected,
+        // and the rest explain why, so a missing certificate is diagnosable from this page.
         foreach (var certificate in certificates)
         {
             var selected = string.Equals(certificate.StoreLocation + "|" + certificate.Thumbprint,
@@ -728,7 +764,7 @@ internal sealed class AdminHandler : IHttpHandler
         }
 
         if (certificates.Count == 0)
-            builder.Append("<tr><td colspan=\"6\">No eligible timestamp signing certificates were found.</td></tr>");
+            builder.Append("<tr><td colspan=\"6\">No certificates were found in either Personal store.</td></tr>");
 
         // Complete and emit the escaped administrative document.
         builder.Append("</tbody></table></div></fieldset><button type=\"submit\">Save Configuration</button>" +
@@ -775,22 +811,16 @@ internal sealed class AdminHandler : IHttpHandler
             certificateExpirationUtc = certificate.NotAfter.ToUniversalTime();
             certificateSha256Thumbprint = FormatCertificateSha256Thumbprint(certificate.RawData);
         }
-        catch (Exception ex) when (ex is CertificateSelectionException or
-                                   System.Security.Cryptography.CryptographicException or
-                                   System.IO.IOException or UnauthorizedAccessException or
-                                   System.Security.SecurityException)
+        catch (Exception ex) when (CertificateRepository.IsSelectionFailure(ex))
         {
             // Certificate availability is already represented by service health; keep the dashboard usable.
         }
 
-        var application = context.Request.ApplicationPath == "/"
-            ? string.Empty
-            : context.Request.ApplicationPath.TrimEnd('/');
         builder.Append("<div class=\"section-title\"><div><p class=\"eyebrow\">Operations</p><h2>Dashboard</h2>" +
                 "<p class=\"muted\">Current service status and recent timestamp activity. Recent activity resets " +
                 "when the IIS application pool restarts. Times on this page use the server’s local time and UTC " +
                 "offset; audit logs use UTC.</p></div><a class=\"refresh\" href=\"")
-            .Append(H(application + "/admin"))
+            .Append(H(CsrfTokenManager.AdminPath(context.Request)))
             .Append("\">Refresh</a></div><div class=\"dashboard\">")
             .Append("<div class=\"card status\"><span class=\"card-label\">Service Health</span><strong>")
             .Append(H(healthStatus))
@@ -847,7 +877,7 @@ internal sealed class AdminHandler : IHttpHandler
     internal static string FormatCertificateSha256Thumbprint(byte[] rawCertificate)
     {
         if (rawCertificate is null) throw new ArgumentNullException(nameof(rawCertificate));
-        return BitConverter.ToString(WindowsHash.ComputeSha256(rawCertificate)).Replace("-", string.Empty);
+        return Hex.ToUpper(WindowsHash.ComputeSha256(rawCertificate));
     }
 
     internal static void AppendRecentActivity(
@@ -972,11 +1002,11 @@ internal sealed class AdminHandler : IHttpHandler
     }
 
     private string FormValue(string name, string fallback) =>
-        submittedForm == null ? fallback : submittedForm[name] ?? string.Empty;
+        submittedForm is null ? fallback : submittedForm[name] ?? string.Empty;
 
     private string Check(string name, string label, bool isChecked, bool disabled, string value = "on")
     {
-        if (submittedForm != null)
+        if (submittedForm is not null)
             isChecked = name == "hash"
                 ? (submittedForm.GetValues(name) ?? []).Select(HashAlgorithmCatalog.NormalizeName).Contains(value)
                 : IsChecked(submittedForm, name);
@@ -990,7 +1020,7 @@ internal sealed class AdminHandler : IHttpHandler
         "\" max=\"" + maximum.ToString(CultureInfo.InvariantCulture) + "\" value=\"" +
         H(FormValue(name, value.ToString(CultureInfo.InvariantCulture))) + "\" required></label>";
 
-    private static bool IsChecked(NameValueCollection form, string name) => form.GetValues(name) != null;
+    private static bool IsChecked(NameValueCollection form, string name) => form.GetValues(name) is not null;
 
     private static int ParseInteger(string value, int minimum, int maximum, string label)
     {

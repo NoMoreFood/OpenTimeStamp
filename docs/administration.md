@@ -85,6 +85,9 @@ service resumes issuance.
 
 Audit records include result, protocol, correlation ID, remote address, policy,
 hash OID, serial, certificate thumbprint, elapsed time, and identity fields.
+A configuration change is recorded as a `requested` and an `applied` record that
+share one correlation ID; their detail lists each changed setting with its old
+and new value together with the settings-file generation before and after.
 Request-hash logging is configurable. Audit failure is fail-closed by default:
 a token is not returned when its audit record cannot be committed to disk.
 The local administrative dashboard shows service health, certificate-selection

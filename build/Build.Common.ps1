@@ -50,11 +50,11 @@ function Resolve-OpenTimeStampMSBuild {
     if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
         # Workload IDs differ between full Visual Studio and Build Tools installations.
         # Discover MSBuild broadly, then validate the actual compiler and web-target files below.
-        $matches = @(& $vswhere -all -products * -requires Microsoft.Component.MSBuild `
+        $candidates = @(& $vswhere -all -products * -requires Microsoft.Component.MSBuild `
             -find 'MSBuild\**\Bin\MSBuild.exe')
         if ($LASTEXITCODE -eq 0) {
-            foreach ($match in $matches) {
-                try { return (Assert-OpenTimeStampMSBuildToolchain -MSBuildPath $match) }
+            foreach ($candidate in $candidates) {
+                try { return (Assert-OpenTimeStampMSBuildToolchain -MSBuildPath $candidate) }
                 catch { $discoveryError = $_ }
             }
         }

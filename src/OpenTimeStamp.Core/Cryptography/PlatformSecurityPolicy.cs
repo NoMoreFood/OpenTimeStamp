@@ -1,7 +1,7 @@
 using System;
-using System.IO;
 using System.Security.Cryptography;
 using Microsoft.Win32;
+using OpenTimeStamp.Infrastructure;
 
 namespace OpenTimeStamp.Cryptography;
 
@@ -40,8 +40,7 @@ public static class PlatformSecurityPolicy
             using var key = Registry.LocalMachine.OpenSubKey(PolicyKey, false);
             return InterpretFipsRegistryValue(key?.GetValue("Enabled"));
         }
-        catch (Exception ex) when (ex is IOException or System.Security.SecurityException or
-                                   UnauthorizedAccessException)
+        catch (Exception ex) when (ex.IsFileAccessFailure())
         {
             return true;
         }

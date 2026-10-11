@@ -48,7 +48,9 @@
     <Compile Include="Cryptography\KnownOids.cs" />
     <Compile Include="Cryptography\PlatformSecurityPolicy.cs" />
     <Compile Include="Cryptography\WindowsHash.cs" />
+    <Compile Include="Infrastructure\ExceptionFilters.cs" />
     <Compile Include="Infrastructure\FileSystemLock.cs" />
+    <Compile Include="Infrastructure\Hex.cs" />
     <Compile Include="Issuance\IssuanceStateStore.cs" />
     <Compile Include="Protocols\AuthenticodeTimestampProcessor.cs" />
     <Compile Include="Protocols\LegacyAuthenticodeHttpCodec.cs" />

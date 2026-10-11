@@ -47,6 +47,7 @@ internal static class ProtocolTests
         tests.Add(new TestCase("RFC3161 common request hashes honor Windows FIPS policy", Rfc3161CommonHashAlgorithms));
         tests.Add(new TestCase("RFC3161 happy path preserves policy, nonce, and imprint", Rfc3161HappyPath));
         tests.Add(new TestCase("RFC3161 certReq controls certificate inclusion", Rfc3161CertificateInclusion));
+        tests.Add(new TestCase("RFC3161 echoes a negative nonce unchanged", Rfc3161EchoesNegativeNonce));
         tests.Add(new TestCase("RFC3161 CMS signature and ESS attribute", Rfc3161CmsSignatureAndEss));
         tests.Add(new TestCase("RFC3161 CMS signing digests and legacy ESS attribute", Rfc3161SigningDigestAlgorithms));
         tests.Add(new TestCase("Authenticode response is a verified CMS countersignature", AuthenticodeResponse));
@@ -655,6 +656,36 @@ internal static class ProtocolTests
         var authenticode = new AuthenticodeTimestampProcessor().ProcessParsedSignature(
             [1, 2, 3], configuration, certificate.Certificate, store, clock, CancellationToken.None);
         AssertEx.Equal(now.AddSeconds(4), authenticode.GenerationTimeUtc);
+    }
+
+    private static void Rfc3161EchoesNegativeNonce()
+    {
+        using (var directory = new TemporaryDirectory())
+        using (var certificate = new TimestampCertificateFixture())
+        {
+            byte[] nonce = [0x80, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+            var request = Rfc3161Request.Parse(TestFixtures.BuildRfc3161Request(
+                TestFixtures.Sha256Oid,
+                new byte[32],
+                signedNonce: nonce));
+            var result = new Rfc3161TimestampProcessor().Process(
+                request,
+                TestFixtures.CreateConfiguration(),
+                certificate.Certificate,
+                TestFixtures.CreateInitializedStateStore(directory.File("issuance.bin")),
+                new DateTime(2026, 7, 16, 13, 14, 15, DateTimeKind.Utc));
+            AssertEx.True(result.Granted, result.Detail);
+
+            var cms = TestFixtures.DecodeCms(TestFixtures.ExtractGrantedRfc3161Token(result.EncodedResponse));
+            var tstInfo = new DerReader(cms.ContentInfo.Content).ReadSequence();
+            tstInfo.ReadIntegerInt32();
+            tstInfo.ReadObjectIdentifier();
+            tstInfo.ReadSequence();
+            tstInfo.ReadPositiveInteger();
+            tstInfo.ReadEncodedValue();
+            AssertEx.SequenceEqual(nonce, tstInfo.ReadInteger(32), "TSTInfo must echo the request nonce exactly.");
+            tstInfo.ThrowIfNotEmpty();
+        }
     }
 
     private static void Rfc3161HappyPath()

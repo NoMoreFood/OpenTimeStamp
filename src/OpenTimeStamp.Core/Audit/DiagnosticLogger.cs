@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Threading;
 using Microsoft.Win32;
 using OpenTimeStamp.Configuration;
+using OpenTimeStamp.Infrastructure;
 
 namespace OpenTimeStamp.Audit;
 
@@ -101,8 +102,7 @@ public sealed class DiagnosticLogger
                     nextEventLogAttempt = 0;
                     Volatile.Write(ref eventLogWarning, null);
                 }
-                catch (Exception ex) when (ex is not OutOfMemoryException and
-                                           not StackOverflowException and not ThreadAbortException)
+                catch (Exception ex) when (ex.IsContainable())
                 {
                     nextEventLogAttempt = now + RetryIntervalTicks;
                     Volatile.Write(ref eventLogWarning,
@@ -118,8 +118,7 @@ public sealed class DiagnosticLogger
                 }
             }
         }
-        catch (Exception ex) when (ex is not OutOfMemoryException and
-                                   not StackOverflowException and not ThreadAbortException)
+        catch (Exception ex) when (ex.IsContainable())
         {
             Volatile.Write(ref fileWarning, "Operational diagnostics could not be recorded. Check the data directory.");
         }
@@ -138,7 +137,7 @@ public sealed class DiagnosticLogger
         // Source registration belongs to elevated setup, never the IIS worker identity.
         using var source = Registry.LocalMachine.OpenSubKey(
             @"SYSTEM\CurrentControlSet\Services\EventLog\" + WindowsLogName + "\\" + WindowsEventSource);
-        if (source == null)
+        if (source is null)
             throw new InvalidOperationException("The OpenTimeStamp Windows Event Log source is not registered.");
 
         using EventLog log = new(WindowsLogName, ".", WindowsEventSource);

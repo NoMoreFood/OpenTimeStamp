@@ -35,10 +35,10 @@ public sealed class IssuanceStateStore
     private const int StateRecordLength = StatePayloadLength + IntegrityLength;
     private const int MarkerPayloadLength = 4 + StateIdentifierLength + IntegrityKeyLength + sizeof(ulong) + SerialLength;
     private const int MarkerRecordLength = MarkerPayloadLength + IntegrityLength;
-    private static readonly byte[] LegacyMagic = Encoding.ASCII.GetBytes("OTS1");
-    private static readonly byte[] StateMagic = Encoding.ASCII.GetBytes("OTS2");
-    private static readonly byte[] MarkerMagic = Encoding.ASCII.GetBytes("OTSM");
-    private static readonly byte[] MirroredMarkerMagic = Encoding.ASCII.GetBytes("OTSB");
+    private static readonly byte[] LegacyMagic = "OTS1"u8.ToArray();
+    private static readonly byte[] StateMagic = "OTS2"u8.ToArray();
+    private static readonly byte[] MarkerMagic = "OTSM"u8.ToArray();
+    private static readonly byte[] MirroredMarkerMagic = "OTSB"u8.ToArray();
     private readonly string path;
     private readonly string backupPath;
     private readonly string temporaryPath;
@@ -57,7 +57,7 @@ public sealed class IssuanceStateStore
             throw new ArgumentException("A timestamp state path is required.", nameof(path));
         }
 
-        this.path = System.IO.Path.GetFullPath(path);
+        this.path = Path.GetFullPath(path);
         backupPath = this.path + ".bak";
         temporaryPath = this.path + ".new";
         backupTemporaryPath = backupPath + ".new";
@@ -75,33 +75,17 @@ public sealed class IssuanceStateStore
     /// </summary>
     public void Initialize()
     {
-        ExecuteLocked(TimeSpan.FromSeconds(10), () =>
+        using var storeLock = AcquireLock(TimeSpan.FromSeconds(10), CancellationToken.None);
+        try
         {
-            try
-            {
-                InitializeLocked();
-            }
-            catch (IssuanceStateException)
-            {
-                throw;
-            }
-            catch (Exception ex) when (IsStorageException(ex))
-            {
-                throw new IssuanceStateException(
-                    "OpenTimeStamp could not initialize timestamp state. Verify the data directory permissions and free space.", ex);
-            }
-        });
+            InitializeLocked();
+        }
+        catch (Exception ex) when (IsStorageException(ex))
+        {
+            throw new IssuanceStateException(
+                "OpenTimeStamp could not initialize timestamp state. Verify the data directory permissions and free space.", ex);
+        }
     }
-
-    public IssuanceAllocation Allocate(DateTime utcNow, TimeSpan rollbackTolerance, bool ordering) =>
-        Allocate(utcNow, rollbackTolerance, ordering, CancellationToken.None);
-
-    public IssuanceAllocation Allocate(
-        DateTime utcNow,
-        TimeSpan rollbackTolerance,
-        bool ordering,
-        CancellationToken cancellationToken) =>
-        Allocate(() => utcNow, rollbackTolerance, ordering, cancellationToken);
 
     public IssuanceAllocation Allocate(
         Func<DateTime> utcNowProvider,
@@ -112,80 +96,49 @@ public sealed class IssuanceStateStore
         if (utcNowProvider is null) throw new ArgumentNullException(nameof(utcNowProvider));
         ValidateRollbackTolerance(rollbackTolerance);
 
-        return ExecuteLocked(TimeSpan.FromSeconds(10), cancellationToken, () =>
+        using var storeLock = AcquireLock(TimeSpan.FromSeconds(10), cancellationToken);
+        try
         {
-            try
+            var (markerSelection, loaded) = LoadCommittedState();
+            var marker = markerSelection.Marker;
+            var state = loaded.State;
+
+            // Complete an interrupted commit before beginning another generation. This
+            // keeps the high-water marker at most one generation behind durable state.
+            if (loaded.RequiresRepair)
             {
-                MarkerSelection markerSelection;
-                DurableState loaded;
-                if (!TryReadFullyMirroredState(out markerSelection, out loaded))
-                {
-                    markerSelection = ReadBestMarker();
-                    if (markerSelection is null)
-                    {
-                        throw new IssuanceStateException(
-                            "Timestamp state has not been initialized.");
-                    }
-
-                    loaded = LoadDurableState(markerSelection);
-                }
-
-                var marker = markerSelection.Marker;
-                var state = loaded.State;
-
-                // Complete an interrupted commit before beginning another generation. This
-                // keeps the high-water marker at most one generation behind durable state.
-                if (loaded.RequiresRepair)
-                {
-                    RepairState(state, marker);
-                }
-
-                // Sample after locking and recovery so waiting requests cannot report a false clock rollback.
-                var utcNow = utcNowProvider().ToUniversalTime();
-                EnsureClockNotRolledBack(state.LastIssuedUtc, utcNow, rollbackTolerance);
-                var generationTime = CalculateGenerationTime(state.LastIssuedUtc, utcNow, ordering);
-
-                if (state.Generation == ulong.MaxValue)
-                {
-                    throw new IssuanceStateException("Timestamp state has exhausted its sequence-number range.");
-                }
-
-                // This is the final cancellation boundary. Once the serial changes, finish
-                // every durable publication even if the caller disconnects.
-                cancellationToken.ThrowIfCancellationRequested();
-
-                // Persist the next serial, timestamp, redundant copy, and high-water marker
-                // before returning either issued value to the caller.
-                Increment(state.SerialNumber);
-                state.Generation++;
-                state.LastIssuedUtc = generationTime;
-                PersistStateCopies(state, marker);
-                marker.Generation = state.Generation;
-                PersistMarker(marker);
-                return new IssuanceAllocation((byte[])state.SerialNumber.Clone(), generationTime);
+                RepairState(state, marker);
             }
-            catch (IssuanceStateException)
+
+            // Sample after locking and recovery so waiting requests cannot report a false clock rollback.
+            var utcNow = utcNowProvider().ToUniversalTime();
+            EnsureClockNotRolledBack(state.LastIssuedUtc, utcNow, rollbackTolerance);
+            var generationTime = CalculateGenerationTime(state.LastIssuedUtc, utcNow, ordering);
+
+            if (state.Generation == ulong.MaxValue)
             {
-                throw;
+                throw new IssuanceStateException("Timestamp state has exhausted its sequence-number range.");
             }
-            catch (Exception ex) when (IsStorageException(ex))
-            {
-                throw new IssuanceStateException(
-                    "OpenTimeStamp could not save timestamp state. Verify the data directory permissions and free space.", ex);
-            }
-        });
-    }
 
-    public void Validate() => ValidateCore(null, TimeSpan.Zero, false);
+            // This is the final cancellation boundary. Once the serial changes, finish
+            // every durable publication even if the caller disconnects.
+            cancellationToken.ThrowIfCancellationRequested();
 
-    /// <summary>
-    /// Validates state integrity and write access, and checks the durable issuance clock
-    /// against the supplied current UTC time without allocating a serial number.
-    /// </summary>
-    public void Validate(DateTime utcNow, TimeSpan rollbackTolerance)
-    {
-        ValidateRollbackTolerance(rollbackTolerance);
-        ValidateCore(utcNow.ToUniversalTime(), rollbackTolerance, false);
+            // Persist the next serial, timestamp, redundant copy, and high-water marker
+            // before returning either issued value to the caller.
+            Increment(state.SerialNumber);
+            state.Generation++;
+            state.LastIssuedUtc = generationTime;
+            PersistStateCopies(state, marker);
+            marker.Generation = state.Generation;
+            PersistMarker(marker);
+            return new IssuanceAllocation((byte[])state.SerialNumber.Clone(), generationTime);
+        }
+        catch (Exception ex) when (IsStorageException(ex))
+        {
+            throw new IssuanceStateException(
+                "OpenTimeStamp could not save timestamp state. Verify the data directory permissions and free space.", ex);
+        }
     }
 
     /// <summary>
@@ -198,98 +151,83 @@ public sealed class IssuanceStateStore
         bool ordering)
     {
         ValidateRollbackTolerance(rollbackTolerance);
-        return ValidateCore(utcNow.ToUniversalTime(), rollbackTolerance, ordering).Value;
-    }
+        utcNow = utcNow.ToUniversalTime();
 
-    private DateTime? ValidateCore(DateTime? utcNow, TimeSpan rollbackTolerance, bool ordering)
-    {
-        return ExecuteLocked(TimeSpan.FromSeconds(5), () =>
+        using var storeLock = AcquireLock(TimeSpan.FromSeconds(5), CancellationToken.None);
+        try
         {
+            var (_, loaded) = LoadCommittedState();
+            EnsureClockNotRolledBack(loaded.State.LastIssuedUtc, utcNow, rollbackTolerance);
+            var nextGenerationTimeUtc = CalculateGenerationTime(loaded.State.LastIssuedUtc, utcNow, ordering);
+
+            // File.Replace requires delete access as well as read/write access. Request
+            // the same rights here so health validation catches a restrictive file ACL
+            // before the next issuance commit reaches its atomic replacement step.
+            foreach (var candidate in PersistentArtifactPaths())
+            {
+                if (!File.Exists(candidate)) continue;
+                if ((File.GetAttributes(candidate) & FileAttributes.ReadOnly) != 0)
+                {
+                    throw new IssuanceStateException("A timestamp state file is read-only: " + candidate);
+                }
+
+                using (new FileStream(
+                           candidate,
+                           FileMode.Open,
+                           FileSystemRights.Read | FileSystemRights.Write | FileSystemRights.Delete,
+                           FileShare.Read,
+                           4096,
+                           FileOptions.None))
+                {
+                }
+            }
+
+            // Probe creation and durable flush without modifying issuance data.
+            var directory = Path.GetDirectoryName(path);
+            Directory.CreateDirectory(directory);
+            var probe = Path.Combine(directory, ".state-health-" + Guid.NewGuid().ToString("N") + ".tmp");
             try
             {
-                MarkerSelection markerSelection;
-                DurableState loaded;
-                if (!TryReadFullyMirroredState(out markerSelection, out loaded))
-                {
-                    markerSelection = ReadBestMarker();
-                    if (markerSelection is null)
-                    {
-                        throw new IssuanceStateException("Timestamp state has not been initialized.");
-                    }
-
-                    loaded = LoadDurableState(markerSelection);
-                }
-
-                DateTime? nextGenerationTimeUtc = null;
-                if (utcNow.HasValue)
-                {
-                    EnsureClockNotRolledBack(loaded.State.LastIssuedUtc, utcNow.Value, rollbackTolerance);
-                    nextGenerationTimeUtc = CalculateGenerationTime(
-                        loaded.State.LastIssuedUtc,
-                        utcNow.Value,
-                        ordering);
-                }
-
-                // File.Replace requires delete access as well as read/write access. Request
-                // the same rights here so health validation catches a restrictive file ACL
-                // before the next issuance commit reaches its atomic replacement step.
-                foreach (var candidate in PersistentArtifactPaths())
-                {
-                    if (!File.Exists(candidate)) continue;
-                    if ((File.GetAttributes(candidate) & FileAttributes.ReadOnly) != 0)
-                    {
-                        throw new IssuanceStateException("A timestamp state file is read-only: " + candidate);
-                    }
-
-                    using (new FileStream(
-                               candidate,
-                               FileMode.Open,
-                               FileSystemRights.Read | FileSystemRights.Write | FileSystemRights.Delete,
-                               FileShare.Read,
-                               4096,
-                               FileOptions.None))
-                    {
-                    }
-                }
-
-                // Probe creation and durable flush without modifying issuance data.
-                var directory = System.IO.Path.GetDirectoryName(path);
-                Directory.CreateDirectory(directory);
-                var probe = System.IO.Path.Combine(directory, ".state-health-" + Guid.NewGuid().ToString("N") + ".tmp");
-                try
-                {
-                    using FileStream stream = new(
-                        probe,
-                        FileMode.CreateNew,
-                        FileAccess.Write,
-                        FileShare.None,
-                        4096,
-                        FileOptions.WriteThrough | FileOptions.DeleteOnClose);
-                    stream.WriteByte(0x01);
-                    stream.Flush(true);
-                }
-                finally
-                {
-                    if (File.Exists(probe)) File.Delete(probe);
-                }
-
-                return nextGenerationTimeUtc;
+                using FileStream stream = new(
+                    probe,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.None,
+                    4096,
+                    FileOptions.WriteThrough | FileOptions.DeleteOnClose);
+                stream.WriteByte(0x01);
+                stream.Flush(true);
             }
-            catch (IssuanceStateException)
+            finally
             {
-                throw;
+                if (File.Exists(probe)) File.Delete(probe);
             }
-            catch (Exception ex) when (IsStorageException(ex))
-            {
-                throw new IssuanceStateException(
-                    "Timestamp state cannot be read and written. Verify the data directory permissions.", ex);
-            }
-        });
+
+            return nextGenerationTimeUtc;
+        }
+        catch (Exception ex) when (IsStorageException(ex))
+        {
+            throw new IssuanceStateException(
+                "Timestamp state cannot be read and written. Verify the data directory permissions.", ex);
+        }
+    }
+
+    // Prefer the common steady state, where every copy already agrees, over full recovery analysis.
+    private (MarkerSelection Markers, DurableState Durable) LoadCommittedState()
+    {
+        if (TryReadFullyMirroredState(out var markerSelection, out var durableState))
+        {
+            return (markerSelection, durableState);
+        }
+
+        markerSelection = ReadBestMarker() ??
+            throw new IssuanceStateException("Timestamp state has not been initialized.");
+        return (markerSelection, LoadDurableState(markerSelection));
     }
 
     private void InitializeLocked()
     {
-        var directory = System.IO.Path.GetDirectoryName(path);
+        var directory = Path.GetDirectoryName(path);
         Directory.CreateDirectory(directory);
 
         RecoverTornInitialMarkerIfSafe();
@@ -773,22 +711,11 @@ public sealed class IssuanceStateStore
 
     private static byte[] ComputeStateIntegrity(byte[] integrityKey, byte[] payload)
     {
-        // Construct standard HMAC-SHA-256 with the service's Windows CNG SHA-256 primitive.
-        // HMACSHA256 uses SHA256Managed on .NET Framework and is rejected when FIPS policy is enforced.
-        const int blockLength = 64;
-        var innerInput = new byte[blockLength + payload.Length];
-        var outerInput = new byte[blockLength + IntegrityLength];
-        for (var index = 0; index < blockLength; index++)
-        {
-            var keyByte = index < integrityKey.Length ? integrityKey[index] : (byte)0;
-            innerInput[index] = (byte)(keyByte ^ 0x36);
-            outerInput[index] = (byte)(keyByte ^ 0x5c);
-        }
-
-        Buffer.BlockCopy(payload, 0, innerInput, blockLength, payload.Length);
-        var innerDigest = Cryptography.WindowsHash.ComputeSha256(innerInput);
-        Buffer.BlockCopy(innerDigest, 0, outerInput, blockLength, innerDigest.Length);
-        return Cryptography.WindowsHash.ComputeSha256(outerInput);
+        // The key is stored in the adjacent marker, so this binds a state record to its marker and
+        // detects corruption; it does not resist a principal who can write the data directory.
+        // HMACSHA256 selects a FIPS-validated provider itself when Windows FIPS policy is enforced.
+        using HMACSHA256 hmac = new(integrityKey);
+        return hmac.ComputeHash(payload);
     }
 
     private static void WriteAtomicFile(
@@ -846,11 +773,7 @@ public sealed class IssuanceStateStore
 
             return result;
         }
-        catch (CorruptPersistentRecordException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        catch (Exception ex) when (ex.IsFileAccessFailure())
         {
             throw new IssuanceStateException(
                 string.Format(CultureInfo.InvariantCulture, "The timestamp {0} could not be read.", description),
@@ -974,13 +897,7 @@ public sealed class IssuanceStateStore
         FixedEquals(left.IntegrityKey, right.IntegrityKey) &&
         FixedEquals(left.InitialSerialNumber, right.InitialSerialNumber);
 
-    private static bool HasMagic(byte[] value, byte[] magic)
-    {
-        if (value.Length < magic.Length) return false;
-        var aggregate = 0;
-        for (var index = 0; index < magic.Length; index++) aggregate |= value[index] ^ magic[index];
-        return aggregate == 0;
-    }
+    private static bool HasMagic(byte[] value, byte[] magic) => value.AsSpan().StartsWith(magic);
 
     private static byte[] Slice(byte[] value, int offset, int length)
     {
@@ -1000,7 +917,7 @@ public sealed class IssuanceStateStore
         Cryptography.WindowsHash.FixedTimeEquals(left, right);
 
     private static bool IsStorageException(Exception exception) =>
-        exception is IOException or UnauthorizedAccessException or System.Security.SecurityException or CryptographicException;
+        exception.IsFileAccessFailure() || exception is CryptographicException;
 
     private static void TryDelete(string candidatePath)
     {
@@ -1016,20 +933,6 @@ public sealed class IssuanceStateStore
         }
     }
 
-    private T ExecuteLocked<T>(TimeSpan wait, Func<T> action)
-    {
-        using var storeLock = AcquireLock(wait);
-        return action();
-    }
-
-    private T ExecuteLocked<T>(TimeSpan wait, CancellationToken cancellationToken, Func<T> action)
-    {
-        using var storeLock = AcquireLock(wait, cancellationToken);
-        return action();
-    }
-
-    private FileStream AcquireLock(TimeSpan wait) => AcquireLock(wait, CancellationToken.None);
-
     private FileStream AcquireLock(TimeSpan wait, CancellationToken cancellationToken)
     {
         try
@@ -1042,24 +945,11 @@ public sealed class IssuanceStateStore
                     contention),
                 cancellationToken);
         }
-        catch (IssuanceStateException)
-        {
-            throw;
-        }
         catch (Exception ex) when (IsStorageException(ex))
         {
             throw new IssuanceStateException(
                 "OpenTimeStamp could not lock timestamp state. Verify the data directory permissions.", ex);
         }
-    }
-
-    private void ExecuteLocked(TimeSpan wait, Action action)
-    {
-        ExecuteLocked<object>(wait, () =>
-        {
-            action();
-            return null;
-        });
     }
 
     private sealed class State
@@ -1091,104 +981,54 @@ public sealed class IssuanceStateStore
         public DateTime LastIssuedUtc { get; set; }
     }
 
-    private sealed class DurableState
+    private sealed class DurableState(State state, bool requiresRepair)
     {
-        public DurableState(State state, bool requiresRepair)
-        {
-            State = state;
-            RequiresRepair = requiresRepair;
-        }
+        public State State { get; } = state;
 
-        public State State { get; }
-
-        public bool RequiresRepair { get; }
+        public bool RequiresRepair { get; } = requiresRepair;
     }
 
-    private sealed class StateCandidate
+    private sealed class StateCandidate(string path, State state)
     {
-        public StateCandidate(string path, State state)
-        {
-            Path = path;
-            State = state;
-        }
+        public string Path { get; } = path;
 
-        public string Path { get; }
-
-        public State State { get; }
+        public State State { get; } = state;
     }
 
-    private sealed class MarkerCandidate
+    private sealed class MarkerCandidate(string path, Marker marker, bool isMirroredMarker)
     {
-        public MarkerCandidate(string path, Marker marker, bool isMirroredMarker)
-        {
-            Path = path;
-            Marker = marker;
-            IsMirroredMarker = isMirroredMarker;
-        }
+        public string Path { get; } = path;
 
-        public string Path { get; }
+        public Marker Marker { get; } = marker;
 
-        public Marker Marker { get; }
-
-        public bool IsMirroredMarker { get; }
+        public bool IsMirroredMarker { get; } = isMirroredMarker;
     }
 
-    private sealed class MarkerSelection
+    private sealed class MarkerSelection(
+        Marker marker,
+        bool currentMatchesSelected,
+        bool temporaryMatchesSelected,
+        bool mirroredBackupMatchesSelected,
+        bool canReconstructInitialState)
     {
-        public MarkerSelection(
-            Marker marker,
-            bool currentMatchesSelected,
-            bool temporaryMatchesSelected,
-            bool mirroredBackupMatchesSelected,
-            bool canReconstructInitialState)
-        {
-            Marker = marker;
-            CurrentMatchesSelected = currentMatchesSelected;
-            TemporaryMatchesSelected = temporaryMatchesSelected;
-            MirroredBackupMatchesSelected = mirroredBackupMatchesSelected;
-            CanReconstructInitialState = canReconstructInitialState;
-        }
+        public Marker Marker { get; } = marker;
 
-        public Marker Marker { get; }
+        public bool CurrentMatchesSelected { get; } = currentMatchesSelected;
 
-        public bool CurrentMatchesSelected { get; }
+        public bool TemporaryMatchesSelected { get; } = temporaryMatchesSelected;
 
-        public bool TemporaryMatchesSelected { get; }
+        public bool MirroredBackupMatchesSelected { get; } = mirroredBackupMatchesSelected;
 
-        public bool MirroredBackupMatchesSelected { get; }
-
-        public bool CanReconstructInitialState { get; }
+        public bool CanReconstructInitialState { get; } = canReconstructInitialState;
 
         public bool HasAuthoritativeMarker =>
             CurrentMatchesSelected || TemporaryMatchesSelected || MirroredBackupMatchesSelected;
     }
 
-    private sealed class CorruptPersistentRecordException : IssuanceStateException
-    {
-        public CorruptPersistentRecordException(string message)
-            : base(message)
-        {
-        }
-    }
+    private sealed class CorruptPersistentRecordException(string message) : IssuanceStateException(message);
 }
 
-public class IssuanceStateException : Exception
-{
-    public IssuanceStateException(string message)
-        : base(message)
-    {
-    }
+public class IssuanceStateException(string message, Exception innerException = null)
+    : Exception(message, innerException);
 
-    public IssuanceStateException(string message, Exception innerException)
-        : base(message, innerException)
-    {
-    }
-}
-
-public sealed class ClockRollbackException : IssuanceStateException
-{
-    public ClockRollbackException(string message)
-        : base(message)
-    {
-    }
-}
+public sealed class ClockRollbackException(string message) : IssuanceStateException(message);

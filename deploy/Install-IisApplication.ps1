@@ -713,12 +713,12 @@ function Test-IisConfigurationLocationIsEmpty {
 
     $configPath = Join-Path $env:WINDIR 'System32\inetsrv\config\applicationHost.config'
     $document = Read-OpenTimeStampXmlDocument -Path $configPath
-    $matches = @($document.SelectNodes('/configuration/location') | Where-Object {
+    $locationNodes = @($document.SelectNodes('/configuration/location') | Where-Object {
             ([string]$_.GetAttribute('path')).Equals($Location, [System.StringComparison]::OrdinalIgnoreCase)
         })
-    if ($matches.Count -eq 0) { return $true }
-    if ($matches.Count -ne 1) { return $false }
-    $locationNode = $matches[0]
+    if ($locationNodes.Count -eq 0) { return $true }
+    if ($locationNodes.Count -ne 1) { return $false }
+    $locationNode = $locationNodes[0]
     if (@($locationNode.Attributes | Where-Object { $_.Name -ne 'path' }).Count -ne 0) { return $false }
     foreach ($element in @($locationNode.SelectNodes('.//*'))) {
         if ($element.Attributes.Count -ne 0 -or $element.LocalName -in @('add', 'remove', 'clear') -or

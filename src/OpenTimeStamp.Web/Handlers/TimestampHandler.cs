@@ -4,13 +4,13 @@ using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
 using OpenTimeStamp.Audit;
 using OpenTimeStamp.Configuration;
 using OpenTimeStamp.Cryptography;
+using OpenTimeStamp.Infrastructure;
 using OpenTimeStamp.Issuance;
 using OpenTimeStamp.Protocols;
 using OpenTimeStamp.Web.Infrastructure;
@@ -23,7 +23,9 @@ internal enum TimestampProtocol
     Authenticode
 }
 
-internal sealed class TimestampAdmissionController : IDisposable
+// Bounds concurrent work inside this worker process. The supported IIS deployment runs exactly
+// one worker without overlapping rotation, so the limits need no cross-process coordination.
+internal sealed class TimestampAdmissionController
 {
     private readonly AdmissionTier bodyIntake;
     private readonly AdmissionTier processing;
@@ -32,36 +34,17 @@ internal sealed class TimestampAdmissionController : IDisposable
         int bodyIntakeLimit,
         int processingLimit,
         int? perClientBodyIntakeLimit = null,
-        int? perClientProcessingLimit = null,
-        string admissionScopeName = null)
+        int? perClientProcessingLimit = null)
     {
         if (bodyIntakeLimit <= 0) throw new ArgumentOutOfRangeException(nameof(bodyIntakeLimit));
         if (processingLimit <= 0) throw new ArgumentOutOfRangeException(nameof(processingLimit));
-        if (perClientBodyIntakeLimit.HasValue &&
-            (perClientBodyIntakeLimit.Value <= 0 || perClientBodyIntakeLimit.Value > bodyIntakeLimit))
+        if (perClientBodyIntakeLimit is <= 0 || perClientBodyIntakeLimit > bodyIntakeLimit)
             throw new ArgumentOutOfRangeException(nameof(perClientBodyIntakeLimit));
-        if (perClientProcessingLimit.HasValue &&
-            (perClientProcessingLimit.Value <= 0 || perClientProcessingLimit.Value > processingLimit))
+        if (perClientProcessingLimit is <= 0 || perClientProcessingLimit > processingLimit)
             throw new ArgumentOutOfRangeException(nameof(perClientProcessingLimit));
-        var createdBodyIntake = new AdmissionTier(
-            bodyIntakeLimit,
-            perClientBodyIntakeLimit ?? bodyIntakeLimit,
-            admissionScopeName,
-            "body");
-        try
-        {
-            processing = new AdmissionTier(
-                processingLimit,
-                perClientProcessingLimit ?? processingLimit,
-                admissionScopeName,
-                "processing");
-            bodyIntake = createdBodyIntake;
-        }
-        catch
-        {
-            createdBodyIntake.Dispose();
-            throw;
-        }
+
+        bodyIntake = new AdmissionTier(bodyIntakeLimit, perClientBodyIntakeLimit ?? bodyIntakeLimit);
+        processing = new AdmissionTier(processingLimit, perClientProcessingLimit ?? processingLimit);
     }
 
     internal IDisposable TryEnterBodyIntake(string clientKey = "<unknown>") => bodyIntake.TryEnter(clientKey);
@@ -72,139 +55,46 @@ internal sealed class TimestampAdmissionController : IDisposable
 
     internal int ActiveProcessingClientCount => processing.ActiveClientCount;
 
-    public void Dispose()
-    {
-        bodyIntake.Dispose();
-        processing.Dispose();
-    }
-
-    private sealed class AdmissionTier : IDisposable
+    private sealed class AdmissionTier(int globalLimit, int perClientLimit)
     {
         private readonly Dictionary<string, int> activeClients = new(StringComparer.Ordinal);
-        private readonly object clientSync = new();
-        private readonly SemaphoreSlim localGate;
-        private readonly int perClientLimit;
-        private readonly Semaphore sharedGate;
-        private readonly string sharedPeerNamePrefix;
-
-        internal AdmissionTier(int globalLimit, int perClientLimit, string sharedScopeName, string name)
-        {
-            this.perClientLimit = perClientLimit;
-            if (string.IsNullOrWhiteSpace(sharedScopeName))
-            {
-                localGate = new SemaphoreSlim(globalLimit, globalLimit);
-                return;
-            }
-
-            sharedGate = new Semaphore(globalLimit, globalLimit, sharedScopeName + "-" + name);
-            sharedPeerNamePrefix = sharedScopeName + "-" + name + "-peer-";
-        }
+        private readonly object gate = new();
+        private int active;
 
         internal int ActiveClientCount
         {
             get
             {
-                lock (clientSync) return activeClients.Count;
+                lock (gate) return activeClients.Count;
             }
         }
 
-        internal IDisposable TryEnter(string clientKey)
+        internal AdmissionLease TryEnter(string clientKey)
         {
             clientKey = string.IsNullOrWhiteSpace(clientKey) ? "<unknown>" : clientKey;
-            if (!TryEnterGlobal()) return null;
-            if (sharedGate != null) return TryEnterSharedClient(clientKey);
-
-            try
+            lock (gate)
             {
-                lock (clientSync)
-                {
-                    activeClients.TryGetValue(clientKey, out var active);
-                    if (active >= perClientLimit)
-                    {
-                        ReleaseGlobal();
-                        return null;
-                    }
+                activeClients.TryGetValue(clientKey, out var clientActive);
+                if (active >= globalLimit || clientActive >= perClientLimit) return null;
 
-                    activeClients[clientKey] = active + 1;
-                }
-            }
-            catch
-            {
-                ReleaseGlobal();
-                throw;
+                active++;
+                activeClients[clientKey] = clientActive + 1;
             }
 
-            return new AdmissionLease(() => ReleaseClient(clientKey));
+            return new AdmissionLease(() => Release(clientKey));
         }
 
-        public void Dispose()
+        private void Release(string clientKey)
         {
-            localGate?.Dispose();
-            sharedGate?.Dispose();
-        }
-
-        private IDisposable TryEnterSharedClient(string clientKey)
-        {
-            Semaphore client = null;
-            try
+            lock (gate)
             {
-                // A peer gate exists only while its globally admitted request is active,
-                // bounding named kernel objects while enforcing limits across workers.
-                var digest = WindowsHash.ComputeSha256(Encoding.UTF8.GetBytes(clientKey));
-                var name = sharedPeerNamePrefix + HttpSupport.ToHex(digest).Substring(0, 32);
-                client = new Semaphore(perClientLimit, perClientLimit, name);
-                if (!client.WaitOne(0))
-                {
-                    client.Dispose();
-                    ReleaseGlobal();
-                    return null;
-                }
-
-                return new AdmissionLease(() =>
-                {
-                    try
-                    {
-                        client.Release();
-                    }
-                    finally
-                    {
-                        client.Dispose();
-                        ReleaseGlobal();
-                    }
-                });
-            }
-            catch
-            {
-                client?.Dispose();
-                ReleaseGlobal();
-                throw;
-            }
-        }
-
-        private void ReleaseClient(string clientKey)
-        {
-            lock (clientSync)
-            {
-                if (!activeClients.TryGetValue(clientKey, out var active))
-                    throw new InvalidOperationException("An admission lease was released without an active client.");
-
-                if (active == 1)
+                var clientActive = activeClients[clientKey];
+                if (clientActive == 1)
                     activeClients.Remove(clientKey);
                 else
-                    activeClients[clientKey] = active - 1;
+                    activeClients[clientKey] = clientActive - 1;
+                active--;
             }
-
-            ReleaseGlobal();
-        }
-
-        private bool TryEnterGlobal() => sharedGate?.WaitOne(0) ?? localGate.Wait(0);
-
-        private void ReleaseGlobal()
-        {
-            if (sharedGate != null)
-                sharedGate.Release();
-            else
-                localGate.Release();
         }
     }
 
@@ -225,17 +115,11 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
         ServiceRuntime.Settings.BodyIntakeLimit,
         ServiceRuntime.Settings.ProcessingLimit,
         ServiceRuntime.Settings.BodyIntakePerClientLimit,
-        ServiceRuntime.Settings.ProcessingPerClientLimit,
-        ServiceRuntime.AdmissionScopeName));
+        ServiceRuntime.Settings.ProcessingPerClientLimit));
 
     public override bool IsReusable => false;
 
     internal static void InitializeAdmission() => _ = Admission.Value;
-
-    internal static void ShutdownAdmission()
-    {
-        if (Admission.IsValueCreated) Admission.Value.Dispose();
-    }
 
     public override async Task ProcessRequestAsync(HttpContext context)
     {
@@ -290,8 +174,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
             configuration = snapshot.Configuration;
             requestCancellation.Token.ThrowIfCancellationRequested();
             identity = HttpSupport.GetRequestIdentity(context.Request);
-            if (string.Equals(configuration.AuthenticationMode, "Windows", StringComparison.OrdinalIgnoreCase) &&
-                !identity.IsAuthenticated)
+            if (configuration.RequiresWindowsAuthentication && !identity.IsAuthenticated)
             {
                 if (!TryEnterProcessing(context, admissions)) return;
                 WriteAudit(configuration, identity, context, correlationId, stopwatch, "rejected",
@@ -384,9 +267,8 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
                 "error", ex.Message, admissions.HasProcessing);
             HttpSupport.WritePlainError(context, 503, "The timestamp service settings are unavailable.");
         }
-        catch (Exception ex) when (ex is CryptographicException or CertificateSelectionException or
-                                   UnauthorizedAccessException or InvalidOperationException or IssuanceStateException or
-                                   IOException or System.Security.SecurityException)
+        catch (Exception ex) when (CertificateRepository.IsSelectionFailure(ex) ||
+                                   ex is InvalidOperationException or IssuanceStateException)
         {
             admissions.ReleaseBody();
             BestEffortAuditBounded(configuration, identity, context, correlationId, stopwatch,
@@ -413,48 +295,43 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
         if (!TryEnterProcessing(context, admissions)) return;
         cancellationToken.ThrowIfCancellationRequested();
 
-        Rfc3161Result result;
         Rfc3161Request parsedRequest;
         Rfc3161TimestampProcessor processor = new();
         try
         {
             parsedRequest = Rfc3161Request.Parse(request);
         }
-        catch (Rfc3161ProtocolException)
+        catch (Rfc3161ProtocolException ex)
         {
             // Produce the standard DER rejection without opening a certificate store
             // or invoking a private-key provider for malformed protocol input.
-            result = processor.Process(
-                request,
-                configuration,
-                null,
-                null,
-                DateTime.UtcNow,
-                cancellationToken);
-            WriteRfc3161Result(context, configuration, identity, correlationId, stopwatch, result);
+            WriteRfc3161Result(context, configuration, identity, correlationId, stopwatch,
+                Rfc3161TimestampProcessor.CreateRejection(ex.FailureInfo, ex.Message));
             return;
         }
 
-        if (!processor.TryPreflight(parsedRequest, configuration, out result))
+        if (!processor.TryPreflight(parsedRequest, configuration, out var result))
         {
             WriteRfc3161Result(context, configuration, identity, correlationId, stopwatch, result);
             return;
         }
         cancellationToken.ThrowIfCancellationRequested();
 
-        X509Certificate2 certificate = null;
+        X509Certificate2 certificate;
         try
         {
-            // Let the RFC processor encode a standards-compliant rejection when no key is selected.
-            try
-            {
-                certificate = ServiceRuntime.GetSelectedCertificate(snapshot, cancellationToken);
-            }
-            catch (CertificateSelectionException)
-            {
-                certificate = null;
-            }
+            certificate = ServiceRuntime.GetSelectedCertificate(snapshot, cancellationToken);
+        }
+        catch (CertificateSelectionException ex)
+        {
+            // Answer with a standards-shaped rejection and keep the actual cause for the audit record.
+            WriteRfc3161Result(context, configuration, identity, correlationId, stopwatch,
+                Rfc3161TimestampProcessor.CreateRejection(Rfc3161FailureInfo.SystemFailure, ex.Message, parsedRequest));
+            return;
+        }
 
+        using (certificate)
+        {
             result = processor.Process(
                 parsedRequest,
                 configuration,
@@ -462,12 +339,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
                 ServiceRuntime.IssuanceState,
                 () => DateTime.UtcNow,
                 cancellationToken);
-
             WriteRfc3161Result(context, configuration, identity, correlationId, stopwatch, result);
-        }
-        finally
-        {
-            certificate?.Dispose();
         }
     }
 
@@ -549,7 +421,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
     private static bool TryEnterProcessing(HttpContext context, RequestAdmissions admissions)
     {
         admissions.Processing = Admission.Value.TryEnterProcessing(admissions.ClientKey);
-        if (admissions.Processing != null) return true;
+        if (admissions.Processing is not null) return true;
 
         context.Response.Headers["Retry-After"] = "5";
         HttpSupport.WritePlainError(context, 503, "The timestamp service is at processing capacity. Retry later.");
@@ -630,7 +502,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
             set => processing = value;
         }
 
-        internal bool HasProcessing => processing != null;
+        internal bool HasProcessing => processing is not null;
 
         internal void ReleaseBody() => Interlocked.Exchange(ref body, null)?.Dispose();
 
@@ -669,8 +541,8 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
             RemoteAddress = context.Request.ServerVariables["REMOTE_ADDR"],
             PolicyOid = policyOid,
             HashAlgorithmOid = hashOid,
-            MessageImprintHex = configuration.LogMessageImprints ? HttpSupport.ToHex(imprint) : null,
-            SerialHex = HttpSupport.ToHex(serial),
+            MessageImprintHex = configuration.LogMessageImprints ? Hex.ToLower(imprint) : null,
+            SerialHex = Hex.ToLower(serial),
             CertificateThumbprint = certificateThumbprint,
             DurationMilliseconds = stopwatch.ElapsedMilliseconds,
             Detail = detail
@@ -723,7 +595,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
             HttpSupport.GetRemoteAddressKey(context.Request)))
         {
             // Preserve overload responsiveness instead of queuing an error-path fsync.
-            if (auditAdmission != null)
+            if (auditAdmission is not null)
                 BestEffortAudit(configuration, identity, context, correlationId, stopwatch, result, detail);
         }
     }

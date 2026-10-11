@@ -5,7 +5,9 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Security.Cryptography.Pkcs;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading;
 using OpenTimeStamp.Asn1;
+using OpenTimeStamp.Audit;
 using OpenTimeStamp.Configuration;
 using OpenTimeStamp.Issuance;
 using OpenTimeStamp.Protocols;
@@ -50,7 +52,8 @@ internal static class TestFixtures
         int version = 1,
         bool includeNullParameters = true,
         bool includeExtensions = false,
-        bool explicitFalseCertificateRequest = false)
+        bool explicitFalseCertificateRequest = false,
+        byte[] signedNonce = null)
     {
         var writer = new DerWriter();
         writer.WriteSequence(request =>
@@ -77,6 +80,10 @@ internal static class TestFixtures
             if (nonce != null)
             {
                 request.WritePositiveInteger(nonce);
+            }
+            else if (signedNonce != null)
+            {
+                request.WriteInteger(signedNonce);
             }
 
             if (certificateRequested)
@@ -281,4 +288,90 @@ internal sealed class TimestampCertificateFixture : IDisposable
         Certificate.Dispose();
         key.Dispose();
     }
+}
+
+// Fixed-clock, uncancelled, and default-rollover conveniences for tests. Production code keeps a
+// single entry point for each of these operations.
+internal static class TestOverloads
+{
+    public static Rfc3161Result Process(
+        this Rfc3161TimestampProcessor processor,
+        Rfc3161Request request,
+        ServiceConfiguration configuration,
+        X509Certificate2 certificate,
+        IssuanceStateStore stateStore,
+        DateTime utcNow,
+        CancellationToken cancellationToken = default) =>
+        processor.Process(request, configuration, certificate, stateStore, () => utcNow, cancellationToken);
+
+    public static Rfc3161Result Process(
+        this Rfc3161TimestampProcessor processor,
+        byte[] encodedRequest,
+        ServiceConfiguration configuration,
+        X509Certificate2 certificate,
+        IssuanceStateStore stateStore,
+        DateTime utcNow,
+        CancellationToken cancellationToken = default)
+    {
+        Rfc3161Request request;
+        try
+        {
+            request = Rfc3161Request.Parse(encodedRequest);
+        }
+        catch (Rfc3161ProtocolException exception)
+        {
+            return Rfc3161TimestampProcessor.CreateRejection(exception.FailureInfo, exception.Message);
+        }
+
+        return processor.Process(request, configuration, certificate, stateStore, utcNow, cancellationToken);
+    }
+
+    public static AuthenticodeResult Process(
+        this AuthenticodeTimestampProcessor processor,
+        byte[] encodedRequest,
+        ServiceConfiguration configuration,
+        X509Certificate2 certificate,
+        IssuanceStateStore stateStore,
+        DateTime utcNow,
+        CancellationToken cancellationToken = default) =>
+        processor.ProcessParsedSignature(
+            AuthenticodeTimestampProcessor.ParseRequest(encodedRequest),
+            configuration,
+            certificate,
+            stateStore,
+            () => utcNow,
+            cancellationToken);
+
+    public static AuthenticodeResult ProcessParsedSignature(
+        this AuthenticodeTimestampProcessor processor,
+        byte[] signature,
+        ServiceConfiguration configuration,
+        X509Certificate2 certificate,
+        IssuanceStateStore stateStore,
+        DateTime utcNow,
+        CancellationToken cancellationToken = default) =>
+        processor.ProcessParsedSignature(
+            signature, configuration, certificate, stateStore, () => utcNow, cancellationToken);
+
+    public static IssuanceAllocation Allocate(
+        this IssuanceStateStore store,
+        DateTime utcNow,
+        TimeSpan rollbackTolerance,
+        bool ordering,
+        CancellationToken cancellationToken = default) =>
+        store.Allocate(() => utcNow, rollbackTolerance, ordering, cancellationToken);
+
+    // Checks integrity and write access only: the latest representable instant can never be a rollback.
+    public static void Validate(this IssuanceStateStore store) =>
+        store.ValidateAndGetNextGenerationTime(
+            DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc), TimeSpan.Zero, false);
+
+    public static void Validate(this IssuanceStateStore store, DateTime utcNow, TimeSpan rollbackTolerance) =>
+        store.ValidateAndGetNextGenerationTime(utcNow, rollbackTolerance, false);
+
+    public static bool Write(this AuditLogger logger, AuditRecord record, int retentionDays, bool failClosed) =>
+        logger.Write(record, ServiceConfiguration.DailyLogRollover, true, retentionDays, failClosed);
+
+    public static void ProbeWritable(this AuditLogger logger) =>
+        logger.ProbeWritable(ServiceConfiguration.DailyLogRollover);
 }

@@ -103,14 +103,7 @@ internal static class TimestampCmsSigner
         // the same hash algorithm as the CMS signature for commensurate protection.
         var useVersionOne = string.Equals(signingHash.Name, "SHA1", StringComparison.Ordinal);
         var oid = useVersionOne ? KnownOids.SigningCertificate : KnownOids.SigningCertificateV2;
-        var certificateHash = signingHash.Name switch
-        {
-            "SHA1" => WindowsHash.ComputeSha1(certificate.RawData),
-            "SHA256" => WindowsHash.ComputeSha256(certificate.RawData),
-            "SHA384" => WindowsHash.ComputeSha384(certificate.RawData),
-            "SHA512" => WindowsHash.ComputeSha512(certificate.RawData),
-            _ => throw new CryptographicException("The ESS certificate hash algorithm is not supported.")
-        };
+        var certificateHash = WindowsHash.Compute(signingHash.Name, certificate.RawData);
 
         DerWriter writer = new();
         writer.WriteSequence(signingCertificate =>
@@ -160,7 +153,7 @@ internal static class TimestampCmsSigner
             outer.ThrowIfNotEmpty();
             if (!string.Equals(
                     contentInfo.ReadObjectIdentifier(),
-                    KnownOids.Pkcs7SignedDataValue,
+                    KnownOids.Pkcs7SignedData,
                     StringComparison.Ordinal))
             {
                 throw new DerEncodingException("The CMS ContentInfo is not SignedData.");
@@ -200,7 +193,7 @@ internal static class TimestampCmsSigner
             DerWriter writer = new();
             writer.WriteSequence(normalizedContentInfo =>
             {
-                normalizedContentInfo.WriteObjectIdentifier(KnownOids.Pkcs7SignedDataValue);
+                normalizedContentInfo.WriteObjectIdentifier(KnownOids.Pkcs7SignedData);
                 normalizedContentInfo.WriteContextSpecificConstructed(0, normalizedExplicit =>
                     normalizedExplicit.WriteSequence(normalizedSignedData =>
                     {
@@ -344,10 +337,10 @@ internal static class TimestampCmsSigner
     }
 
     private static bool IsSha2Digest(string oid) =>
-        string.Equals(oid, KnownOids.Sha224Value, StringComparison.Ordinal) ||
-        string.Equals(oid, KnownOids.Sha256Value, StringComparison.Ordinal) ||
-        string.Equals(oid, KnownOids.Sha384Value, StringComparison.Ordinal) ||
-        string.Equals(oid, KnownOids.Sha512Value, StringComparison.Ordinal);
+        string.Equals(oid, KnownOids.Sha224, StringComparison.Ordinal) ||
+        string.Equals(oid, KnownOids.Sha256, StringComparison.Ordinal) ||
+        string.Equals(oid, KnownOids.Sha384, StringComparison.Ordinal) ||
+        string.Equals(oid, KnownOids.Sha512, StringComparison.Ordinal);
 
     private static bool FixedEquals(byte[] left, byte[] right) =>
         WindowsHash.FixedTimeEquals(left, right);

@@ -271,9 +271,10 @@ identity. Remove those exceptions after review whenever possible.
 `-AllowBroadExistingKeyAcl` (or the same installer switch) explicitly accepts
 and preserves those risks; it does not make a key with unrelated access safe.
 
-The administrative page enumerates eligible certificates from both
-`LocalMachine\My` and the `CurrentUser\My` store of the account actually running
-the worker process. Manual selection pins one listed certificate. Automatic
+The administrative page lists the certificates in both `LocalMachine\My` and the
+`CurrentUser\My` store of the account actually running the worker process. An
+ineligible certificate, or a store that could not be opened, is shown with the
+reason and cannot be selected. Manual selection pins one eligible certificate. Automatic
 selection periodically re-evaluates both stores, considers profile, endpoint
 and digest compatibility, private-key access, validity, and configured trust
 policy, then uses the eligible certificate with the latest expiration. Ties

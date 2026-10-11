@@ -185,8 +185,10 @@ try {
         "--property:DeployPath=$(Join-Path $repositoryRoot 'deploy')",
         "--property:SetupPath=$PSScriptRoot",
         "--property:ProductVersion=$productVersion",
-        "--property:OutputPath=$wixOutput\",
-        "--property:BaseIntermediateOutputPath=$wixIntermediate\")
+        # End these directories with a forward slash: a trailing backslash would escape the closing
+        # quote Windows PowerShell adds when the temporary path contains a space.
+        "--property:OutputPath=$wixOutput/",
+        "--property:BaseIntermediateOutputPath=$wixIntermediate/")
     Write-Host 'Building the WiX 7 MSI.'
     & $dotnet.Source @wixArguments
     if ($LASTEXITCODE -ne 0) { throw "WiX MSI build failed with exit code $LASTEXITCODE." }

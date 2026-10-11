@@ -8,6 +8,7 @@ using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using OpenTimeStamp.Audit;
@@ -44,6 +45,9 @@ internal static class PersistenceAndConfigurationTests
         tests.Add(new TestCase("Configuration filesystem lock coordinates external handles", ConfigurationFilesystemLock));
         tests.Add(new TestCase("Configuration load detects same-metadata replacement", ConfigurationLoadDetectsSameMetadataReplacement));
         tests.Add(new TestCase("Configuration null root is rejected safely", NullConfigurationRootRejected));
+        tests.Add(new TestCase(
+            "Configuration elements absent from the file keep their defaults",
+            ConfigurationMissingElementsKeepDefaults));
         tests.Add(new TestCase("Audit health probe exercises the active append target", AuditProbeUsesActiveLog));
         tests.Add(new TestCase("Audit filesystem lock coordinates external handles", AuditFilesystemLock));
         tests.Add(new TestCase("Audit retention continues and retries at a bounded cadence", AuditRetentionRetryIsBounded));
@@ -830,6 +834,82 @@ internal static class PersistenceAndConfigurationTests
                 "Configuration access did not resume after the filesystem lock was released.");
             AssertEx.Equal(store.GetGeneration(), waiting.Result);
         }
+    }
+
+    private static void ConfigurationMissingElementsKeepDefaults()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = directory.File("tsa.config");
+        var store = new ConfigurationStore(path);
+        store.Save(new ServiceConfiguration());
+        var complete = File.ReadAllText(path);
+        var defaults = new ServiceConfiguration();
+
+        string Without(string xml, params string[] elements)
+        {
+            foreach (var element in elements)
+            {
+                var stripped = Regex.Replace(
+                    xml, @"\s*<" + element + @"\b.*?</" + element + ">", string.Empty, RegexOptions.Singleline);
+                AssertEx.NotEqual(xml, stripped, element + " was not present in the saved settings file.");
+                xml = stripped;
+            }
+
+            return xml;
+        }
+
+        ServiceConfiguration LoadEdited(string xml)
+        {
+            File.WriteAllText(path, xml, new UTF8Encoding(false));
+            return store.Load();
+        }
+
+        // The serializer never runs the constructor, so every absent element must still fall
+        // back to the constructor default rather than to false, zero, or an empty list.
+        var loaded = LoadEdited(Without(
+            complete,
+            nameof(ServiceConfiguration.FailClosedOnAuditError),
+            nameof(ServiceConfiguration.PruneAuditLogs),
+            nameof(ServiceConfiguration.LogMessageImprints),
+            nameof(ServiceConfiguration.IncludeCertificateChain),
+            nameof(ServiceConfiguration.MaxRequestBytes),
+            nameof(ServiceConfiguration.LogRetentionDays),
+            nameof(ServiceConfiguration.ClockRollbackToleranceSeconds),
+            nameof(ServiceConfiguration.SigningDigestAlgorithm),
+            nameof(ServiceConfiguration.AllowedHashAlgorithms),
+            nameof(ServiceConfiguration.AdminAllowedWindowsGroups)));
+        AssertEx.True(loaded.FailClosedOnAuditError, "An absent fail-closed setting must not load as fail-open.");
+        AssertEx.True(loaded.PruneAuditLogs);
+        AssertEx.True(loaded.LogMessageImprints);
+        AssertEx.True(loaded.IncludeCertificateChain);
+        AssertEx.Equal(defaults.MaxRequestBytes, loaded.MaxRequestBytes);
+        AssertEx.Equal(defaults.LogRetentionDays, loaded.LogRetentionDays);
+        AssertEx.Equal(defaults.ClockRollbackToleranceSeconds, loaded.ClockRollbackToleranceSeconds);
+        AssertEx.Equal(defaults.SigningDigestAlgorithm, loaded.SigningDigestAlgorithm);
+        AssertEx.True(defaults.AllowedHashAlgorithms.SequenceEqual(loaded.AllowedHashAlgorithms));
+        AssertEx.True(defaults.AdminAllowedWindowsGroups.SequenceEqual(loaded.AdminAllowedWindowsGroups));
+
+        // The serializer skips an element that appears after a later-ordered one. That element
+        // must also resolve to its default instead of silently turning the safeguard off.
+        var failClosed = "<FailClosedOnAuditError>true</FailClosedOnAuditError>";
+        var imprints = "<LogMessageImprints>true</LogMessageImprints>";
+        AssertEx.True(complete.Contains(failClosed) && complete.Contains(imprints));
+        var reordered = complete.Replace(failClosed, "<swap/>").Replace(imprints, failClosed).Replace("<swap/>", imprints);
+        loaded = LoadEdited(reordered);
+        AssertEx.True(loaded.FailClosedOnAuditError);
+        AssertEx.True(loaded.LogMessageImprints);
+
+        // Explicit values still win over the defaults.
+        loaded = LoadEdited(complete.Replace(failClosed, "<FailClosedOnAuditError>false</FailClosedOnAuditError>"));
+        AssertEx.False(loaded.FailClosedOnAuditError);
+
+        // A file written before selection modes existed pinned one thumbprint, which is Manual.
+        loaded = LoadEdited(Without(complete, nameof(ServiceConfiguration.CertificateSelectionMode)));
+        AssertEx.Equal(ServiceConfiguration.ManualCertificateSelection, loaded.CertificateSelectionMode);
+
+        // A settings file must declare its own schema version.
+        var unversioned = Without(complete, nameof(ServiceConfiguration.SchemaVersion));
+        AssertEx.Throws<ConfigurationErrorsException>(() => LoadEdited(unversioned));
     }
 
     private static void NullConfigurationRootRejected()

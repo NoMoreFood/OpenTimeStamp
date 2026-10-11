@@ -106,6 +106,26 @@ public sealed class DerReader
         return result;
     }
 
+    /// <summary>
+    /// Reads an INTEGER of either sign and returns its minimal two's-complement content octets
+    /// unchanged, so the value can be echoed byte-for-byte.
+    /// </summary>
+    public byte[] ReadInteger(int maximumMagnitudeLength)
+    {
+        if (maximumMagnitudeLength < 0) throw new ArgumentOutOfRangeException(nameof(maximumMagnitudeLength));
+
+        var encoded = ReadIntegerContents();
+
+        // A leading zero octet only keeps a full-width positive magnitude from reading as negative.
+        var signOctets = encoded.Length > 1 && encoded.Span[0] == 0 ? 1 : 0;
+        if (encoded.Length - signOctets > maximumMagnitudeLength)
+        {
+            throw new DerSizeLimitException("The INTEGER exceeds the supported size.");
+        }
+
+        return encoded.ToArray();
+    }
+
     public string ReadObjectIdentifier()
     {
         var contents = PeekContents(0x06, "The OBJECT IDENTIFIER is invalid.");

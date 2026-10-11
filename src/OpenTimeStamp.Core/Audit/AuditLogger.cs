@@ -42,7 +42,7 @@ public sealed class AuditLogger
     private string retentionWarning;
     private DateTime lastCleanupPeriodUtc;
     private int lastCleanupRetentionDays;
-    private string lastCleanupRolloverInterval;
+    private LogRollover lastCleanupRollover;
     private long lastCleanupFailureTimestamp;
     private bool cleanupRetryPending;
     private bool cleanupSuppressed;
@@ -72,9 +72,6 @@ public sealed class AuditLogger
 
     public string RetentionWarning => Volatile.Read(ref retentionWarning);
 
-    public bool Write(AuditRecord record, int retentionDays, bool failClosed) =>
-        Write(record, ServiceConfiguration.DailyLogRollover, true, retentionDays, failClosed);
-
     public bool Write(
         AuditRecord record,
         string rolloverInterval,
@@ -83,13 +80,14 @@ public sealed class AuditLogger
         bool failClosed)
     {
         if (record is null) throw new ArgumentNullException(nameof(record));
+        var rollover = ParseRollover(rolloverInterval);
         if (record.TimestampUtc == default) record.TimestampUtc = DateTime.UtcNow;
 
         try
         {
             // Serialize before entering the cross-process lock to minimize contention.
             Directory.CreateDirectory(directory);
-            var file = GetLogPath(record.TimestampUtc, rolloverInterval);
+            var file = GetLogPath(record.TimestampUtc, rollover);
             var bytes = new UTF8Encoding(false).GetBytes(Serialize(record) + Environment.NewLine);
 
             // Reject an interrupted final record before appending another line. Without
@@ -105,11 +103,11 @@ public sealed class AuditLogger
             }
 
             Notify(record);
-            if (pruneLogs) Cleanup(record.TimestampUtc, rolloverInterval, retentionDays);
+            if (pruneLogs) Cleanup(record.TimestampUtc, rollover, retentionDays);
             else SuppressCleanup();
             return true;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        catch (Exception ex) when (ex.IsFileAccessFailure())
         {
             Notify(new AuditRecord
             {
@@ -128,15 +126,14 @@ public sealed class AuditLogger
         }
     }
 
-    public void ProbeWritable() => ProbeWritable(ServiceConfiguration.DailyLogRollover);
-
     public void ProbeWritable(string rolloverInterval)
     {
+        var rollover = ParseRollover(rolloverInterval);
         string probe = null;
         try
         {
             Directory.CreateDirectory(directory);
-            var file = GetLogPath(DateTime.UtcNow, rolloverInterval);
+            var file = GetLogPath(DateTime.UtcNow, rollover);
             probe = Path.Combine(directory, ".audit-health-" + Guid.NewGuid().ToString("N") + ".tmp");
             using (AcquireLock(TimeSpan.FromSeconds(5)))
             {
@@ -159,7 +156,7 @@ public sealed class AuditLogger
                 allocation.Flush(true);
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        catch (Exception ex) when (ex.IsFileAccessFailure())
         {
             throw new AuditLogException(
                 "The active audit log cannot be opened for writing. Verify the log file permissions and free space.", ex);
@@ -168,9 +165,9 @@ public sealed class AuditLogger
         {
             try
             {
-                if (probe != null && File.Exists(probe)) File.Delete(probe);
+                if (probe is not null && File.Exists(probe)) File.Delete(probe);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+            catch (Exception ex) when (ex.IsFileAccessFailure())
             {
                 // DeleteOnClose normally removes the probe. A uniquely named health
                 // artifact is harmless if final cleanup is temporarily blocked.
@@ -198,15 +195,15 @@ public sealed class AuditLogger
         }
     }
 
-    private void Cleanup(DateTime nowUtc, string rolloverInterval, int retentionDays)
+    private void Cleanup(DateTime nowUtc, LogRollover rollover, int retentionDays)
     {
         nowUtc = nowUtc.ToUniversalTime();
-        var cleanupPeriodUtc = GetCleanupPeriodUtc(nowUtc, rolloverInterval);
+        var cleanupPeriodUtc = GetCleanupPeriodUtc(nowUtc, rollover);
         lock (cleanupGate)
         {
             var sameCleanupKey = lastCleanupPeriodUtc == cleanupPeriodUtc &&
                 lastCleanupRetentionDays == retentionDays &&
-                string.Equals(lastCleanupRolloverInterval, rolloverInterval, StringComparison.OrdinalIgnoreCase);
+                lastCleanupRollover == rollover;
             if (sameCleanupKey && !cleanupRetryPending && !cleanupSuppressed) return;
 
             var attemptTimestamp = Stopwatch.GetTimestamp();
@@ -219,7 +216,7 @@ public sealed class AuditLogger
 
             lastCleanupPeriodUtc = cleanupPeriodUtc;
             lastCleanupRetentionDays = retentionDays;
-            lastCleanupRolloverInterval = rolloverInterval;
+            lastCleanupRollover = rollover;
             cleanupSuppressed = false;
 
             // Run retention once per configured UTC rollover period and only after the
@@ -241,8 +238,7 @@ public sealed class AuditLogger
                         {
                             File.Delete(file);
                         }
-                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
-                                                   System.Security.SecurityException)
+                        catch (Exception ex) when (ex.IsFileAccessFailure())
                         {
                             cleanupComplete = false;
                             cleanupFailure ??= ex;
@@ -250,8 +246,7 @@ public sealed class AuditLogger
                     }
                 }
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
-                                       System.Security.SecurityException)
+            catch (Exception ex) when (ex.IsFileAccessFailure())
             {
                 cleanupComplete = false;
                 cleanupFailure ??= ex;
@@ -294,39 +289,34 @@ public sealed class AuditLogger
         {
             observer?.Invoke(record);
         }
-        catch (Exception ex) when (ex is not OutOfMemoryException and
-                                   not StackOverflowException and not ThreadAbortException)
+        catch (Exception ex) when (ex.IsContainable())
         {
             // Optional diagnostics cannot change the durable audit outcome.
         }
     }
 
-    private string GetLogPath(DateTime timestampUtc, string rolloverInterval)
+    private static LogRollover ParseRollover(string rolloverInterval) =>
+        ServiceConfiguration.ParseLogRollover(rolloverInterval) ?? throw new ArgumentException(
+            "The audit log rotation schedule must be Daily, Hourly, or Weekly.", nameof(rolloverInterval));
+
+    private string GetLogPath(DateTime timestampUtc, LogRollover rollover)
     {
         timestampUtc = timestampUtc.ToUniversalTime();
-        var suffix = string.Equals(rolloverInterval, ServiceConfiguration.HourlyLogRollover, StringComparison.OrdinalIgnoreCase)
-            ? timestampUtc.ToString("yyyyMMdd-HH", CultureInfo.InvariantCulture)
-            : string.Equals(rolloverInterval, ServiceConfiguration.DailyLogRollover, StringComparison.OrdinalIgnoreCase)
-                ? timestampUtc.ToString("yyyyMMdd", CultureInfo.InvariantCulture)
-                : string.Equals(rolloverInterval, ServiceConfiguration.WeeklyLogRollover, StringComparison.OrdinalIgnoreCase)
-                    ? "week-" + GetWeekStartUtc(timestampUtc).ToString("yyyyMMdd", CultureInfo.InvariantCulture)
-                    : throw new ArgumentException(
-                        "The audit log rotation schedule must be Daily, Hourly, or Weekly.", nameof(rolloverInterval));
+        var suffix = rollover switch
+        {
+            LogRollover.Hourly => timestampUtc.ToString("yyyyMMdd-HH", CultureInfo.InvariantCulture),
+            LogRollover.Weekly => "week-" + GetWeekStartUtc(timestampUtc).ToString("yyyyMMdd", CultureInfo.InvariantCulture),
+            _ => timestampUtc.ToString("yyyyMMdd", CultureInfo.InvariantCulture)
+        };
         return Path.Combine(directory, "timestamp-" + suffix + ".jsonl");
     }
 
-    private static DateTime GetCleanupPeriodUtc(DateTime nowUtc, string rolloverInterval)
+    private static DateTime GetCleanupPeriodUtc(DateTime nowUtc, LogRollover rollover) => rollover switch
     {
-        if (string.Equals(rolloverInterval, ServiceConfiguration.DailyLogRollover, StringComparison.OrdinalIgnoreCase))
-            return nowUtc.Date;
-        if (string.Equals(rolloverInterval, ServiceConfiguration.HourlyLogRollover, StringComparison.OrdinalIgnoreCase))
-            return new DateTime(nowUtc.Year, nowUtc.Month, nowUtc.Day, nowUtc.Hour, 0, 0, DateTimeKind.Utc);
-        if (string.Equals(rolloverInterval, ServiceConfiguration.WeeklyLogRollover, StringComparison.OrdinalIgnoreCase))
-            return GetWeekStartUtc(nowUtc);
-
-        throw new ArgumentException(
-            "The audit log rotation schedule must be Daily, Hourly, or Weekly.", nameof(rolloverInterval));
-    }
+        LogRollover.Hourly => new DateTime(nowUtc.Year, nowUtc.Month, nowUtc.Day, nowUtc.Hour, 0, 0, DateTimeKind.Utc),
+        LogRollover.Weekly => GetWeekStartUtc(nowUtc),
+        _ => nowUtc.Date
+    };
 
     private static bool TryGetLogPeriodEndUtc(string path, out DateTime periodEndUtc)
     {
@@ -442,10 +432,5 @@ public sealed class AuditLogger
     }
 }
 
-public sealed class AuditLogException : Exception
-{
-    public AuditLogException(string message, Exception innerException)
-        : base(message, innerException)
-    {
-    }
-}
+public sealed class AuditLogException(string message, Exception innerException)
+    : Exception(message, innerException);

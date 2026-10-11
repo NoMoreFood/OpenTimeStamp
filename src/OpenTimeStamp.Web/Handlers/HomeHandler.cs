@@ -76,11 +76,11 @@ internal sealed class HomeHandler : IHttpHandler
         if (string.Equals(context.Request.HttpMethod, "HEAD", StringComparison.OrdinalIgnoreCase)) return;
 
         // Advertise public endpoints without exposing local administration remotely.
-        var application = context.Request.ApplicationPath == "/"
-            ? string.Empty
-            : context.Request.ApplicationPath.TrimEnd('/');
         var authority = context.Request.Url.GetLeftPart(UriPartial.Authority);
-        context.Response.Write(Render(application, authority, HttpSupport.IsLocalAdminRequest(context.Request)));
+        context.Response.Write(Render(
+            context.Request.ApplicationBasePath,
+            authority,
+            HttpSupport.IsLocalAdminRequest(context.Request)));
     }
 
     internal static string Render(string application, string authority, bool showAdministration)

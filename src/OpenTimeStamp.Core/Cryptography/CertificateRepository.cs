@@ -9,6 +9,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using OpenTimeStamp.Asn1;
 using OpenTimeStamp.Configuration;
+using OpenTimeStamp.Infrastructure;
 
 namespace OpenTimeStamp.Cryptography;
 
@@ -55,7 +56,15 @@ public sealed class CertificateRepository : IDisposable
     private DateTime cachedSelectionFailureExpiresUtc;
     private long cachedSelectionFailureGeneration;
 
-    public const string TimeStampingEkuOid = KnownOids.TimeStampingEkuValue;
+    public const string TimeStampingEkuOid = KnownOids.TimeStampingEku;
+    private const string NoCertificateSupplied = "No timestamp signing certificate was supplied.";
+
+    /// <summary>
+    /// Selection failed for a reason an administrator can correct: the store, the private key,
+    /// trust, or the certificate profile.
+    /// </summary>
+    public static bool IsSelectionFailure(Exception exception) =>
+        exception is CertificateSelectionException or CryptographicException || exception.IsFileAccessFailure();
 
     public static DateTime GetSelectionValidationTimeUtc(DateTime utcNow, TimeSpan requiredHorizon)
     {
@@ -90,23 +99,15 @@ public sealed class CertificateRepository : IDisposable
             .ThenBy(item => item.Subject, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-    public X509Certificate2 GetSelectedCertificate(ServiceConfiguration configuration) =>
-        GetSelectedCertificate(configuration, null, CancellationToken.None);
-
     public X509Certificate2 GetSelectedCertificate(
         ServiceConfiguration configuration,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken = default) =>
         GetSelectedCertificate(configuration, null, cancellationToken);
 
     internal X509Certificate2 GetSelectedCertificate(
         ServiceConfiguration configuration,
-        Func<ServiceConfiguration, DateTime, DateTime, X509Certificate2> loadSelection) =>
-        GetSelectedCertificate(configuration, loadSelection, CancellationToken.None);
-
-    internal X509Certificate2 GetSelectedCertificate(
-        ServiceConfiguration configuration,
         Func<ServiceConfiguration, DateTime, DateTime, X509Certificate2> loadSelection,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken = default)
     {
         if (configuration is null) throw new ArgumentNullException(nameof(configuration));
 
@@ -119,7 +120,6 @@ public sealed class CertificateRepository : IDisposable
         lock (selectionCacheLock) requestGeneration = selectionCacheGeneration;
         Stopwatch refreshWait = null;
         DateTime now;
-        long refreshGeneration;
         while (true)
         {
             lock (selectionCacheLock)
@@ -171,7 +171,6 @@ public sealed class CertificateRepository : IDisposable
                 }
 
                 selectionRefreshInProgress = true;
-                refreshGeneration = requestGeneration;
                 break;
             }
         }
@@ -188,7 +187,7 @@ public sealed class CertificateRepository : IDisposable
                     "Timestamp signing certificate validation returned no certificate.");
             lock (selectionCacheLock)
             {
-                if (refreshGeneration != selectionCacheGeneration)
+                if (requestGeneration != selectionCacheGeneration)
                 {
                     throw new CertificateSelectionException(
                         "Certificate settings changed during validation. Refresh the page and try again.");
@@ -210,13 +209,11 @@ public sealed class CertificateRepository : IDisposable
                 return new X509Certificate2(cachedSelection);
             }
         }
-        catch (Exception ex) when (ex is CertificateSelectionException or CryptographicException or
-                                   System.IO.IOException or UnauthorizedAccessException or
-                                   System.Security.SecurityException)
+        catch (Exception ex) when (IsSelectionFailure(ex))
         {
             lock (selectionCacheLock)
             {
-                if (refreshGeneration == selectionCacheGeneration)
+                if (requestGeneration == selectionCacheGeneration)
                 {
                     cachedSelectionFailureKey = cacheKey;
                     cachedSelectionFailureReason = ex.Message;
@@ -307,9 +304,7 @@ public sealed class CertificateRepository : IDisposable
                 certificate = null;
                 return selected;
             }
-            catch (Exception ex) when (ex is CertificateSelectionException or CryptographicException or
-                                       System.IO.IOException or UnauthorizedAccessException or
-                                       System.Security.SecurityException)
+            catch (Exception ex) when (IsSelectionFailure(ex))
             {
                 // Continue through the ranked candidates so one inaccessible longer-lived key
                 // cannot block a usable certificate with a slightly shorter lifetime.
@@ -330,7 +325,6 @@ public sealed class CertificateRepository : IDisposable
         DateTime signingTimeUtc,
         DateTime? trustValidationTimeUtc)
     {
-
         // Resolve the configured certificate by normalized thumbprint in exactly one store.
         var thumbprint = ConfigurationStore.NormalizeThumbprint(configuration.CertificateThumbprint);
         if (string.IsNullOrEmpty(thumbprint))
@@ -437,9 +431,7 @@ public sealed class CertificateRepository : IDisposable
             reason = null;
             return true;
         }
-        catch (Exception ex) when (ex is CertificateSelectionException or CryptographicException or
-                                   System.IO.IOException or UnauthorizedAccessException or
-                                   System.Security.SecurityException)
+        catch (Exception ex) when (IsSelectionFailure(ex))
         {
             reason = ex.Message;
             return false;
@@ -490,8 +482,7 @@ public sealed class CertificateRepository : IDisposable
                         }
                     }
                     catch (Exception ex) when (ex is CryptographicException or ArgumentException or
-                                                  InvalidOperationException or System.IO.IOException or
-                                                  UnauthorizedAccessException or System.Security.SecurityException)
+                                                  InvalidOperationException || ex.IsFileAccessFailure())
                     {
                         if (includeIneligible)
                         {
@@ -511,8 +502,7 @@ public sealed class CertificateRepository : IDisposable
                 DisposeCertificates(certificates);
             }
         }
-        catch (Exception ex) when (ex is CryptographicException or System.IO.IOException or
-                                   UnauthorizedAccessException or System.Security.SecurityException)
+        catch (Exception ex) when (ex is CryptographicException || ex.IsFileAccessFailure())
         {
             if (includeIneligible)
             {
@@ -543,7 +533,7 @@ public sealed class CertificateRepository : IDisposable
     {
         if (certificate is null)
         {
-            reason = "No timestamp signing certificate was supplied.";
+            reason = NoCertificateSupplied;
             return false;
         }
 
@@ -565,7 +555,7 @@ public sealed class CertificateRepository : IDisposable
     {
         if (certificate is null)
         {
-            reason = "No timestamp signing certificate was supplied.";
+            reason = NoCertificateSupplied;
             return false;
         }
 
@@ -586,7 +576,7 @@ public sealed class CertificateRepository : IDisposable
     {
         if (certificate is null)
         {
-            reason = "No timestamp signing certificate was supplied.";
+            reason = NoCertificateSupplied;
             return false;
         }
 
@@ -722,7 +712,7 @@ public sealed class CertificateRepository : IDisposable
     {
         if (certificate is null)
         {
-            reason = "No timestamp signing certificate was supplied.";
+            reason = NoCertificateSupplied;
             return false;
         }
 
@@ -782,9 +772,9 @@ public sealed class CertificateRepository : IDisposable
     {
         var minimumDigestLength = algorithmOid switch
         {
-            KnownOids.MlDsa44Value => 32,
-            KnownOids.MlDsa65Value => 48,
-            KnownOids.MlDsa87Value => 64,
+            KnownOids.MlDsa44 => 32,
+            KnownOids.MlDsa65 => 48,
+            KnownOids.MlDsa87 => 64,
             _ => int.MaxValue
         };
         if (signingHash is null || !signingHash.CmsSigningSupported || signingHash.IsLegacy ||
@@ -812,9 +802,9 @@ public sealed class CertificateRepository : IDisposable
     {
         var expectedKeyLength = algorithmOid switch
         {
-            KnownOids.MlDsa44Value => 1312,
-            KnownOids.MlDsa65Value => 1952,
-            KnownOids.MlDsa87Value => 2592,
+            KnownOids.MlDsa44 => 1312,
+            KnownOids.MlDsa65 => 1952,
+            KnownOids.MlDsa87 => 2592,
             _ => 0
         };
         if (expectedKeyLength == 0)
@@ -1033,9 +1023,9 @@ public sealed class CertificateRepository : IDisposable
     }
 
     private static bool IsMldsaOid(string oid) =>
-        string.Equals(oid, KnownOids.MlDsa44Value, StringComparison.Ordinal) ||
-        string.Equals(oid, KnownOids.MlDsa65Value, StringComparison.Ordinal) ||
-        string.Equals(oid, KnownOids.MlDsa87Value, StringComparison.Ordinal);
+        string.Equals(oid, KnownOids.MlDsa44, StringComparison.Ordinal) ||
+        string.Equals(oid, KnownOids.MlDsa65, StringComparison.Ordinal) ||
+        string.Equals(oid, KnownOids.MlDsa87, StringComparison.Ordinal);
 
     internal static string BuildSelectionCacheKey(ServiceConfiguration configuration) =>
         (configuration.CertificateSelectionMode ?? string.Empty).Trim().ToUpperInvariant() + "|" +
@@ -1045,13 +1035,6 @@ public sealed class CertificateRepository : IDisposable
         HashAlgorithmCatalog.NormalizeName(configuration.SigningDigestAlgorithm) + "|" +
         (configuration.AuthenticodeEnabled ? "1" : "0") + "|" +
         (configuration.AllowUntrustedDevelopmentCertificate ? "1" : "0");
-
 }
 
-public sealed class CertificateSelectionException : Exception
-{
-    public CertificateSelectionException(string message)
-        : base(message)
-    {
-    }
-}
+public sealed class CertificateSelectionException(string message) : Exception(message);

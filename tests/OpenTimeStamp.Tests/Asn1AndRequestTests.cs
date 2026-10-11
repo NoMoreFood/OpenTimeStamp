@@ -18,8 +18,10 @@ internal static class Asn1AndRequestTests
         tests.Add(new TestCase("DER reader rejects non-canonical encodings", RejectsNonCanonicalDer));
         tests.Add(new TestCase("DER reader rejects bounded values before copying", RejectsBoundedValues));
         tests.Add(new TestCase("DER reader bounds untrusted OBJECT IDENTIFIER work", BoundsObjectIdentifierWork));
-        tests.Add(new TestCase("Windows OID resolution preserves standards values", OidResolutionPreservesStandards));
+        tests.Add(new TestCase("Protocol OID constants keep their standards values", ProtocolOidsKeepStandardsValues));
+        tests.Add(new TestCase("DER reader preserves signed INTEGER octets", PreservesSignedIntegerOctets));
         tests.Add(new TestCase("RFC3161 request parses all optional fields", ParsesRfc3161Request));
+        tests.Add(new TestCase("RFC3161 request accepts a negative nonce", AcceptsNegativeNonce));
         tests.Add(new TestCase("RFC3161 request rejects invalid version and nonce", RejectsInvalidVersionAndNonce));
         tests.Add(new TestCase("RFC3161 request rejects extensions and malformed DER", RejectsExtensionsAndMalformedDer));
         tests.Add(new TestCase("RFC3161 request rejects invalid algorithm parameters", RejectsInvalidAlgorithmParameters));
@@ -27,9 +29,9 @@ internal static class Asn1AndRequestTests
         tests.Add(new TestCase("SignTool legacy HTTP base64 framing", SignToolHttpFraming));
     }
 
-    private static void OidResolutionPreservesStandards()
+    private static void ProtocolOidsKeepStandardsValues()
     {
-        // Verify built-in Windows lookups and centralized fallbacks cannot change wire identifiers.
+        // Pin the wire identifiers so an edit to the constants cannot silently change protocol output.
         Dictionary<string, string> expectedHashes = new(StringComparer.Ordinal)
         {
             ["MD5"] = "1.2.840.113549.2.5",
@@ -203,6 +205,69 @@ internal static class Asn1AndRequestTests
         return encoded;
     }
 
+    private static void PreservesSignedIntegerOctets()
+    {
+        byte[][] values =
+        [
+            [0x00],
+            [0x7f],
+            [0x80],
+            [0x00, 0x80],
+            [0xff, 0x7f],
+            [0x80, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]
+        ];
+        foreach (var value in values)
+        {
+            DerWriter writer = new();
+            writer.WriteInteger(value);
+            var encoded = writer.Encode();
+            AssertEx.Equal((byte)0x02, encoded[0]);
+            AssertEx.SequenceEqual(value, new DerReader(encoded).ReadInteger(32));
+        }
+
+        // The size bound counts magnitude octets: a sign-padding zero is free, anything else is not.
+        var fullWidthPositive = new byte[33];
+        fullWidthPositive[1] = 0x80;
+        AssertEx.SequenceEqual(
+            fullWidthPositive,
+            new DerReader(Concat([0x02, 0x21], fullWidthPositive)).ReadInteger(32));
+        var tooWide = new byte[33];
+        tooWide[0] = 0x01;
+        AssertEx.Throws<DerSizeLimitException>(() =>
+            new DerReader(Concat([0x02, 0x21], tooWide)).ReadInteger(32));
+        AssertEx.Throws<DerEncodingException>(() =>
+            new DerReader(new byte[] { 0x02, 0x02, 0xff, 0x80 }).ReadInteger(32));
+        AssertEx.Throws<ArgumentException>(() => new DerWriter().WriteInteger(new byte[] { 0x00, 0x7f }));
+    }
+
+    private static byte[] Concat(byte[] first, byte[] second)
+    {
+        var result = new byte[first.Length + second.Length];
+        Buffer.BlockCopy(first, 0, result, 0, first.Length);
+        Buffer.BlockCopy(second, 0, result, first.Length, second.Length);
+        return result;
+    }
+
+    private static void AcceptsNegativeNonce()
+    {
+        // RFC 3161 defines the nonce as a plain INTEGER, and clients that draw a signed random
+        // value send a negative one about half the time. It must parse and keep its exact octets.
+        byte[] negativeNonce = [0x80, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+        var request = Rfc3161Request.Parse(TestFixtures.BuildRfc3161Request(
+            TestFixtures.Sha256Oid,
+            new byte[32],
+            certificateRequested: true,
+            signedNonce: negativeNonce));
+        AssertEx.SequenceEqual(negativeNonce, request.Nonce);
+        AssertEx.True(request.CertificateRequested);
+
+        byte[] minimalNegative = [0xff];
+        AssertEx.SequenceEqual(minimalNegative, Rfc3161Request.Parse(TestFixtures.BuildRfc3161Request(
+            TestFixtures.Sha256Oid,
+            new byte[32],
+            signedNonce: minimalNegative)).Nonce);
+    }
+
     private static void ParsesRfc3161Request()
     {
         var digest = new byte[32];
@@ -223,7 +288,8 @@ internal static class Asn1AndRequestTests
         AssertEx.Equal(TestFixtures.Sha256Oid, request.HashAlgorithmOid);
         AssertEx.SequenceEqual(digest, request.MessageImprint);
         AssertEx.Equal(TestFixtures.AlternatePolicyOid, request.RequestedPolicyOid);
-        AssertEx.SequenceEqual(nonce, request.Nonce);
+        // The request keeps the INTEGER's content octets, including the zero that marks it positive.
+        AssertEx.SequenceEqual([0x00, 0x80, 0x01, 0x02, 0x03], request.Nonce);
         AssertEx.True(request.CertificateRequested);
 
         var noOptions = Rfc3161Request.Parse(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, digest));

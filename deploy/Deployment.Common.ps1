@@ -516,7 +516,7 @@ function Assert-OpenTimeStampIntakeSettings {
     $definitions = @(
         @('TimestampBodyReadTimeoutSeconds', 10, 1, 25),
         @('TimestampBodyIntakeLimit', 32, 1, 256),
-        @('TimestampBodyIntakePerClientLimit', 4, 1, 32),
+        @('TimestampBodyIntakePerClientLimit', 4, 1, 256),
         @('TimestampProcessingLimit', 4, 1, 64),
         @('TimestampProcessingPerClientLimit', 2, 1, 64))
     $values = @{}

@@ -33,6 +33,7 @@ public sealed class Rfc3161Request
 
     public string RequestedPolicyOid { get; private set; }
 
+    /// <summary>The nonce INTEGER's two's-complement content octets exactly as received.</summary>
     public byte[] Nonce { get; private set; }
 
     public bool CertificateRequested { get; private set; }
@@ -88,7 +89,9 @@ public sealed class Rfc3161Request
             {
                 try
                 {
-                    nonce = request.ReadPositiveInteger(MaximumNonceLength);
+                    // RFC 3161 allows any INTEGER here. Keep the client's exact octets so a
+                    // negative or sign-padded nonce is echoed unchanged in TSTInfo.
+                    nonce = request.ReadInteger(MaximumNonceLength);
                 }
                 catch (DerSizeLimitException ex)
                 {
@@ -124,10 +127,6 @@ public sealed class Rfc3161Request
                 CertificateRequested = certificateRequested
             };
         }
-        catch (Rfc3161ProtocolException)
-        {
-            throw;
-        }
         catch (Exception ex) when (ex is DerEncodingException or ArgumentException or OverflowException)
         {
             throw new Rfc3161ProtocolException(Rfc3161FailureInfo.BadDataFormat, "The timestamp request is not valid DER.", ex);
@@ -162,19 +161,10 @@ public sealed class Rfc3161Result
     public string CertificateThumbprint { get; internal set; }
 }
 
-public sealed class Rfc3161ProtocolException : Exception
+public sealed class Rfc3161ProtocolException(
+    Rfc3161FailureInfo failureInfo,
+    string message,
+    Exception innerException = null) : Exception(message, innerException)
 {
-    public Rfc3161ProtocolException(Rfc3161FailureInfo failureInfo, string message)
-        : base(message)
-    {
-        FailureInfo = failureInfo;
-    }
-
-    public Rfc3161ProtocolException(Rfc3161FailureInfo failureInfo, string message, Exception innerException)
-        : base(message, innerException)
-    {
-        FailureInfo = failureInfo;
-    }
-
-    public Rfc3161FailureInfo FailureInfo { get; }
+    public Rfc3161FailureInfo FailureInfo { get; } = failureInfo;
 }

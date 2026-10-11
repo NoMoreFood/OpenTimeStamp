@@ -347,15 +347,15 @@ $certificate = $null
 try {
     $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::OpenExistingOnly -bor
         [System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
-    $matches = $store.Certificates.Find(
+    $found = $store.Certificates.Find(
         [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
         $normalizedThumbprint,
         $false)
-    if ($matches.Count -ne 1) {
-        throw "Expected one certificate with thumbprint $normalizedThumbprint in LocalMachine\My; found $($matches.Count)."
+    if ($found.Count -ne 1) {
+        throw "Expected one certificate with thumbprint $normalizedThumbprint in LocalMachine\My; found $($found.Count)."
     }
 
-    $certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($matches[0])
+    $certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($found[0])
     if (-not $certificate.HasPrivateKey) {
         throw 'The selected certificate has no private key.'
     }

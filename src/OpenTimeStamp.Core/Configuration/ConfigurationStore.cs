@@ -57,7 +57,7 @@ public sealed class ConfigurationStore
     }
 
     public void Save(ServiceConfiguration configuration) =>
-        SaveCore(configuration, null, false);
+        SaveCore(configuration, null);
 
     public string Save(ServiceConfiguration configuration, string expectedGeneration)
     {
@@ -66,10 +66,11 @@ public sealed class ConfigurationStore
             throw new ArgumentException("The expected settings version is required.", nameof(expectedGeneration));
         }
 
-        return SaveCore(configuration, expectedGeneration, true);
+        return SaveCore(configuration, expectedGeneration);
     }
 
-    private string SaveCore(ServiceConfiguration configuration, string expectedGeneration, bool compareGeneration)
+    // A null expected generation saves unconditionally.
+    private string SaveCore(ServiceConfiguration configuration, string expectedGeneration)
     {
         if (configuration is null) throw new ArgumentNullException(nameof(configuration));
 
@@ -92,7 +93,7 @@ public sealed class ConfigurationStore
 
         var newGeneration = ComputeGeneration(serialized);
         using var storeLock = AcquireLock(TimeSpan.FromSeconds(10));
-        if (compareGeneration)
+        if (expectedGeneration is not null)
         {
             var currentGeneration = ReadGeneration();
             if (!string.Equals(currentGeneration, expectedGeneration, StringComparison.Ordinal))
@@ -137,7 +138,7 @@ public sealed class ConfigurationStore
             {
                 if (File.Exists(temporary)) File.Delete(temporary);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+            catch (Exception ex) when (ex.IsFileAccessFailure())
             {
                 // The active configuration is already atomic. A uniquely
                 // named abandoned staging file is safe to clean later.
@@ -169,12 +170,7 @@ public sealed class ConfigurationStore
 
             return configuration;
         }
-        catch (ConfigurationErrorsException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is SerializationException or XmlException or IOException or
-                                   UnauthorizedAccessException or System.Security.SecurityException)
+        catch (Exception ex) when (ex is SerializationException or XmlException || ex.IsFileAccessFailure())
         {
             throw new ConfigurationErrorsException(
                 "OpenTimeStamp could not read the settings file. Verify the file permissions and XML contents.", ex);
@@ -189,11 +185,7 @@ public sealed class ConfigurationStore
         {
             return ComputeGeneration(ReadConfigurationBytes());
         }
-        catch (ConfigurationErrorsException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        catch (Exception ex) when (ex.IsFileAccessFailure())
         {
             throw new ConfigurationErrorsException(
                 "OpenTimeStamp could not read the settings version. Verify the settings file permissions.", ex);
@@ -272,12 +264,7 @@ public sealed class ConfigurationStore
                     contention),
                 CancellationToken.None);
         }
-        catch (ConfigurationErrorsException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
-                                   System.Security.SecurityException)
+        catch (Exception ex) when (ex.IsFileAccessFailure())
         {
             throw new ConfigurationErrorsException(
                 "OpenTimeStamp could not lock the settings file. Verify the file permissions.", ex);
@@ -285,12 +272,13 @@ public sealed class ConfigurationStore
     }
 
     private static string ComputeGeneration(byte[] bytes) =>
-        "sha256:" + BitConverter.ToString(WindowsHash.ComputeSha256(bytes)).Replace("-", string.Empty).ToLowerInvariant();
+        "sha256:" + Hex.ToLower(WindowsHash.ComputeSha256(bytes));
 
     private static void Normalize(ServiceConfiguration configuration)
     {
         // Canonical values keep validation and later ordinal comparisons deterministic.
-        configuration.AuthenticationMode = (configuration.AuthenticationMode ?? "Anonymous").Trim();
+        configuration.AuthenticationMode =
+            (configuration.AuthenticationMode ?? ServiceConfiguration.AnonymousAuthentication).Trim();
         configuration.CertificateStoreLocation = (configuration.CertificateStoreLocation ?? "LocalMachine").Trim();
         configuration.CertificateStoreName = (configuration.CertificateStoreName ?? "My").Trim();
         configuration.CertificateThumbprint = NormalizeThumbprint(configuration.CertificateThumbprint);
@@ -328,26 +316,9 @@ public sealed class ConfigurationStore
 
         return result;
     }
-
 }
 
-public class ConfigurationErrorsException : Exception
-{
-    public ConfigurationErrorsException(string message)
-        : base(message)
-    {
-    }
+public class ConfigurationErrorsException(string message, Exception innerException = null)
+    : Exception(message, innerException);
 
-    public ConfigurationErrorsException(string message, Exception innerException)
-        : base(message, innerException)
-    {
-    }
-}
-
-public sealed class ConfigurationConflictException : ConfigurationErrorsException
-{
-    public ConfigurationConflictException(string message)
-        : base(message)
-    {
-    }
-}
+public sealed class ConfigurationConflictException(string message) : ConfigurationErrorsException(message);

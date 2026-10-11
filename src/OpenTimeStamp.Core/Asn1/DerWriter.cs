@@ -42,6 +42,14 @@ public sealed class DerWriter
         writer.WriteInteger((long)value);
     }
 
+    /// <summary>Writes an INTEGER from its minimal two's-complement content octets.</summary>
+    public void WriteInteger(byte[] twosComplement)
+    {
+        if (twosComplement is null) throw new ArgumentNullException(nameof(twosComplement));
+
+        writer.WriteInteger((ReadOnlySpan<byte>)twosComplement);
+    }
+
     public void WritePositiveInteger(byte[] magnitude)
     {
         if (magnitude is null) throw new ArgumentNullException(nameof(magnitude));

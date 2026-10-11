@@ -8,6 +8,7 @@ using System.Web;
 using System.Web.Hosting;
 using OpenTimeStamp.Configuration;
 using OpenTimeStamp.Cryptography;
+using OpenTimeStamp.Infrastructure;
 using OpenTimeStamp.Web.Infrastructure;
 using OpenTimeStamp.Audit;
 using OpenTimeStamp.Issuance;
@@ -37,7 +38,7 @@ internal static class HealthRefreshScheduler
     {
         var missingCallback = refresh is null ? nameof(refresh) : timeout is null ? nameof(timeout) :
             completed is null ? nameof(completed) : delayAsync is null ? nameof(delayAsync) : null;
-        if (missingCallback != null) throw new ArgumentNullException(missingCallback);
+        if (missingCallback is not null) throw new ArgumentNullException(missingCallback);
         if (timeoutDelay <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeoutDelay));
 
         await Task.Yield();
@@ -124,7 +125,7 @@ internal sealed class HealthHandler : IHttpHandler
         var configurationVersion = ServiceRuntime.ConfigurationVersion;
         var currentInvalidation = Interlocked.Read(ref invalidationVersion);
         var cached = Volatile.Read(ref cachedHealth);
-        var cacheKeyMatches = cached != null && cached.FipsEnabled == fipsEnabled &&
+        var cacheKeyMatches = cached is not null && cached.FipsEnabled == fipsEnabled &&
             cached.ConfigurationVersion == configurationVersion &&
             cached.InvalidationVersion == currentInvalidation;
         if (cacheKeyMatches && IsFresh(now, cached.Timestamp))
@@ -158,9 +159,7 @@ internal sealed class HealthHandler : IHttpHandler
                 TimeSpan.FromSeconds(ProbeTimeoutSeconds));
             return;
         }
-        catch (Exception ex) when (ex is not OutOfMemoryException and
-                                   not StackOverflowException and
-                                   not ThreadAbortException)
+        catch (Exception ex) when (ex.IsContainable())
         {
             // A health request remains fail-fast and degraded if background work cannot be scheduled.
         }
@@ -189,9 +188,7 @@ internal sealed class HealthHandler : IHttpHandler
         {
             // ASP.NET is shutting down; do not publish a result from an abandoned probe.
         }
-        catch (Exception ex) when (ex is not OutOfMemoryException and
-                                   not StackOverflowException and
-                                   not ThreadAbortException)
+        catch (Exception ex) when (ex.IsContainable())
         {
             CompleteRefresh(refresh, CreateDegradedSnapshot(
                 refresh.InvalidationVersion,
@@ -242,7 +239,7 @@ internal sealed class HealthHandler : IHttpHandler
             // Validate configuration, FIPS policy, key access, and writable durable state.
             var configuration = snapshot.Configuration;
             var policyFailure = HealthPolicy.GetConfigurationPolicyFailure(configuration, snapshot.FipsEnabled);
-            if (policyFailure != null) return new HealthEvaluation(false, policyFailure);
+            if (policyFailure is not null) return new HealthEvaluation(false, policyFailure);
 
             var utcNow = DateTime.UtcNow;
             cancellationToken.ThrowIfCancellationRequested();
@@ -395,6 +392,5 @@ internal static class HealthPolicy
     internal static bool HasEffectiveRequestHash(ServiceConfiguration configuration, bool fipsEnabled) =>
         (configuration?.AllowedHashAlgorithms ?? [])
         .Select(HashAlgorithmCatalog.FindByName)
-        .Any(algorithm => algorithm != null && (!fipsEnabled || !algorithm.IsLegacy));
-
+        .Any(algorithm => algorithm is not null && (!fipsEnabled || !algorithm.IsLegacy));
 }
