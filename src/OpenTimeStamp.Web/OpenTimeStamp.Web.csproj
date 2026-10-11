@@ -10,6 +10,7 @@
     <OutputType>Library</OutputType>
     <RootNamespace>OpenTimeStamp.Web</RootNamespace>
     <AssemblyName>OpenTimeStamp.Web</AssemblyName>
+    <Nullable>enable</Nullable>
     <UseIISExpress>true</UseIISExpress>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
@@ -51,6 +52,9 @@
     <Compile Include="Handlers\HealthHandler.cs" />
     <Compile Include="Handlers\HomeHandler.cs" />
     <Compile Include="Handlers\TimestampHandler.cs" />
+    <Compile Include="..\OpenTimeStamp.Core\Infrastructure\NullableAttributes.cs">
+      <Link>Infrastructure\NullableAttributes.cs</Link>
+    </Compile>
     <Compile Include="Infrastructure\CsrfTokenManager.cs" />
     <Compile Include="Infrastructure\HttpSupport.cs" />
     <Compile Include="Infrastructure\ServiceRuntime.cs" />

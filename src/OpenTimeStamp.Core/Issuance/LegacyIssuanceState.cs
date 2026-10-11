@@ -23,7 +23,8 @@ internal static class LegacyIssuanceState
     private const int MarkerPayloadLength = MarkerKeyOffset + MarkerKeyLength + sizeof(ulong) + 16;
     private const int MarkerLength = MarkerPayloadLength + 32;
 
-    private static readonly string[] StateSuffixes = [string.Empty, ".bak", ".new", ".bak.new", ".migrate", ".migrate.new"];
+    private static readonly string[] StateSuffixes =
+        [string.Empty, ".bak", ".new", ".bak.new", ".migrate", ".migrate.new"];
     private static readonly string[] MarkerSuffixes = [".meta", ".meta.bak", ".meta.new"];
 
     /// <summary>

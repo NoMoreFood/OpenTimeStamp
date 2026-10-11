@@ -14,9 +14,9 @@ namespace OpenTimeStamp.Web.Infrastructure;
 
 internal sealed class RequestIdentity
 {
-    public string Name { get; set; }
-    public string Sid { get; set; }
-    public string AuthenticationType { get; set; }
+    public string? Name { get; set; }
+    public string? Sid { get; set; }
+    public string? AuthenticationType { get; set; }
     public bool IsAuthenticated { get; set; }
 }
 
@@ -57,7 +57,7 @@ internal static class HttpSupport
     public static bool HasExactMediaType(HttpRequestBase request, string expected) =>
         HasExactMediaTypeValue(request?.ContentType, expected);
 
-    internal static bool HasExactMediaTypeValue(string contentType, string expected) =>
+    internal static bool HasExactMediaTypeValue(string? contentType, string expected) =>
         MediaTypeHeaderValue.TryParse(contentType, out var parsed) &&
         string.Equals(parsed.MediaType, expected, StringComparison.OrdinalIgnoreCase) &&
         parsed.Parameters.All(HasValidMediaTypeParameter);
@@ -65,7 +65,7 @@ internal static class HttpSupport
     private static bool HasValidMediaTypeParameter(NameValueHeaderValue parameter)
     {
         var value = parameter?.Value;
-        if (string.IsNullOrWhiteSpace(value)) return false;
+        if (value is null || string.IsNullOrWhiteSpace(value)) return false;
         return value[0] != '"' || value.Length >= 2 && value[value.Length - 1] == '"';
     }
 
@@ -131,9 +131,9 @@ internal static class HttpSupport
         int declaredLength,
         int maximumBytes,
         TimeSpan deadline,
-        Action abortPendingRead,
+        Action? abortPendingRead,
         CancellationToken cancellationToken,
-        Action abandonedReadObserved = null)
+        Action? abandonedReadObserved = null)
     {
         if (input is null) throw new ArgumentNullException(nameof(input));
         if (maximumBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
@@ -216,7 +216,7 @@ internal static class HttpSupport
         return result;
     }
 
-    internal static string GetRemoteAddressKey(HttpRequestBase request)
+    internal static string GetRemoteAddressKey(HttpRequestBase? request)
     {
         const string unknown = "<unknown>";
         if (request is null) return unknown;
@@ -238,7 +238,7 @@ internal static class HttpSupport
         return remote.ToString();
     }
 
-    private static void AbortPendingRead(Action abortPendingRead)
+    private static void AbortPendingRead(Action? abortPendingRead)
     {
         try
         {
@@ -250,7 +250,7 @@ internal static class HttpSupport
         }
     }
 
-    private static async Task ObserveAbortedReadAsync(Task<int> readTask, Action observed)
+    private static async Task ObserveAbortedReadAsync(Task<int> readTask, Action? observed)
     {
         if (await Task.WhenAny(readTask, Task.Delay(AbortedReadObservationGrace)).ConfigureAwait(false) == readTask)
         {
@@ -339,7 +339,7 @@ internal static class HttpSupport
         return false;
     }
 
-    internal static string NormalizeHost(string value)
+    internal static string NormalizeHost(string? value)
     {
         value = (value ?? string.Empty).Trim();
         return value.Length >= 2 && value[0] == '[' && value[value.Length - 1] == ']'
@@ -347,7 +347,7 @@ internal static class HttpSupport
             : value;
     }
 
-    public static void WritePlainError(HttpContextBase context, int statusCode, string message)
+    public static void WritePlainError(HttpContextBase context, int statusCode, string? message)
     {
         context.Response.StatusCode = statusCode;
         context.Response.TrySkipIisCustomErrors = true;

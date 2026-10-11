@@ -954,7 +954,9 @@ public sealed class CertificateRepository : IDisposable
         utcNow >= cacheExpiresUtc &&
         utcNow < validationHorizonUtc;
 
-    private static bool CanAccessAssociatedPrivateKey(X509Certificate2 certificate, [NotNullWhen(false)] out string? reason)
+    private static bool CanAccessAssociatedPrivateKey(
+        X509Certificate2 certificate,
+        [NotNullWhen(false)] out string? reason)
     {
         // Ask Windows to open the key silently and compare its public half with the certificate.
         // ML-DSA is CNG-only; RSA remains compatible with both legacy CSP and CNG providers.

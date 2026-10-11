@@ -47,9 +47,9 @@ internal sealed class TimestampAdmissionController
         processing = new AdmissionTier(processingLimit, perClientProcessingLimit ?? processingLimit);
     }
 
-    internal IDisposable TryEnterBodyIntake(string clientKey = "<unknown>") => bodyIntake.TryEnter(clientKey);
+    internal IDisposable? TryEnterBodyIntake(string clientKey = "<unknown>") => bodyIntake.TryEnter(clientKey);
 
-    internal IDisposable TryEnterProcessing(string clientKey = "<unknown>") => processing.TryEnter(clientKey);
+    internal IDisposable? TryEnterProcessing(string clientKey = "<unknown>") => processing.TryEnter(clientKey);
 
     internal int ActiveBodyClientCount => bodyIntake.ActiveClientCount;
 
@@ -69,7 +69,7 @@ internal sealed class TimestampAdmissionController
             }
         }
 
-        internal AdmissionLease TryEnter(string clientKey)
+        internal AdmissionLease? TryEnter(string clientKey)
         {
             clientKey = string.IsNullOrWhiteSpace(clientKey) ? "<unknown>" : clientKey;
             lock (gate)
@@ -100,7 +100,7 @@ internal sealed class TimestampAdmissionController
 
     private sealed class AdmissionLease(Action release) : IDisposable
     {
-        private Action heldRelease = release;
+        private Action? heldRelease = release;
 
         public void Dispose()
         {
@@ -130,9 +130,9 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
         var correlationId = HttpSupport.GetCorrelationId(context);
         context.ThreadAbortOnTimeout = false;
         var stopwatch = Stopwatch.StartNew();
-        ServiceConfiguration configuration = null;
-        ServiceRuntimeSnapshot snapshot = null;
-        RequestIdentity identity = null;
+        ServiceConfiguration? configuration = null;
+        ServiceRuntimeSnapshot snapshot;
+        RequestIdentity? identity = null;
         var clientKey = HttpSupport.GetRemoteAddressKey(context.Request);
         using var admissions = new RequestAdmissions(clientKey);
         using var requestCancellation = CreateRequestCancellation(context);
@@ -482,8 +482,8 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
 
     private sealed class RequestAdmissions : IDisposable
     {
-        private IDisposable body;
-        private IDisposable processing;
+        private IDisposable? body;
+        private IDisposable? processing;
 
         internal RequestAdmissions(string clientKey)
         {
@@ -492,13 +492,13 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
 
         internal string ClientKey { get; }
 
-        internal IDisposable Body
+        internal IDisposable? Body
         {
             get => body;
             set => body = value;
         }
 
-        internal IDisposable Processing
+        internal IDisposable? Processing
         {
             get => processing;
             set => processing = value;
@@ -517,17 +517,17 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
 
     private void WriteAudit(
         ServiceConfiguration configuration,
-        RequestIdentity identity,
+        RequestIdentity? identity,
         HttpContextBase context,
         string correlationId,
         Stopwatch stopwatch,
         string result,
         string detail,
-        string policyOid,
-        string hashOid,
-        byte[] imprint,
-        byte[] serial,
-        string certificateThumbprint)
+        string? policyOid,
+        string? hashOid,
+        byte[]? imprint,
+        byte[]? serial,
+        string? certificateThumbprint)
     {
         // Record protocol, caller, cryptographic, and latency context in one durable event.
         AuditRecord record = new()
@@ -557,8 +557,8 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
     }
 
     private void BestEffortAudit(
-        ServiceConfiguration configuration,
-        RequestIdentity identity,
+        ServiceConfiguration? configuration,
+        RequestIdentity? identity,
         HttpContextBase context,
         string correlationId,
         Stopwatch stopwatch,
@@ -578,8 +578,8 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
     }
 
     private void BestEffortAuditBounded(
-        ServiceConfiguration configuration,
-        RequestIdentity identity,
+        ServiceConfiguration? configuration,
+        RequestIdentity? identity,
         HttpContextBase context,
         string correlationId,
         Stopwatch stopwatch,

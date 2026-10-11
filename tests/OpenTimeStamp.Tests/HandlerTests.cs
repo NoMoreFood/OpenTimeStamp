@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography.X509Certificates;
@@ -65,7 +66,10 @@ public sealed class HandlerTests
         AssertEx.Equal(404, response.StatusCode);
 
         host.Configure(EnableRfc3161);
-        var authenticode = new FakeHttpRequest("POST", AuthenticodeUrl, [0x00]) { ContentType = "application/octet-stream" };
+        var authenticode = new FakeHttpRequest("POST", AuthenticodeUrl, [0x00])
+        {
+            ContentType = "application/octet-stream"
+        };
         AssertEx.Equal(404, Timestamp(authenticode, TimestampProtocol.Authenticode).StatusCode,
             "Enabling one protocol must not expose the other.");
     }
@@ -129,7 +133,8 @@ public sealed class HandlerTests
         var second = Timestamp(
             Rfc3161Post(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, digest)), TimestampProtocol.Rfc3161);
         AssertEx.Equal(0, TestFixtures.ExtractRfc3161Status(second.Body));
-        var serials = host.AuditLines().Select(line => Regex.Match(line, "\"serial\":\"([0-9a-f]{32})\"").Groups[1].Value);
+        var serials = host.AuditLines()
+            .Select(line => Regex.Match(line, "\"serial\":\"([0-9a-f]{32})\"").Groups[1].Value);
         AssertEx.Equal(2, serials.Distinct(StringComparer.Ordinal).Count());
     }
 
@@ -161,7 +166,8 @@ public sealed class HandlerTests
         host.Configure(EnableRfc3161);
 
         var response = Timestamp(
-            Rfc3161Post(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32])), TimestampProtocol.Rfc3161);
+            Rfc3161Post(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32])),
+            TimestampProtocol.Rfc3161);
         AssertEx.Equal(200, response.StatusCode);
         AssertEx.Equal(2, TestFixtures.ExtractRfc3161Status(response.Body));
         AssertEx.Equal((int)Rfc3161FailureInfo.SystemFailure, TestFixtures.ExtractRfc3161FailureBit(response.Body));
@@ -182,16 +188,18 @@ public sealed class HandlerTests
         // A file where the log directory belongs makes every audit write fail.
         File.WriteAllText(Path.Combine(host.DataDirectory, "Logs"), string.Empty);
         var response = Timestamp(
-            Rfc3161Post(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32])), TimestampProtocol.Rfc3161);
+            Rfc3161Post(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32])),
+            TimestampProtocol.Rfc3161);
         AssertEx.Equal(503, response.StatusCode);
         AssertEx.Contains("audit log cannot be written", response.Text);
         AssertEx.True(response.ContentType.StartsWith("text/plain", StringComparison.Ordinal),
             "A token must not be returned when its audit record was not committed.");
 
-        // With fail-open auditing the same failure no longer blocks issuance.
+        // With fail-open auditing the same failure does not block issuance.
         host.Configure(configuration => configuration.FailClosedOnAuditError = false);
         var failOpen = Timestamp(
-            Rfc3161Post(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32])), TimestampProtocol.Rfc3161);
+            Rfc3161Post(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32])),
+            TimestampProtocol.Rfc3161);
         AssertEx.Equal(200, failOpen.StatusCode);
         AssertEx.Equal(0, TestFixtures.ExtractRfc3161Status(failOpen.Body));
     }
@@ -256,7 +264,10 @@ public sealed class HandlerTests
         using var host = new HandlerTestHost();
         host.Configure(configuration => configuration.AdminAllowedWindowsGroups = [AuthenticatedUsersSid]);
 
-        var remote = new FakeHttpRequest("GET", "http://tsa.example.test/admin") { Identity = WindowsIdentity.GetCurrent() };
+        var remote = new FakeHttpRequest("GET", "http://tsa.example.test/admin")
+        {
+            Identity = WindowsIdentity.GetCurrent()
+        };
         AssertEx.Equal(403, Admin(remote).StatusCode, "A request from another machine must be refused.");
 
         // A local proxy forwards remote traffic from a loopback address.
@@ -300,7 +311,8 @@ public sealed class HandlerTests
         AssertEx.Equal(200, response.StatusCode);
         AssertEx.True(response.ContentType.StartsWith("text/html", StringComparison.Ordinal));
         AssertEx.Contains("value=\"" + TestFixtures.DefaultPolicyOid + "\"", response.Text);
-        AssertEx.Contains("name=\"generation\" value=\"" + ServiceRuntime.Configuration.GetGeneration() + "\"", response.Text);
+        AssertEx.Contains(
+            "name=\"generation\" value=\"" + ServiceRuntime.Configuration.GetGeneration() + "\"", response.Text);
 
         var cookie = response.Cookies["OpenTimeStamp.AdminCsrf"];
         AssertEx.NotNull(cookie, "The page must issue its CSRF cookie.");
@@ -315,7 +327,8 @@ public sealed class HandlerTests
             AssertEx.Contains(certificate.Thumbprint, response.Text);
         }
 
-        var ineligible = listed.FirstOrDefault(item => !item.IsEligible && !string.IsNullOrEmpty(item.IneligibilityReason));
+        var ineligible = listed.FirstOrDefault(
+            item => !item.IsEligible && !string.IsNullOrEmpty(item.IneligibilityReason));
         if (ineligible is not null)
         {
             AssertEx.Contains(HttpUtility.HtmlEncode(ineligible.IneligibilityReason), response.Text);
@@ -347,7 +360,12 @@ public sealed class HandlerTests
         // A token issued to one account is useless to another.
         var otherAccount = AdminPost(page);
         otherAccount.Cookies.Clear();
-        var otherIdentity = new RequestIdentity { Name = "CONTOSO\\other", Sid = "S-1-5-21-1-2-3-1001", IsAuthenticated = true };
+        var otherIdentity = new RequestIdentity
+        {
+            Name = "CONTOSO\\other",
+            Sid = "S-1-5-21-1-2-3-1001",
+            IsAuthenticated = true
+        };
         var otherToken = Convert.ToBase64String(System.Web.Security.MachineKey.Protect(
                 CsrfTokenManager.CreatePayload(otherIdentity, DateTime.UtcNow), "OpenTimeStamp.AdminCsrf.v1"))
             .TrimEnd('=').Replace('+', '-').Replace('/', '_');
@@ -355,7 +373,8 @@ public sealed class HandlerTests
         otherAccount.FormValues["csrf"] = otherToken;
         AssertEx.Equal(403, Admin(otherAccount).StatusCode);
 
-        AssertEx.Equal(before, ServiceRuntime.Configuration.GetGeneration(), "A refused request must not change settings.");
+        AssertEx.Equal(
+            before, ServiceRuntime.Configuration.GetGeneration(), "A refused request must not change settings.");
         AssertEx.Equal(0, host.AuditLines().Length);
     }
 
@@ -379,7 +398,8 @@ public sealed class HandlerTests
         AssertEx.NotEqual(before, generation);
         AssertEx.Equal(90, saved.LogRetentionDays);
         AssertEx.False(saved.FailClosedOnAuditError);
-        AssertEx.Equal(90, ServiceRuntime.LoadConfiguration().LogRetentionDays, "The running service must use the saved settings.");
+        AssertEx.Equal(90, ServiceRuntime.LoadConfiguration().LogRetentionDays,
+            "The running service must use the saved settings.");
 
         var audit = host.AuditLines();
         AssertEx.Equal(2, audit.Length);
@@ -435,24 +455,24 @@ public sealed class HandlerTests
         using var host = new HandlerTestHost();
 
         var home = new FakeHttpContext(new FakeHttpRequest("GET", "http://tsa.example.test/"));
-        new HomeHandler().Process(home);
+        HomeHandler.Process(home);
         AssertEx.Equal(200, home.FakeResponse.StatusCode);
         AssertEx.Contains("/timestamp/rfc3161", home.FakeResponse.Text);
         AssertEx.False(home.FakeResponse.Text.Contains("Open Administration"),
             "The landing page must not advertise administration to a remote caller.");
 
         var post = new FakeHttpContext(new FakeHttpRequest("POST", "http://tsa.example.test/", []));
-        new HomeHandler().Process(post);
+        HomeHandler.Process(post);
         AssertEx.Equal(405, post.FakeResponse.StatusCode);
 
         // Outside IIS no background probe can run, so health must report degraded, never healthy.
         var health = new FakeHttpContext(new FakeHttpRequest("GET", "http://tsa.example.test/health"));
-        new HealthHandler().Process(health);
+        HealthHandler.Process(health);
         AssertEx.Equal(503, health.FakeResponse.StatusCode);
         AssertEx.Contains("\"status\":\"degraded\"", health.FakeResponse.Text);
 
         var healthPost = new FakeHttpContext(new FakeHttpRequest("POST", "http://tsa.example.test/health", []));
-        new HealthHandler().Process(healthPost);
+        HealthHandler.Process(healthPost);
         AssertEx.Equal(405, healthPost.FakeResponse.StatusCode);
     }
 
@@ -484,9 +504,12 @@ public sealed class HandlerTests
     }
 
     // Submits the form a rendered page would post, optionally edited first.
-    private static FakeHttpRequest AdminPost(FakeHttpResponse page, Action<System.Collections.Specialized.NameValueCollection> edit = null)
+    private static FakeHttpRequest AdminPost(FakeHttpResponse page, Action<NameValueCollection> edit = null)
     {
-        var request = new FakeHttpRequest("POST", AdminUrl, [], "127.0.0.1") { Identity = WindowsIdentity.GetCurrent() };
+        var request = new FakeHttpRequest("POST", AdminUrl, [], "127.0.0.1")
+        {
+            Identity = WindowsIdentity.GetCurrent()
+        };
         request.Headers["Origin"] = "http://localhost";
         request.Cookies.Add(new HttpCookie("OpenTimeStamp.AdminCsrf", page.Cookies["OpenTimeStamp.AdminCsrf"].Value));
 
@@ -500,12 +523,14 @@ public sealed class HandlerTests
             form.Add(name, HttpUtility.HtmlDecode(Attribute(input.Value, "value") ?? "on"));
         }
 
-        foreach (Match area in Regex.Matches(page.Text, "<textarea\\b[^>]*name=\"([^\"]+)\"[^>]*>(.*?)</textarea>", RegexOptions.Singleline))
+        foreach (Match area in Regex.Matches(
+            page.Text, "<textarea\\b[^>]*name=\"([^\"]+)\"[^>]*>(.*?)</textarea>", RegexOptions.Singleline))
         {
             form.Add(area.Groups[1].Value, HttpUtility.HtmlDecode(area.Groups[2].Value));
         }
 
-        foreach (Match select in Regex.Matches(page.Text, "<select\\b[^>]*name=\"([^\"]+)\"[^>]*>(.*?)</select>", RegexOptions.Singleline))
+        foreach (Match select in Regex.Matches(
+            page.Text, "<select\\b[^>]*name=\"([^\"]+)\"[^>]*>(.*?)</select>", RegexOptions.Singleline))
         {
             var chosen = Regex.Match(select.Groups[2].Value, "<option value=\"([^\"]*)\" selected");
             if (!chosen.Success) chosen = Regex.Match(select.Groups[2].Value, "<option value=\"([^\"]*)\"");

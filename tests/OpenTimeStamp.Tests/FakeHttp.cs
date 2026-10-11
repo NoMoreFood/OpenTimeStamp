@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Specialized;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography.X509Certificates;
@@ -53,7 +54,7 @@ internal sealed class FakeHttpRequest : HttpRequestBase
         Url = new Uri(url);
         this.body = body ?? [];
         ServerVariables["REMOTE_ADDR"] = remoteAddress;
-        if (body is not null) Headers["Content-Length"] = this.body.Length.ToString();
+        if (body is not null) Headers["Content-Length"] = this.body.Length.ToString(CultureInfo.InvariantCulture);
         foreach (var pair in Url.Query.TrimStart('?').Split(['&'], StringSplitOptions.RemoveEmptyEntries))
         {
             var parts = pair.Split(['='], 2);

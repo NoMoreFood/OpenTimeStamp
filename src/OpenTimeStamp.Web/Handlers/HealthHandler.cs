@@ -36,9 +36,10 @@ internal static class HealthRefreshScheduler
         Func<TimeSpan, CancellationToken, Task> delayAsync,
         CancellationToken shutdownToken)
     {
-        var missingCallback = refresh is null ? nameof(refresh) : timeout is null ? nameof(timeout) :
-            completed is null ? nameof(completed) : delayAsync is null ? nameof(delayAsync) : null;
-        if (missingCallback is not null) throw new ArgumentNullException(missingCallback);
+        if (refresh is null || timeout is null || completed is null || delayAsync is null)
+            throw new ArgumentNullException(
+                refresh is null ? nameof(refresh) : timeout is null ? nameof(timeout) :
+                completed is null ? nameof(completed) : nameof(delayAsync));
         if (timeoutDelay <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeoutDelay));
 
         await Task.Yield();
@@ -88,7 +89,7 @@ internal sealed class HealthHandler : IHttpHandler
     private const int ProbeTimeoutSeconds = 15;
     private static readonly long CacheDurationTicks = Stopwatch.Frequency * CacheDurationSeconds;
     private static readonly long StaleGraceTicks = Stopwatch.Frequency * StaleGraceSeconds;
-    private static HealthSnapshot cachedHealth;
+    private static HealthSnapshot? cachedHealth;
     private static long invalidationVersion;
     private static int refreshInProgress;
 
@@ -96,7 +97,7 @@ internal sealed class HealthHandler : IHttpHandler
 
     public void ProcessRequest(HttpContext context) => Process(new HttpContextWrapper(context));
 
-    internal void Process(HttpContextBase context)
+    internal static void Process(HttpContextBase context)
     {
         // Expose only a minimal liveness result through safe retrieval methods.
         if (!string.Equals(context.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) &&
@@ -130,7 +131,7 @@ internal sealed class HealthHandler : IHttpHandler
         var cacheKeyMatches = cached is not null && cached.FipsEnabled == fipsEnabled &&
             cached.ConfigurationVersion == configurationVersion &&
             cached.InvalidationVersion == currentInvalidation;
-        if (cacheKeyMatches && IsFresh(now, cached.Timestamp))
+        if (cacheKeyMatches && IsFresh(now, cached!.Timestamp))
         {
             return new HealthResult(
                 cached.Healthy,
@@ -144,7 +145,7 @@ internal sealed class HealthHandler : IHttpHandler
         StartRefresh();
         var refreshing = Volatile.Read(ref refreshInProgress) != 0;
         if (ShouldServeStale(cacheKeyMatches, now, cached?.Timestamp ?? 0))
-            return new HealthResult(cached.Healthy, cached.FipsEnabled, true, true, refreshing, cached.Detail);
+            return new HealthResult(cached!.Healthy, cached.FipsEnabled, true, true, refreshing, cached.Detail);
         return new HealthResult(false, fipsEnabled, false, false, refreshing, null);
     }
 
@@ -293,14 +294,14 @@ internal sealed class HealthHandler : IHttpHandler
         long configurationVersion,
         long invalidationVersion,
         long timestamp,
-        string detail)
+        string? detail)
     {
         internal bool Healthy { get; } = healthy;
         internal bool FipsEnabled { get; } = fipsEnabled;
         internal long ConfigurationVersion { get; } = configurationVersion;
         internal long InvalidationVersion { get; } = invalidationVersion;
         internal long Timestamp { get; } = timestamp;
-        internal string Detail { get; } = detail;
+        internal string? Detail { get; } = detail;
     }
 
     internal readonly struct HealthResult(
@@ -309,20 +310,20 @@ internal sealed class HealthHandler : IHttpHandler
         bool hasSnapshot,
         bool stale,
         bool refreshing,
-        string detail)
+        string? detail)
     {
         internal bool Healthy { get; } = healthy;
         internal bool FipsEnabled { get; } = fipsEnabled;
         internal bool HasSnapshot { get; } = hasSnapshot;
         internal bool Stale { get; } = stale;
         internal bool Refreshing { get; } = refreshing;
-        internal string Detail { get; } = detail;
+        internal string? Detail { get; } = detail;
     }
 
-    private readonly struct HealthEvaluation(bool healthy, string detail)
+    private readonly struct HealthEvaluation(bool healthy, string? detail)
     {
         internal bool Healthy { get; } = healthy;
-        internal string Detail { get; } = detail;
+        internal string? Detail { get; } = detail;
     }
 
     private sealed class RefreshWork(long invalidationVersion)
@@ -369,7 +370,7 @@ internal static class HealthPolicy
         return GetConfigurationPolicyFailure(configuration, fipsEnabled) is null;
     }
 
-    internal static string GetConfigurationPolicyFailure(ServiceConfiguration configuration, bool fipsEnabled)
+    internal static string? GetConfigurationPolicyFailure(ServiceConfiguration configuration, bool fipsEnabled)
     {
         if (configuration is null) return "Service settings are unavailable.";
 

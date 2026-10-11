@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 using System.Web;
@@ -40,7 +41,7 @@ internal static class CsrfTokenManager
         return existing;
     }
 
-    public static bool Validate(HttpContextBase context, string submitted, RequestIdentity identity)
+    public static bool Validate(HttpContextBase context, string? submitted, RequestIdentity identity)
     {
         if (!TryDecode(context.Request.Cookies[CookieName]?.Value, out var cookie) ||
             !TryDecode(submitted, out var form) || !WindowsHash.FixedTimeEquals(cookie, form) ||
@@ -67,7 +68,7 @@ internal static class CsrfTokenManager
         return payload;
     }
 
-    internal static bool ValidatePayload(byte[] payload, RequestIdentity identity, DateTime utcNow)
+    internal static bool ValidatePayload(byte[]? payload, RequestIdentity identity, DateTime utcNow)
     {
         if (payload is null || payload.Length != PayloadLength || payload[0] != PayloadVersion) return false;
 
@@ -86,7 +87,7 @@ internal static class CsrfTokenManager
         return WindowsHash.FixedTimeEquals(identityDigest, GetIdentityDigest(identity));
     }
 
-    private static bool TryUnprotect(byte[] protectedToken, out byte[] payload)
+    private static bool TryUnprotect(byte[] protectedToken, [NotNullWhen(true)] out byte[]? payload)
     {
         payload = null;
         try
@@ -102,8 +103,9 @@ internal static class CsrfTokenManager
 
     private static byte[] GetIdentityDigest(RequestIdentity identity)
     {
-        var identityKey = !string.IsNullOrWhiteSpace(identity?.Sid)
-            ? "sid:" + identity.Sid.Trim().ToUpperInvariant()
+        var sid = identity?.Sid;
+        var identityKey = sid is not null && !string.IsNullOrWhiteSpace(sid)
+            ? "sid:" + sid.Trim().ToUpperInvariant()
             : "name:" + (identity?.Name ?? string.Empty).Trim().ToUpperInvariant() +
               "|auth:" + (identity?.AuthenticationType ?? string.Empty).Trim().ToUpperInvariant();
         return WindowsHash.ComputeSha256(Encoding.UTF8.GetBytes(identityKey));
@@ -114,10 +116,10 @@ internal static class CsrfTokenManager
     private static string Encode(byte[] value) =>
         Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
-    private static bool TryDecode(string value, out byte[] decoded)
+    private static bool TryDecode([NotNullWhen(true)] string? value, [NotNullWhen(true)] out byte[]? decoded)
     {
         decoded = null;
-        if (string.IsNullOrWhiteSpace(value) || value.Length > 512) return false;
+        if (value is null || string.IsNullOrWhiteSpace(value) || value.Length > 512) return false;
 
         try
         {

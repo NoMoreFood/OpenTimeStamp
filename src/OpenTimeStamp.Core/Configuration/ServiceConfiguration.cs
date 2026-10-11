@@ -89,8 +89,8 @@ public sealed class ServiceConfiguration
     [DataMember(Order = 5)]
     public string CertificateStoreLocation { get; set; }
 
-    // Order 6 was CertificateStoreName. Only the Personal store was ever supported, so the element
-    // is no longer read; the serializer skips it in files that still carry it.
+    // Order 6 is reserved for CertificateStoreName, which a settings file may carry and the
+    // serializer skips. Certificates are always read from the Personal store.
 
     [DataMember(Order = 7)]
     public string? CertificateThumbprint { get; set; }
@@ -140,7 +140,7 @@ public sealed class ServiceConfiguration
     [DataMember(Order = 22)]
     public bool AllowUntrustedDevelopmentCertificate { get; set; }
 
-    // Null only while a settings file that predates selection modes is being loaded.
+    // Null only while loading a settings file that omits the element.
     [DataMember(Order = 23)]
     public string? CertificateSelectionMode { get; set; }
 

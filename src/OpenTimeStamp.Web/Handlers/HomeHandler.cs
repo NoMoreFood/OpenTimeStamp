@@ -61,7 +61,7 @@ internal sealed class HomeHandler : IHttpHandler
 
     public void ProcessRequest(HttpContext context) => Process(new HttpContextWrapper(context));
 
-    internal void Process(HttpContextBase context)
+    internal static void Process(HttpContextBase context)
     {
         // Limit discovery responses to safe, cache-free retrieval methods.
         if (!string.Equals(context.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) &&

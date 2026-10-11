@@ -33,30 +33,30 @@ internal sealed class ServiceRuntimeSnapshot(
 
 internal sealed class RecentRequestActivity(
     DateTime timestampUtc,
-    string protocol,
-    string result,
-    string correlationId,
-    string username,
-    string userSid,
-    string authenticationType,
-    string remoteAddress,
+    string? protocol,
+    string? result,
+    string? correlationId,
+    string? username,
+    string? userSid,
+    string? authenticationType,
+    string? remoteAddress,
     long durationMilliseconds)
 {
     internal DateTime TimestampUtc { get; } = timestampUtc;
 
-    internal string Protocol { get; } = protocol;
+    internal string? Protocol { get; } = protocol;
 
-    internal string Result { get; } = result;
+    internal string? Result { get; } = result;
 
-    internal string CorrelationId { get; } = correlationId;
+    internal string? CorrelationId { get; } = correlationId;
 
-    internal string Username { get; } = username;
+    internal string? Username { get; } = username;
 
-    internal string UserSid { get; } = userSid;
+    internal string? UserSid { get; } = userSid;
 
-    internal string AuthenticationType { get; } = authenticationType;
+    internal string? AuthenticationType { get; } = authenticationType;
 
-    internal string RemoteAddress { get; } = remoteAddress;
+    internal string? RemoteAddress { get; } = remoteAddress;
 
     internal long DurationMilliseconds { get; } = durationMilliseconds;
 }
@@ -72,7 +72,7 @@ internal sealed class RecentRequestTracker
     internal RecentRequestTracker(
         int capacity,
         TimeSpan maximumAge,
-        Func<long> timestampProvider = null)
+        Func<long>? timestampProvider = null)
     {
         if (capacity is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(capacity));
         if (maximumAge <= TimeSpan.Zero || maximumAge > TimeSpan.FromDays(7))
@@ -221,29 +221,31 @@ internal static class ServiceRuntime
     private static readonly object ConfigurationGate = new();
     private static readonly long ConfigurationRefreshTicks = Stopwatch.Frequency;
     private static volatile bool initialized;
-    private static CachedConfiguration cachedConfiguration;
+    private static CachedConfiguration? cachedConfiguration;
     private static long nextConfigurationRefreshTimestamp;
     private static long configurationVersion;
-    private static Func<ServiceConfiguration, X509Certificate2> selectionLoader;
+    private static Func<ServiceConfiguration, X509Certificate2>? selectionLoader;
     private static readonly RecentRequestTracker RecentRequests = new(
         RecentRequestCapacity,
         TimeSpan.FromHours(RecentRequestMaximumAgeHours));
 
-    public static ConfigurationStore Configuration { get; private set; }
+    // Start assigns every shared service before the first request is routed. Only shutdown and
+    // the application error handler can run earlier, and both check for an absent service.
+    public static ConfigurationStore Configuration { get; private set; } = null!;
 
-    public static CertificateRepository Certificates { get; private set; }
+    public static CertificateRepository Certificates { get; private set; } = null!;
 
-    public static IssuanceStateStore IssuanceState { get; private set; }
+    public static IssuanceStateStore IssuanceState { get; private set; } = null!;
 
-    public static AuditLogger Audit { get; private set; }
+    public static AuditLogger Audit { get; private set; } = null!;
 
-    public static DiagnosticLogger Diagnostics { get; private set; }
+    public static DiagnosticLogger Diagnostics { get; private set; } = null!;
 
-    public static string DataDirectory { get; private set; }
+    public static string DataDirectory { get; private set; } = null!;
 
     internal static DateTime StartedUtc { get; private set; }
 
-    internal static WebRuntimeSettings Settings { get; private set; }
+    internal static WebRuntimeSettings Settings { get; private set; } = null!;
 
     internal static long ConfigurationVersion => Interlocked.Read(ref configurationVersion);
 
@@ -358,7 +360,7 @@ internal static class ServiceRuntime
     internal static void Restart(
         string dataDirectory,
         WebRuntimeSettings settings,
-        Func<ServiceConfiguration, X509Certificate2> loadSelection)
+        Func<ServiceConfiguration, X509Certificate2>? loadSelection)
     {
         lock (Gate)
         {
@@ -376,7 +378,7 @@ internal static class ServiceRuntime
     private static void Start(
         string dataDirectory,
         WebRuntimeSettings settings,
-        Func<ServiceConfiguration, X509Certificate2> loadSelection)
+        Func<ServiceConfiguration, X509Certificate2>? loadSelection)
     {
         // Build every shared dependency locally before publishing the initialized runtime.
         dataDirectory = Path.GetFullPath(dataDirectory);

@@ -1,4 +1,4 @@
-// .NET Framework 4.8 predates these flow annotations. The compiler recognizes them by name, so
+// .NET Framework 4.8 does not define these flow annotations. The compiler recognizes them by name, so
 // declaring them here lets nullable analysis follow Try-pattern results across assemblies.
 namespace System.Diagnostics.CodeAnalysis;
 
@@ -8,7 +8,8 @@ internal sealed class NotNullWhenAttribute(bool returnValue) : Attribute
     public bool ReturnValue { get; } = returnValue;
 }
 
-[AttributeUsage(AttributeTargets.Parameter | AttributeTargets.Property | AttributeTargets.ReturnValue, AllowMultiple = true)]
+[AttributeUsage(
+    AttributeTargets.Parameter | AttributeTargets.Property | AttributeTargets.ReturnValue, AllowMultiple = true)]
 internal sealed class NotNullIfNotNullAttribute(string parameterName) : Attribute
 {
     public string ParameterName { get; } = parameterName;

@@ -90,7 +90,8 @@ public sealed class IssuanceStateStore
         catch (Exception ex) when (IsStorageException(ex))
         {
             throw new IssuanceStateException(
-                "OpenTimeStamp could not initialize timestamp state. Verify the data directory permissions and free space.", ex);
+                "OpenTimeStamp could not initialize timestamp state. Verify the data directory permissions and " +
+                "free space.", ex);
         }
     }
 
@@ -123,7 +124,8 @@ public sealed class IssuanceStateStore
         catch (Exception ex) when (IsStorageException(ex))
         {
             throw new IssuanceStateException(
-                "OpenTimeStamp could not save timestamp state. Verify the data directory permissions and free space.", ex);
+                "OpenTimeStamp could not save timestamp state. Verify the data directory permissions and " +
+                "free space.", ex);
         }
     }
 

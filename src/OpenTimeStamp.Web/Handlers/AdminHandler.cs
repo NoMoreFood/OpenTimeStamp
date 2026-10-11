@@ -87,7 +87,7 @@ internal sealed class AdminHandler : IHttpHandler
         @media(max-width:64rem){.dashboard{grid-template-columns:repeat(2,minmax(0,1fr))}}
         @media(max-width:46rem){main{padding:1rem}.page-header{align-items:flex-start;padding:1rem}.brand-mark{flex-basis:2.75rem;height:2.75rem}.section-title{align-items:flex-start;flex-direction:column}.dashboard,form{grid-template-columns:minmax(0,1fr)}fieldset:last-of-type{grid-column:auto}.section{padding:1rem}.refresh{align-self:flex-start}}
         """;
-    private NameValueCollection submittedForm;
+    private NameValueCollection? submittedForm;
     private static readonly PropertyInfo[] AuditedConfigurationProperties =
         typeof(ServiceConfiguration).GetProperties(BindingFlags.Instance | BindingFlags.Public)
             .Where(property => property.IsDefined(typeof(DataMemberAttribute), false))
@@ -108,8 +108,8 @@ internal sealed class AdminHandler : IHttpHandler
         }
 
         ServiceConfiguration configuration;
-        string generation;
-        string loadError = null;
+        string? generation;
+        string? loadError = null;
         try
         {
             configuration = ServiceRuntime.LoadConfiguration(out generation);
@@ -163,7 +163,7 @@ internal sealed class AdminHandler : IHttpHandler
         try
         {
             var submittedGeneration = Bounded(form["generation"], 80);
-            if (string.IsNullOrEmpty(generation) ||
+            if (generation is null or "" ||
                 !string.Equals(submittedGeneration, generation, StringComparison.Ordinal))
             {
                 context.Response.StatusCode = 409;
@@ -224,14 +224,14 @@ internal sealed class AdminHandler : IHttpHandler
                 DescribeConfigurationChange(configuration, updated);
             var auditFailClosed = configuration.FailClosedOnAuditError || updated.FailClosedOnAuditError;
             var configurationSaved = false;
-            string savedGeneration = null;
+            string? savedGeneration = null;
             try
             {
                 // Record intent before the compare-and-swap, then record the durable
                 // outcome with the same correlation identifier.
                 WriteConfigurationAudit(context, identity, configuration, updated, changeCorrelationId,
                     "requested", changeDetail, auditFailClosed);
-                savedGeneration = ServiceRuntime.Configuration.Save(updated, submittedGeneration);
+                savedGeneration = ServiceRuntime.Configuration.Save(updated, generation);
                 configurationSaved = true;
                 ServiceRuntime.PublishConfiguration(updated, savedGeneration);
                 HealthHandler.Invalidate();
@@ -285,7 +285,7 @@ internal sealed class AdminHandler : IHttpHandler
         }
     }
 
-    private static void ReloadForConflict(out ServiceConfiguration configuration, out string generation)
+    private static void ReloadForConflict(out ServiceConfiguration configuration, out string? generation)
     {
         try
         {
@@ -339,7 +339,7 @@ internal sealed class AdminHandler : IHttpHandler
         ServiceConfiguration targetConfiguration,
         string correlationId,
         string detail,
-        string savedGeneration,
+        string? savedGeneration,
         Exception exception)
     {
         try
@@ -375,34 +375,34 @@ internal sealed class AdminHandler : IHttpHandler
         return "changed=" + (changed.Count == 0 ? "none" : string.Join("; ", changed));
     }
 
-    private static string FormatConfigurationValue(object value) => value switch
+    private static string FormatConfigurationValue(object? value) => value switch
     {
         null => "(none)",
         IEnumerable<string> items => "[" + string.Join(", ", items) + "]",
         _ => Convert.ToString(value, CultureInfo.InvariantCulture)
     };
 
-    private static bool SameConfigurationValue(PropertyInfo property, object left, object right)
+    private static bool SameConfigurationValue(PropertyInfo property, object? left, object? right)
     {
-        if (property.PropertyType == typeof(string)) return Same((string)left, (string)right);
+        if (property.PropertyType == typeof(string)) return Same((string?)left, (string?)right);
         if (typeof(IEnumerable<string>).IsAssignableFrom(property.PropertyType))
-            return SameList((IEnumerable<string>)left, (IEnumerable<string>)right);
+            return SameList((IEnumerable<string>?)left, (IEnumerable<string>?)right);
         return Equals(left, right);
     }
 
-    private static bool Same(string left, string right) =>
+    private static bool Same(string? left, string? right) =>
         string.Equals(Comparable(left), Comparable(right), StringComparison.Ordinal);
 
-    private static bool SameList(IEnumerable<string> left, IEnumerable<string> right) =>
+    private static bool SameList(IEnumerable<string>? left, IEnumerable<string>? right) =>
         (left ?? []).Select(Comparable).SequenceEqual((right ?? []).Select(Comparable), StringComparer.Ordinal);
 
-    private static string Comparable(string value) =>
+    private static string Comparable(string? value) =>
         (value ?? string.Empty).Trim().ToUpperInvariant();
 
     private static bool IsAuthorized(ServiceConfiguration configuration, HttpContextBase context, RequestIdentity identity)
     {
         // Use the IIS logon token for group checks rather than trusting supplied identity text.
-        WindowsIdentity windowsIdentity = null;
+        WindowsIdentity? windowsIdentity = null;
         try
         {
             windowsIdentity = context.Request.LogonUserIdentity;
@@ -485,10 +485,11 @@ internal sealed class AdminHandler : IHttpHandler
             fipsEnabled,
             original.AuthenticodeEnabled,
             IsChecked(form, "authenticode"));
-        updated.DefaultPolicyOid = Bounded(form["defaultPolicy"], 256);
+        var defaultPolicy = Bounded(form["defaultPolicy"], 256);
+        updated.DefaultPolicyOid = defaultPolicy;
         updated.AcceptedPolicyOids = SplitList(form["acceptedPolicies"], 64, 256);
-        if (!string.IsNullOrWhiteSpace(updated.DefaultPolicyOid) && !updated.AcceptedPolicyOids.Contains(updated.DefaultPolicyOid, StringComparer.Ordinal))
-            updated.AcceptedPolicyOids.Add(updated.DefaultPolicyOid);
+        if (defaultPolicy is not null && !updated.AcceptedPolicyOids.Contains(defaultPolicy, StringComparer.Ordinal))
+            updated.AcceptedPolicyOids.Add(defaultPolicy);
 
         updated.AllowedHashAlgorithms = ResolveAllowedHashAlgorithms(
             fipsEnabled,
@@ -496,7 +497,7 @@ internal sealed class AdminHandler : IHttpHandler
             form.GetValues("hash") ?? []);
 
         // Parse bounded operational and audit controls from the form.
-        updated.SigningDigestAlgorithm = Bounded(form["signingHash"], 16);
+        updated.SigningDigestAlgorithm = Bounded(form["signingHash"], 16) ?? string.Empty;
         updated.IncludeCertificateChain = IsChecked(form, "includeChain");
         updated.AccuracySeconds = ParseInteger(
             form["accuracySeconds"], 0, 86400, "Published time accuracy in seconds");
@@ -507,7 +508,8 @@ internal sealed class AdminHandler : IHttpHandler
             form["maxRequestBytes"], 1024, 1048576, "Maximum request size in bytes");
         updated.LogRetentionDays = ParseInteger(
             form["logRetentionDays"], 1, 3650, "Audit log retention in days");
-        updated.LogRolloverInterval = Bounded(form["logRolloverInterval"], 16);
+        updated.LogRolloverInterval =
+            Bounded(form["logRolloverInterval"], 16) ?? ServiceConfiguration.DailyLogRollover;
         updated.PruneAuditLogs = IsChecked(form, "pruneAuditLogs");
         updated.FailClosedOnAuditError = IsChecked(form, "failClosedAudit");
         updated.LogMessageImprints = IsChecked(form, "logImprints");
@@ -524,7 +526,7 @@ internal sealed class AdminHandler : IHttpHandler
         {
             updated.CertificateThumbprint = null;
         }
-        else if (!string.IsNullOrEmpty(certificate))
+        else if (certificate is not null)
         {
             var separator = certificate.IndexOf('|');
             if (separator <= 0 || separator == certificate.Length - 1)
@@ -572,9 +574,9 @@ internal sealed class AdminHandler : IHttpHandler
     private void Render(
         HttpContextBase context,
         ServiceConfiguration configuration,
-        string generation,
-        string notice,
-        string noticeClass)
+        string? generation,
+        string? notice,
+        string? noticeClass)
     {
         var csrf = CsrfTokenManager.GetOrCreate(context, HttpSupport.GetRequestIdentity(context.Request));
         var certificates = ServiceRuntime.Certificates.ListCertificates(
@@ -782,7 +784,7 @@ internal sealed class AdminHandler : IHttpHandler
         StringBuilder builder,
         HttpContextBase context,
         ServiceConfiguration configuration,
-        string generation)
+        string? generation)
     {
         var health = HealthHandler.GetHealth();
         var requests = ServiceRuntime.GetRecentRequests(ServiceRuntime.RecentRequestCapacity);
@@ -807,7 +809,7 @@ internal sealed class AdminHandler : IHttpHandler
                     ? "The service is healthy; a new health check is running."
                     : "All enabled timestamp endpoints are ready.";
         DateTime? certificateExpirationUtc = null;
-        string certificateSha256Thumbprint = null;
+        string? certificateSha256Thumbprint = null;
         try
         {
             using var certificate = ServiceRuntime.GetSelectedCertificate(configuration);
@@ -855,7 +857,7 @@ internal sealed class AdminHandler : IHttpHandler
     internal static void AppendCertificateCard(
         StringBuilder builder,
         DateTime? expirationUtc,
-        string sha256Thumbprint)
+        string? sha256Thumbprint)
     {
         if (builder is null) throw new ArgumentNullException(nameof(builder));
 
@@ -949,14 +951,14 @@ internal sealed class AdminHandler : IHttpHandler
         builder.Append("</tbody></table></div></div>");
     }
 
-    private static string Option(string value, string selected) =>
+    private static string Option(string value, string? selected) =>
         "<option value=\"" + H(value) + "\"" +
         (string.Equals(value, selected, StringComparison.OrdinalIgnoreCase) ? " selected" : string.Empty) +
         ">" + H(value) + "</option>";
 
-    internal static string FormatConfigurationId(string generation)
+    internal static string FormatConfigurationId(string? generation)
     {
-        if (string.IsNullOrWhiteSpace(generation)) return "Unavailable";
+        if (generation is null || string.IsNullOrWhiteSpace(generation)) return "Unavailable";
         const string prefix = "sha256:";
         return generation.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
             generation.Length > prefix.Length + 12
@@ -964,7 +966,7 @@ internal sealed class AdminHandler : IHttpHandler
                 : generation;
     }
 
-    internal static string FormatHashName(string name) =>
+    internal static string FormatHashName(string? name) =>
         HashAlgorithmCatalog.NormalizeName(name) switch
         {
             "SHA1" => "SHA-1",
@@ -975,7 +977,7 @@ internal sealed class AdminHandler : IHttpHandler
             var normalized => normalized
         };
 
-    internal static string FormatProtocol(string protocol) =>
+    internal static string FormatProtocol(string? protocol) =>
         (protocol ?? string.Empty).Trim().ToLowerInvariant() switch
         {
             "rfc3161" => "RFC 3161",
@@ -983,7 +985,7 @@ internal sealed class AdminHandler : IHttpHandler
             var value => value
         };
 
-    internal static string FormatResult(string result) =>
+    internal static string FormatResult(string? result) =>
         (result ?? string.Empty).Trim().ToLowerInvariant() switch
         {
             "granted" => "Successful",
@@ -1004,7 +1006,7 @@ internal sealed class AdminHandler : IHttpHandler
             .ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture);
     }
 
-    private string FormValue(string name, string fallback) =>
+    private string? FormValue(string name, string? fallback) =>
         submittedForm is null ? fallback : submittedForm[name] ?? string.Empty;
 
     private string Check(string name, string label, bool isChecked, bool disabled, string value = "on")
@@ -1025,7 +1027,7 @@ internal sealed class AdminHandler : IHttpHandler
 
     private static bool IsChecked(NameValueCollection form, string name) => form.GetValues(name) is not null;
 
-    private static int ParseInteger(string value, int minimum, int maximum, string label)
+    private static int ParseInteger(string? value, int minimum, int maximum, string label)
     {
         if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) || parsed < minimum || parsed > maximum)
             throw new ConfigurationErrorsException(label + " must be a whole number from " +
@@ -1035,7 +1037,7 @@ internal sealed class AdminHandler : IHttpHandler
         return parsed;
     }
 
-    private static string Bounded(string value, int maximumLength)
+    private static string? Bounded(string? value, int maximumLength)
     {
         value = (value ?? string.Empty).Trim();
         if (value.Length > maximumLength)
@@ -1044,7 +1046,7 @@ internal sealed class AdminHandler : IHttpHandler
         return value.Length == 0 ? null : value;
     }
 
-    private static List<string> SplitList(string value, int maximumItems, int maximumItemLength)
+    private static List<string> SplitList(string? value, int maximumItems, int maximumItemLength)
     {
         List<string> result = [];
         foreach (var item in (value ?? string.Empty).Split(['\r', '\n', ',', ';'], StringSplitOptions.RemoveEmptyEntries))
@@ -1064,6 +1066,6 @@ internal sealed class AdminHandler : IHttpHandler
         return result;
     }
 
-    private static string H(object value) =>
+    private static string H(object? value) =>
         HttpUtility.HtmlEncode(Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty);
 }
