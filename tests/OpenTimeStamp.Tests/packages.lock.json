@@ -39,12 +39,6 @@
           "MSTest.Analyzers": "4.3.2"
         }
       },
-      "System.Buffers": {
-        "type": "Direct",
-        "requested": "[4.6.1, )",
-        "resolved": "4.6.1",
-        "contentHash": "N8GXpmiLMtljq7gwvyS+1QvKT/W2J8sNAvx+HVg4NGmsG/H+2k/y9QI23auLJRterrzCiDH+IWAw4V/GPwsMlw=="
-      },
       "Microsoft.ApplicationInsights": {
         "type": "Transitive",
         "resolved": "2.23.0",
@@ -186,7 +180,6 @@
         "dependencies": {
           "Microsoft.Bcl.Cryptography": "[10.0.10, )",
           "OpenTimeStamp.Core": "[1.0.0, )",
-          "System.Buffers": "[4.6.1, )",
           "System.Security.Cryptography.Pkcs": "[10.0.10, )"
         }
       },
@@ -200,6 +193,12 @@
           "System.Memory": "4.6.3",
           "System.Runtime.CompilerServices.Unsafe": "6.1.2"
         }
+      },
+      "System.Buffers": {
+        "type": "CentralTransitive",
+        "requested": "[4.6.1, )",
+        "resolved": "4.6.1",
+        "contentHash": "N8GXpmiLMtljq7gwvyS+1QvKT/W2J8sNAvx+HVg4NGmsG/H+2k/y9QI23auLJRterrzCiDH+IWAw4V/GPwsMlw=="
       },
       "System.Formats.Asn1": {
         "type": "CentralTransitive",

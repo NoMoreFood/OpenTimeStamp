@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -11,14 +12,14 @@ using OpenTimeStamp.Issuance;
 
 namespace OpenTimeStamp.Protocols;
 
-public sealed class Rfc3161TimestampProcessor
+public static class Rfc3161TimestampProcessor
 {
     public const string TstInfoContentTypeOid = KnownOids.TstInfoContentType;
 
-    public bool TryPreflight(
+    public static bool TryPreflight(
         Rfc3161Request request,
         ServiceConfiguration configuration,
-        out Rfc3161Result rejection)
+        [NotNullWhen(false)] out Rfc3161Result? rejection)
     {
         try
         {
@@ -38,11 +39,11 @@ public sealed class Rfc3161TimestampProcessor
         }
     }
 
-    public Rfc3161Result Process(
+    public static Rfc3161Result Process(
         Rfc3161Request request,
         ServiceConfiguration configuration,
-        X509Certificate2 certificate,
-        IssuanceStateStore stateStore,
+        X509Certificate2? certificate,
+        IssuanceStateStore? stateStore,
         Func<DateTime> utcNowProvider,
         CancellationToken cancellationToken)
     {
@@ -89,11 +90,9 @@ public sealed class Rfc3161TimestampProcessor
                 signingHash,
                 includeOption,
                 allocation.GenerationTimeUtc);
-            return new Rfc3161Result
+            return new Rfc3161Result(BuildResponse(token), "granted")
             {
-                EncodedResponse = BuildResponse(token),
                 Granted = true,
-                Detail = "granted",
                 PolicyOid = policy,
                 HashAlgorithmOid = request.HashAlgorithmOid,
                 MessageImprint = request.MessageImprint,
@@ -146,15 +145,17 @@ public sealed class Rfc3161TimestampProcessor
         }
 
         policy = SelectPolicy(configuration, request.RequestedPolicyOid);
-        signingHash = HashAlgorithmCatalog.FindByName(configuration.SigningDigestAlgorithm);
-        if (!PlatformSecurityPolicy.IsSigningHashAllowed(signingHash))
+        var configuredHash = HashAlgorithmCatalog.FindByName(configuration.SigningDigestAlgorithm);
+        if (!PlatformSecurityPolicy.IsSigningHashAllowed(configuredHash))
         {
             throw new InvalidOperationException(
                 "The configured timestamp signing hash is not allowed by the current Windows security policy.");
         }
+
+        signingHash = configuredHash;
     }
 
-    private static string SelectPolicy(ServiceConfiguration configuration, string requestedPolicy)
+    private static string SelectPolicy(ServiceConfiguration configuration, string? requestedPolicy)
     {
         var defaultPolicy = (configuration.DefaultPolicyOid ?? string.Empty).Trim();
         if (string.IsNullOrEmpty(defaultPolicy))
@@ -162,7 +163,7 @@ public sealed class Rfc3161TimestampProcessor
             throw new InvalidOperationException("No default RFC 3161 policy OID is configured.");
         }
 
-        if (string.IsNullOrEmpty(requestedPolicy)) return defaultPolicy;
+        if (requestedPolicy is null or "") return defaultPolicy;
 
         var accepted = configuration.AcceptedPolicyOids ?? [];
         if (!accepted.Contains(requestedPolicy, StringComparer.Ordinal))
@@ -235,7 +236,7 @@ public sealed class Rfc3161TimestampProcessor
     public static Rfc3161Result CreateRejection(
         Rfc3161FailureInfo failure,
         string detail,
-        Rfc3161Request request = null)
+        Rfc3161Request? request = null)
     {
         DerWriter writer = new();
         writer.WriteSequence(response => response.WriteSequence(status =>
@@ -244,12 +245,10 @@ public sealed class Rfc3161TimestampProcessor
             status.WriteSequence(text => text.WriteUtf8String(PublicStatus(failure)));
             status.WriteBitString((int)failure);
         }));
-        return new Rfc3161Result
+        return new Rfc3161Result(writer.Encode(), detail)
         {
-            EncodedResponse = writer.Encode(),
             Granted = false,
             FailureInfo = failure,
-            Detail = detail,
             PolicyOid = request?.RequestedPolicyOid,
             HashAlgorithmOid = request?.HashAlgorithmOid,
             MessageImprint = request?.MessageImprint

@@ -15,10 +15,6 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'ProductSigning.Common.ps1')
 
 $testName = 'PowerShell script signature'
-if ($AuthenticodeUrl.Scheme -ne 'http') {
-    return New-ProductTestResult -Name $testName -Status Skipped `
-        -Detail 'Set-AuthenticodeSignature cannot obtain timestamps through HTTPS; supply an HTTP legacy endpoint.'
-}
 $signToolPath = Get-SignToolPath
 if (-not $signToolPath) {
     return New-ProductTestResult -Name $testName -Status Skipped -Detail 'Windows SDK SignTool is not installed.'
@@ -32,8 +28,16 @@ Set-StrictMode -Version Latest
 '@
 [IO.File]::WriteAllText($artifactPath, $scriptText, [Text.UTF8Encoding]::new($true))
 $certificate = Get-TestSigningCertificate -Thumbprint $CertificateThumbprint
-$signature = Set-AuthenticodeSignature -LiteralPath $artifactPath -Certificate $certificate -HashAlgorithm SHA256 `
-    -IncludeChain All -TimestampServer $AuthenticodeUrl.AbsoluteUri
+if ($AuthenticodeUrl.Scheme -eq 'https') {
+    $repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    $applicationUrl = $AuthenticodeUrl.AbsoluteUri -replace '/timestamp/authenticode/?$', ''
+    & (Join-Path $repositoryRoot 'deploy\Invoke-TimestampSigning.ps1') -LiteralPath $artifactPath `
+        -ServerUrl $applicationUrl -CertificateThumbprint $CertificateThumbprint -Tool PowerShell | Out-Null
+}
+else {
+    $signature = Set-AuthenticodeSignature -LiteralPath $artifactPath -Certificate $certificate -HashAlgorithm SHA256 `
+        -IncludeChain All -TimestampServer $AuthenticodeUrl.AbsoluteUri
+}
 $verifyResult = Invoke-SignToolVerify -SignToolPath $signToolPath -Path $artifactPath `
     -AllowUntrustedRoot:$AllowUntrustedRoot
 $verifiedSignature = Assert-AuthenticodeTimestamp -Path $artifactPath -CertificateThumbprint $CertificateThumbprint `

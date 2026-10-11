@@ -42,15 +42,15 @@ public static class HashAlgorithmCatalog
 
     public static IReadOnlyList<TimestampHashAlgorithm> All => algorithms;
 
-    public static TimestampHashAlgorithm FindByOid(string oid) =>
+    public static TimestampHashAlgorithm? FindByOid(string? oid) =>
         algorithms.FirstOrDefault(item => string.Equals(item.Oid, oid, StringComparison.Ordinal));
 
-    public static TimestampHashAlgorithm FindByName(string name)
+    public static TimestampHashAlgorithm? FindByName(string? name)
     {
         var normalized = NormalizeName(name);
         return algorithms.FirstOrDefault(item => string.Equals(item.Name, normalized, StringComparison.Ordinal));
     }
 
-    public static string NormalizeName(string value) =>
+    public static string NormalizeName(string? value) =>
         (value ?? string.Empty).Replace("-", string.Empty).Trim().ToUpperInvariant();
 }

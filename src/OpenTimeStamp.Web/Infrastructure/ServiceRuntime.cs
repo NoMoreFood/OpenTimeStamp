@@ -140,19 +140,25 @@ internal sealed class RecentRequestTracker
     }
 }
 
-internal sealed class WebRuntimeSettings
+internal sealed class WebRuntimeSettings(
+    string authenticationMode,
+    TimeSpan bodyReadDeadline,
+    int bodyIntakeLimit,
+    int bodyIntakePerClientLimit,
+    int processingLimit,
+    int processingPerClientLimit)
 {
-    internal string AuthenticationMode { get; private set; }
+    internal string AuthenticationMode { get; } = authenticationMode;
 
-    internal TimeSpan BodyReadDeadline { get; private set; }
+    internal TimeSpan BodyReadDeadline { get; } = bodyReadDeadline;
 
-    internal int BodyIntakeLimit { get; private set; }
+    internal int BodyIntakeLimit { get; } = bodyIntakeLimit;
 
-    internal int BodyIntakePerClientLimit { get; private set; }
+    internal int BodyIntakePerClientLimit { get; } = bodyIntakePerClientLimit;
 
-    internal int ProcessingLimit { get; private set; }
+    internal int ProcessingLimit { get; } = processingLimit;
 
-    internal int ProcessingPerClientLimit { get; private set; }
+    internal int ProcessingPerClientLimit { get; } = processingPerClientLimit;
 
     internal static WebRuntimeSettings Load()
     {
@@ -175,19 +181,13 @@ internal sealed class WebRuntimeSettings
             Math.Min(2, processingLimit),
             1,
             processingLimit);
-        return new WebRuntimeSettings
-        {
-            AuthenticationMode = authenticationMode,
-            BodyReadDeadline = TimeSpan.FromSeconds(ParseBoundedSetting(
-                "TimestampBodyReadTimeoutSeconds",
-                10,
-                1,
-                25)),
-            BodyIntakeLimit = bodyIntakeLimit,
-            BodyIntakePerClientLimit = bodyIntakePerClientLimit,
-            ProcessingLimit = processingLimit,
-            ProcessingPerClientLimit = processingPerClientLimit
-        };
+        return new WebRuntimeSettings(
+            authenticationMode,
+            TimeSpan.FromSeconds(ParseBoundedSetting("TimestampBodyReadTimeoutSeconds", 10, 1, 25)),
+            bodyIntakeLimit,
+            bodyIntakePerClientLimit,
+            processingLimit,
+            processingPerClientLimit);
     }
 
     internal static int ParseBoundedSetting(string key, int fallback, int minimum, int maximum) =>
@@ -224,6 +224,7 @@ internal static class ServiceRuntime
     private static CachedConfiguration cachedConfiguration;
     private static long nextConfigurationRefreshTimestamp;
     private static long configurationVersion;
+    private static Func<ServiceConfiguration, X509Certificate2> selectionLoader;
     private static readonly RecentRequestTracker RecentRequests = new(
         RecentRequestCapacity,
         TimeSpan.FromHours(RecentRequestMaximumAgeHours));
@@ -319,8 +320,17 @@ internal static class ServiceRuntime
         CancellationToken cancellationToken)
     {
         if (snapshot is null) throw new ArgumentNullException(nameof(snapshot));
+        return GetSelectedCertificate(snapshot.Configuration, cancellationToken);
+    }
+
+    internal static X509Certificate2 GetSelectedCertificate(
+        ServiceConfiguration configuration,
+        CancellationToken cancellationToken = default)
+    {
         EnsureInitialized();
-        return Certificates.GetSelectedCertificate(snapshot.Configuration, cancellationToken);
+        return selectionLoader is null
+            ? Certificates.GetSelectedCertificate(configuration, cancellationToken)
+            : selectionLoader(configuration);
     }
 
     public static void Initialize(string applicationPath)
@@ -331,44 +341,75 @@ internal static class ServiceRuntime
             if (string.IsNullOrWhiteSpace(applicationPath))
                 throw new InvalidOperationException("The IIS application path is unavailable.");
 
-            // Build every shared dependency locally before publishing the initialized runtime.
             var settings = WebRuntimeSettings.Load();
             var configuredPath = Environment.ExpandEnvironmentVariables(
                 ConfigurationManager.AppSettings["DataPath"] ?? string.Empty).Trim();
             var dataDirectory = string.IsNullOrEmpty(configuredPath)
                 ? Path.Combine(applicationPath, "App_Data")
                 : Path.IsPathRooted(configuredPath) ? configuredPath : Path.Combine(applicationPath, configuredPath);
-            dataDirectory = Path.GetFullPath(dataDirectory);
-            var configuration = new ConfigurationStore(Path.Combine(dataDirectory, "tsa.config"));
-            var certificates = new CertificateRepository();
-            var issuanceState = new IssuanceStateStore(Path.Combine(dataDirectory, "issuance.state"));
-            var diagnostics = new DiagnosticLogger(Path.Combine(dataDirectory, "Diagnostics"), dataDirectory);
-            var audit = new AuditLogger(Path.Combine(dataDirectory, "Logs"), diagnostics.Record);
+            Start(dataDirectory, settings, null);
+        }
+    }
 
-            Settings = settings;
-            DataDirectory = dataDirectory;
-            Configuration = configuration;
-            Certificates = certificates;
-            IssuanceState = issuanceState;
-            Audit = audit;
-            Diagnostics = diagnostics;
-            StartedUtc = DateTime.UtcNow;
-            initialized = true;
+    /// <summary>
+    /// Replaces the runtime with one over an explicit data directory, limits, and certificate
+    /// loader, so handler tests need neither IIS configuration nor a certificate store.
+    /// </summary>
+    internal static void Restart(
+        string dataDirectory,
+        WebRuntimeSettings settings,
+        Func<ServiceConfiguration, X509Certificate2> loadSelection)
+    {
+        lock (Gate)
+        {
+            Certificates?.Dispose();
+            lock (ConfigurationGate)
+            {
+                Volatile.Write(ref cachedConfiguration, null);
+                nextConfigurationRefreshTimestamp = 0;
+            }
 
-            // Configure diagnostic destinations before the first request can raise an error.
-            try
+            Start(dataDirectory, settings, loadSelection);
+        }
+    }
+
+    private static void Start(
+        string dataDirectory,
+        WebRuntimeSettings settings,
+        Func<ServiceConfiguration, X509Certificate2> loadSelection)
+    {
+        // Build every shared dependency locally before publishing the initialized runtime.
+        dataDirectory = Path.GetFullPath(dataDirectory);
+        var configuration = new ConfigurationStore(Path.Combine(dataDirectory, "tsa.config"));
+        var certificates = new CertificateRepository();
+        var issuanceState = new IssuanceStateStore(Path.Combine(dataDirectory, "issuance.state"));
+        var diagnostics = new DiagnosticLogger(Path.Combine(dataDirectory, "Diagnostics"), dataDirectory);
+        var audit = new AuditLogger(Path.Combine(dataDirectory, "Logs"), diagnostics.Record);
+
+        Settings = settings;
+        DataDirectory = dataDirectory;
+        Configuration = configuration;
+        Certificates = certificates;
+        IssuanceState = issuanceState;
+        Audit = audit;
+        Diagnostics = diagnostics;
+        selectionLoader = loadSelection;
+        StartedUtc = DateTime.UtcNow;
+        initialized = true;
+
+        // Configure diagnostic destinations before the first request can raise an error.
+        try
+        {
+            _ = LoadSnapshot();
+        }
+        catch (ConfigurationErrorsException ex)
+        {
+            Diagnostics.Record(new AuditRecord
             {
-                _ = LoadSnapshot();
-            }
-            catch (ConfigurationErrorsException ex)
-            {
-                Diagnostics.Record(new AuditRecord
-                {
-                    EventType = "configuration-load-failure",
-                    Result = "error",
-                    Detail = ex.ToString()
-                });
-            }
+                EventType = "configuration-load-failure",
+                Result = "error",
+                Detail = ex.ToString()
+            });
         }
     }
 

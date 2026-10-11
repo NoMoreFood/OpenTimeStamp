@@ -46,8 +46,14 @@ function Assert-OpenTimeStampReleaseInputsTracked {
         return
     }
 
-    $insideWorktree = & $git.Source -C $RepositoryRoot rev-parse --is-inside-work-tree 2>$null
-    if ($LASTEXITCODE -ne 0 -or $insideWorktree -ne 'true') { return }
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $insideWorktree = & $git.Source -C $RepositoryRoot rev-parse --is-inside-work-tree 2>$null
+        $gitExitCode = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $previousErrorAction }
+    if ($gitExitCode -ne 0 -or $insideWorktree -ne 'true') { return }
     $releaseInputFiles = @(
         '.editorconfig',
         '.globalconfig',

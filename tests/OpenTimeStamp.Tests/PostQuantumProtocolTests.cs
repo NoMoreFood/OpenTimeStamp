@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 using OpenTimeStamp.Asn1;
 using OpenTimeStamp.Configuration;
 using OpenTimeStamp.Cryptography;
@@ -10,7 +11,8 @@ using OpenTimeStamp.Protocols;
 
 namespace OpenTimeStamp.Tests;
 
-internal static class PostQuantumProtocolTests
+[TestClass]
+public sealed class PostQuantumProtocolTests
 {
     private const string CmsAlgorithmProtectionOid = "1.2.840.113549.1.9.52";
     private const string MlDsa44Oid = "2.16.840.1.101.3.4.3.17";
@@ -22,20 +24,8 @@ internal static class PostQuantumProtocolTests
     private const string Sha512Oid = "2.16.840.1.101.3.4.2.3";
     private const string TstInfoContentTypeOid = "1.2.840.113549.1.9.16.1.4";
 
-    public static void Register(ICollection<TestCase> tests)
-    {
-        tests.Add(new TestCase(
-            "ML-DSA RFC 9881 identifiers, public keys, usages, and digest profiles are validated",
-            MldsaProviderIndependentValidation));
-        tests.Add(new TestCase(
-            "ML-DSA-65 certificate enforces CMS digest and protocol constraints",
-            Mldsa65CertificateCompatibility));
-        tests.Add(new TestCase(
-            "ML-DSA-65 RFC3161 token is standards-shaped, verifiable, and Authenticode-safe",
-            Mldsa65Rfc3161AndAuthenticode));
-    }
-
-    private static void Mldsa65CertificateCompatibility()
+    [TestMethod(DisplayName = "ML-DSA-65 certificate enforces CMS digest and protocol constraints")]
+    public void Mldsa65CertificateCompatibility()
     {
         SkipUnlessMldsaSupported();
 
@@ -55,7 +45,8 @@ internal static class PostQuantumProtocolTests
         AssertEx.Contains("legacy Authenticode requires an RSA certificate", reason);
     }
 
-    private static void Mldsa65Rfc3161AndAuthenticode()
+    [TestMethod(DisplayName = "ML-DSA-65 RFC3161 token is standards-shaped, verifiable, and Authenticode-safe")]
+    public void Mldsa65Rfc3161AndAuthenticode()
     {
         SkipUnlessMldsaSupported();
 
@@ -69,7 +60,7 @@ internal static class PostQuantumProtocolTests
             directory, certificate.Certificate, configuration, request, signingTimeUtc);
 
         configuration.SigningDigestAlgorithm = "SHA512";
-        var rfc3161 = new Rfc3161TimestampProcessor().Process(
+        var rfc3161 = Rfc3161.Process(
             request,
             configuration,
             certificate.Certificate,
@@ -105,7 +96,8 @@ internal static class PostQuantumProtocolTests
             directory, certificate.Certificate, configuration, signingTimeUtc);
     }
 
-    private static void MldsaProviderIndependentValidation()
+    [TestMethod(DisplayName = "ML-DSA RFC 9881 identifiers, public keys, usages, and digest profiles are validated")]
+    public void MldsaProviderIndependentValidation()
     {
         var algorithmProtection = TimestampCmsSigner.CreateCmsAlgorithmProtectionAttribute(
             Sha512Oid,
@@ -247,7 +239,7 @@ internal static class PostQuantumProtocolTests
     {
         if (!PlatformSecurityPolicy.IsMldsaSupported)
         {
-            throw new TestSkippedException("The installed Windows cryptography provider does not support ML-DSA.");
+            Assert.Inconclusive("The installed Windows cryptography provider does not support ML-DSA.");
         }
     }
 
@@ -261,8 +253,7 @@ internal static class PostQuantumProtocolTests
         var statePath = directory.File("mldsa-incompatible-rfc3161.bin");
         var stateStore = TestFixtures.CreateInitializedStateStore(statePath);
         var stateBefore = File.ReadAllBytes(statePath);
-        var markerBefore = File.ReadAllBytes(statePath + ".meta");
-        var rejection = new Rfc3161TimestampProcessor().Process(
+        var rejection = Rfc3161.Process(
             request,
             configuration,
             certificate,
@@ -274,11 +265,7 @@ internal static class PostQuantumProtocolTests
         AssertEx.SequenceEqual(
             stateBefore,
             File.ReadAllBytes(statePath),
-            "An incompatible ML-DSA signing digest must not consume durable issuance state.");
-        AssertEx.SequenceEqual(
-            markerBefore,
-            File.ReadAllBytes(statePath + ".meta"),
-            "An incompatible ML-DSA signing digest must not advance the issuance high-water marker.");
+            "An incompatible ML-DSA signing digest must not advance the issuance clock.");
     }
 
     private static void AssertAuthenticodeRejectedBeforeIssuance(
@@ -290,29 +277,23 @@ internal static class PostQuantumProtocolTests
         var statePath = directory.File("mldsa-authenticode.bin");
         var stateStore = TestFixtures.CreateInitializedStateStore(statePath);
         var stateBefore = File.ReadAllBytes(statePath);
-        var markerBefore = File.ReadAllBytes(statePath + ".meta");
         var request = TestFixtures.BuildAuthenticodeRequest(new byte[64]);
-        var processor = new AuthenticodeTimestampProcessor();
         if (PlatformSecurityPolicy.IsLegacyAuthenticodeAllowed)
         {
             var rejection = AssertEx.Throws<CryptographicException>(() =>
-                processor.Process(request, configuration, certificate, stateStore, signingTimeUtc));
+                Authenticode.Process(request, configuration, certificate, stateStore, signingTimeUtc));
             AssertEx.Contains("legacy Authenticode requires an RSA certificate", rejection.Message);
         }
         else
         {
             AssertEx.Throws<AuthenticodeProtocolException>(() =>
-                processor.Process(request, configuration, certificate, stateStore, signingTimeUtc));
+                Authenticode.Process(request, configuration, certificate, stateStore, signingTimeUtc));
         }
 
         AssertEx.SequenceEqual(
             stateBefore,
             File.ReadAllBytes(statePath),
-            "Rejected legacy requests must not consume durable issuance state.");
-        AssertEx.SequenceEqual(
-            markerBefore,
-            File.ReadAllBytes(statePath + ".meta"),
-            "Rejected legacy requests must not advance the issuance high-water marker.");
+            "Rejected legacy requests must not advance the issuance clock.");
     }
 
     private static MldsaSignerInfo ReadSignerInfo(byte[] encodedCms)

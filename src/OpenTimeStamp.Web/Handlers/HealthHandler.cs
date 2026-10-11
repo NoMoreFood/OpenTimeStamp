@@ -94,7 +94,9 @@ internal sealed class HealthHandler : IHttpHandler
 
     public bool IsReusable => false;
 
-    public void ProcessRequest(HttpContext context)
+    public void ProcessRequest(HttpContext context) => Process(new HttpContextWrapper(context));
+
+    internal void Process(HttpContextBase context)
     {
         // Expose only a minimal liveness result through safe retrieval methods.
         if (!string.Equals(context.Request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase) &&

@@ -11,22 +11,25 @@ namespace OpenTimeStamp.Protocols;
 
 public sealed class AuthenticodeResult
 {
-    internal AuthenticodeResult()
+    internal AuthenticodeResult(byte[] encodedResponse, byte[] requestedSignature, byte[] auditSerialNumber)
     {
+        EncodedResponse = encodedResponse;
+        RequestedSignature = requestedSignature;
+        AuditSerialNumber = auditSerialNumber;
     }
 
-    public byte[] EncodedResponse { get; internal set; }
+    public byte[] EncodedResponse { get; }
 
-    public byte[] RequestedSignature { get; internal set; }
+    public byte[] RequestedSignature { get; }
 
-    public byte[] AuditSerialNumber { get; internal set; }
+    public byte[] AuditSerialNumber { get; }
 
     public DateTime GenerationTimeUtc { get; internal set; }
 
-    public string CertificateThumbprint { get; internal set; }
+    public string? CertificateThumbprint { get; internal set; }
 }
 
-public sealed class AuthenticodeTimestampProcessor
+public static class AuthenticodeTimestampProcessor
 {
     private const int MaximumSignatureLength = 1048576;
 
@@ -34,11 +37,11 @@ public sealed class AuthenticodeTimestampProcessor
     public const string DataContentTypeOid = KnownOids.Pkcs7Data;
 
     /// <summary>Countersigns a signature already extracted by <see cref="ParseRequest"/>.</summary>
-    public AuthenticodeResult ProcessParsedSignature(
+    public static AuthenticodeResult ProcessParsedSignature(
         byte[] signature,
         ServiceConfiguration configuration,
-        X509Certificate2 certificate,
-        IssuanceStateStore stateStore,
+        X509Certificate2? certificate,
+        IssuanceStateStore? stateStore,
         Func<DateTime> utcNowProvider,
         CancellationToken cancellationToken)
     {
@@ -94,11 +97,8 @@ public sealed class AuthenticodeTimestampProcessor
             signingHash,
             includeOption,
             allocation.GenerationTimeUtc);
-        return new AuthenticodeResult
+        return new AuthenticodeResult(response, signature, allocation.SerialNumber)
         {
-            EncodedResponse = response,
-            RequestedSignature = signature,
-            AuditSerialNumber = allocation.SerialNumber,
             GenerationTimeUtc = allocation.GenerationTimeUtc,
             CertificateThumbprint = ConfigurationStore.NormalizeThumbprint(certificate.Thumbprint)
         };
@@ -167,5 +167,5 @@ public sealed class AuthenticodeTimestampProcessor
     }
 }
 
-public sealed class AuthenticodeProtocolException(string message, Exception innerException = null)
+public sealed class AuthenticodeProtocolException(string message, Exception? innerException = null)
     : Exception(message, innerException);

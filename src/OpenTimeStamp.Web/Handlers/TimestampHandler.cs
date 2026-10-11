@@ -121,7 +121,10 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
 
     internal static void InitializeAdmission() => _ = Admission.Value;
 
-    public override async Task ProcessRequestAsync(HttpContext context)
+    public override Task ProcessRequestAsync(HttpContext context) =>
+        ProcessAsync(new HttpContextWrapper(context));
+
+    internal async Task ProcessAsync(HttpContextBase context)
     {
         // Establish a response trace before enforcing endpoint-wide preconditions.
         var correlationId = HttpSupport.GetCorrelationId(context);
@@ -278,7 +281,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
     }
 
     private async Task ProcessRfc3161(
-        HttpContext context,
+        HttpContextBase context,
         ServiceRuntimeSnapshot snapshot,
         RequestIdentity identity,
         string correlationId,
@@ -296,7 +299,6 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
         cancellationToken.ThrowIfCancellationRequested();
 
         Rfc3161Request parsedRequest;
-        Rfc3161TimestampProcessor processor = new();
         try
         {
             parsedRequest = Rfc3161Request.Parse(request);
@@ -310,7 +312,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
             return;
         }
 
-        if (!processor.TryPreflight(parsedRequest, configuration, out var result))
+        if (!Rfc3161TimestampProcessor.TryPreflight(parsedRequest, configuration, out var result))
         {
             WriteRfc3161Result(context, configuration, identity, correlationId, stopwatch, result);
             return;
@@ -332,7 +334,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
 
         using (certificate)
         {
-            result = processor.Process(
+            result = Rfc3161TimestampProcessor.Process(
                 parsedRequest,
                 configuration,
                 certificate,
@@ -344,7 +346,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
     }
 
     private async Task ProcessAuthenticode(
-        HttpContext context,
+        HttpContextBase context,
         ServiceRuntimeSnapshot snapshot,
         RequestIdentity identity,
         string correlationId,
@@ -368,7 +370,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
             AuthenticodeResult result;
             try
             {
-                result = new AuthenticodeTimestampProcessor().ProcessParsedSignature(
+                result = AuthenticodeTimestampProcessor.ProcessParsedSignature(
                     signature,
                     configuration,
                     certificate,
@@ -397,7 +399,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
     }
 
     private static async Task<byte[]> ReadBoundedBodyAsync(
-        HttpRequest request,
+        HttpRequestBase request,
         int maximumBytes,
         RequestAdmissions admissions,
         CancellationToken cancellationToken)
@@ -418,7 +420,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
         }
     }
 
-    private static bool TryEnterProcessing(HttpContext context, RequestAdmissions admissions)
+    private static bool TryEnterProcessing(HttpContextBase context, RequestAdmissions admissions)
     {
         admissions.Processing = Admission.Value.TryEnterProcessing(admissions.ClientKey);
         if (admissions.Processing is not null) return true;
@@ -428,7 +430,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
         return false;
     }
 
-    private static CancellationTokenSource CreateRequestCancellation(HttpContext context)
+    private static CancellationTokenSource CreateRequestCancellation(HttpContextBase context)
     {
         var clientDisconnected = CancellationToken.None;
         try
@@ -443,7 +445,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
         return CancellationTokenSource.CreateLinkedTokenSource(context.Request.TimedOutToken, clientDisconnected);
     }
 
-    private static bool IsClientDisconnected(HttpContext context)
+    private static bool IsClientDisconnected(HttpContextBase context)
     {
         try
         {
@@ -461,7 +463,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
     }
 
     private void WriteRfc3161Result(
-        HttpContext context,
+        HttpContextBase context,
         ServiceConfiguration configuration,
         RequestIdentity identity,
         string correlationId,
@@ -516,7 +518,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
     private void WriteAudit(
         ServiceConfiguration configuration,
         RequestIdentity identity,
-        HttpContext context,
+        HttpContextBase context,
         string correlationId,
         Stopwatch stopwatch,
         string result,
@@ -557,7 +559,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
     private void BestEffortAudit(
         ServiceConfiguration configuration,
         RequestIdentity identity,
-        HttpContext context,
+        HttpContextBase context,
         string correlationId,
         Stopwatch stopwatch,
         string result,
@@ -578,7 +580,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
     private void BestEffortAuditBounded(
         ServiceConfiguration configuration,
         RequestIdentity identity,
-        HttpContext context,
+        HttpContextBase context,
         string correlationId,
         Stopwatch stopwatch,
         string result,

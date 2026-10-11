@@ -26,7 +26,7 @@ verified private channel with the maintainers first.
   worker receives read/sign access to one selected key, not administrative
   rights.
 - The configured data directory contains mutable configuration,
-  serial-number/time state, and audit logs. The pool can modify this directory
+  issuance-time state, and audit logs. The pool can modify this directory
   but can only read application code.
 - The administrative UI is a local management surface, not a remotely supported
   control plane.
@@ -139,11 +139,13 @@ Keep fail-closed audit writing enabled unless a documented risk decision says
 otherwise. If logging fails closed, investigate disk capacity, ACLs, filesystem
 health, and log forwarding; do not simply grant broad write permissions.
 
-The issuance state prevents serial reuse and unsafe clock rollback. Back it up
-with application-consistent procedures. Restoring an old state while continuing
-to issue can duplicate serials or move generation time backward. Stop issuance,
-reconcile state and logs, and obtain security approval before a restore or
-multi-node topology change.
+Serial numbers are random and never depend on stored state, so a restore or a
+cloned data directory cannot make a serial repeat. The issuance state records
+the last issuance time and prevents unsafe clock rollback. Restoring an old
+state while continuing to issue lets generation time move backward as far as
+that copy allows if the clock is also wrong. Stop issuance, confirm the host
+clock, reconcile state and logs, and obtain security approval before a restore
+or multi-node topology change.
 
 Local JSONL logs are protected from the pool's application-code directory but
 remain writable because retention and append operations require it. Forward

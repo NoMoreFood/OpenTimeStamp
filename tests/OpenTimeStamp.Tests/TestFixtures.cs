@@ -290,22 +290,20 @@ internal sealed class TimestampCertificateFixture : IDisposable
     }
 }
 
-// Fixed-clock, uncancelled, and default-rollover conveniences for tests. Production code keeps a
-// single entry point for each of these operations.
-internal static class TestOverloads
+// Fixed-clock and uncancelled conveniences over the RFC 3161 processor's single entry point.
+internal static class Rfc3161
 {
     public static Rfc3161Result Process(
-        this Rfc3161TimestampProcessor processor,
         Rfc3161Request request,
         ServiceConfiguration configuration,
         X509Certificate2 certificate,
         IssuanceStateStore stateStore,
         DateTime utcNow,
         CancellationToken cancellationToken = default) =>
-        processor.Process(request, configuration, certificate, stateStore, () => utcNow, cancellationToken);
+        Rfc3161TimestampProcessor.Process(
+            request, configuration, certificate, stateStore, () => utcNow, cancellationToken);
 
     public static Rfc3161Result Process(
-        this Rfc3161TimestampProcessor processor,
         byte[] encodedRequest,
         ServiceConfiguration configuration,
         X509Certificate2 certificate,
@@ -323,36 +321,42 @@ internal static class TestOverloads
             return Rfc3161TimestampProcessor.CreateRejection(exception.FailureInfo, exception.Message);
         }
 
-        return processor.Process(request, configuration, certificate, stateStore, utcNow, cancellationToken);
+        return Process(request, configuration, certificate, stateStore, utcNow, cancellationToken);
     }
+}
 
+// The same conveniences over the legacy Authenticode processor.
+internal static class Authenticode
+{
     public static AuthenticodeResult Process(
-        this AuthenticodeTimestampProcessor processor,
         byte[] encodedRequest,
         ServiceConfiguration configuration,
         X509Certificate2 certificate,
         IssuanceStateStore stateStore,
         DateTime utcNow,
         CancellationToken cancellationToken = default) =>
-        processor.ProcessParsedSignature(
+        ProcessParsedSignature(
             AuthenticodeTimestampProcessor.ParseRequest(encodedRequest),
             configuration,
             certificate,
             stateStore,
-            () => utcNow,
+            utcNow,
             cancellationToken);
 
     public static AuthenticodeResult ProcessParsedSignature(
-        this AuthenticodeTimestampProcessor processor,
         byte[] signature,
         ServiceConfiguration configuration,
         X509Certificate2 certificate,
         IssuanceStateStore stateStore,
         DateTime utcNow,
         CancellationToken cancellationToken = default) =>
-        processor.ProcessParsedSignature(
+        AuthenticodeTimestampProcessor.ProcessParsedSignature(
             signature, configuration, certificate, stateStore, () => utcNow, cancellationToken);
+}
 
+// Fixed-clock, uncancelled, and default-rollover conveniences for the stores.
+internal static class TestOverloads
+{
     public static IssuanceAllocation Allocate(
         this IssuanceStateStore store,
         DateTime utcNow,

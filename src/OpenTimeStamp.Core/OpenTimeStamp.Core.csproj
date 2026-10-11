@@ -8,6 +8,7 @@
     <OutputType>Library</OutputType>
     <RootNamespace>OpenTimeStamp</RootNamespace>
     <AssemblyName>OpenTimeStamp.Core</AssemblyName>
+    <Nullable>enable</Nullable>
     <FileAlignment>512</FileAlignment>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
@@ -51,7 +52,9 @@
     <Compile Include="Infrastructure\ExceptionFilters.cs" />
     <Compile Include="Infrastructure\FileSystemLock.cs" />
     <Compile Include="Infrastructure\Hex.cs" />
+    <Compile Include="Infrastructure\NullableAttributes.cs" />
     <Compile Include="Issuance\IssuanceStateStore.cs" />
+    <Compile Include="Issuance\LegacyIssuanceState.cs" />
     <Compile Include="Protocols\AuthenticodeTimestampProcessor.cs" />
     <Compile Include="Protocols\LegacyAuthenticodeHttpCodec.cs" />
     <Compile Include="Protocols\Rfc3161Models.cs" />

@@ -14,21 +14,21 @@ namespace OpenTimeStamp.Audit;
 public sealed class AuditRecord
 {
     public DateTime TimestampUtc { get; set; }
-    public string EventType { get; set; }
-    public string Result { get; set; }
-    public string CorrelationId { get; set; }
-    public string Protocol { get; set; }
-    public string Username { get; set; }
-    public string UserSid { get; set; }
-    public string AuthenticationType { get; set; }
-    public string RemoteAddress { get; set; }
-    public string PolicyOid { get; set; }
-    public string HashAlgorithmOid { get; set; }
-    public string MessageImprintHex { get; set; }
-    public string SerialHex { get; set; }
-    public string CertificateThumbprint { get; set; }
+    public string? EventType { get; set; }
+    public string? Result { get; set; }
+    public string? CorrelationId { get; set; }
+    public string? Protocol { get; set; }
+    public string? Username { get; set; }
+    public string? UserSid { get; set; }
+    public string? AuthenticationType { get; set; }
+    public string? RemoteAddress { get; set; }
+    public string? PolicyOid { get; set; }
+    public string? HashAlgorithmOid { get; set; }
+    public string? MessageImprintHex { get; set; }
+    public string? SerialHex { get; set; }
+    public string? CertificateThumbprint { get; set; }
     public long DurationMilliseconds { get; set; }
-    public string Detail { get; set; }
+    public string? Detail { get; set; }
 }
 
 public sealed class AuditLogger
@@ -38,8 +38,8 @@ public sealed class AuditLogger
     private readonly string lockPath;
     private readonly object cleanupGate = new();
     private readonly long cleanupRetryIntervalTicks;
-    private readonly Action<AuditRecord> observer;
-    private string retentionWarning;
+    private readonly Action<AuditRecord>? observer;
+    private string? retentionWarning;
     private DateTime lastCleanupPeriodUtc;
     private int lastCleanupRetentionDays;
     private LogRollover lastCleanupRollover;
@@ -47,12 +47,12 @@ public sealed class AuditLogger
     private bool cleanupRetryPending;
     private bool cleanupSuppressed;
 
-    public AuditLogger(string directory, Action<AuditRecord> observer = null)
+    public AuditLogger(string directory, Action<AuditRecord>? observer = null)
         : this(directory, DefaultCleanupRetryInterval, observer)
     {
     }
 
-    internal AuditLogger(string directory, TimeSpan cleanupRetryInterval, Action<AuditRecord> observer = null)
+    internal AuditLogger(string directory, TimeSpan cleanupRetryInterval, Action<AuditRecord>? observer = null)
     {
         if (string.IsNullOrWhiteSpace(directory))
         {
@@ -70,7 +70,7 @@ public sealed class AuditLogger
         cleanupRetryIntervalTicks = ToStopwatchTicks(cleanupRetryInterval);
     }
 
-    public string RetentionWarning => Volatile.Read(ref retentionWarning);
+    public string? RetentionWarning => Volatile.Read(ref retentionWarning);
 
     public bool Write(
         AuditRecord record,
@@ -129,7 +129,7 @@ public sealed class AuditLogger
     public void ProbeWritable(string rolloverInterval)
     {
         var rollover = ParseRollover(rolloverInterval);
-        string probe = null;
+        string? probe = null;
         try
         {
             Directory.CreateDirectory(directory);
@@ -224,7 +224,7 @@ public sealed class AuditLogger
             // allowing one inaccessible file to leave independently removable files unaffected.
             var threshold = nowUtc.AddDays(-Math.Max(1, retentionDays));
             var cleanupComplete = true;
-            Exception cleanupFailure = null;
+            Exception? cleanupFailure = null;
             try
             {
                 foreach (var file in Directory.EnumerateFiles(
@@ -391,10 +391,10 @@ public sealed class AuditLogger
         return "{" + string.Join(",", fields) + "}";
     }
 
-    private static string Field(string name, string value) =>
+    private static string Field(string name, string? value) =>
         "\"" + Escape(name) + "\":" + (value is null ? "null" : "\"" + Escape(value) + "\"");
 
-    private static string Escape(string value)
+    private static string Escape(string? value)
     {
         StringBuilder builder = new();
         foreach (var character in value ?? string.Empty)

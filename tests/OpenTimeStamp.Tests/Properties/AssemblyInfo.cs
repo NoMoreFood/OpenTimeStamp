@@ -11,4 +11,3 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 [assembly: AssemblyVersion("1.0.0.0")]
 [assembly: AssemblyFileVersion("1.0.0.0")]
 [assembly: DoNotParallelize]
-[assembly: TestDataSourceOptions(TestDataSourceUnfoldingStrategy.Unfold)]

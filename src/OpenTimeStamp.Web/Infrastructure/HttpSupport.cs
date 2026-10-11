@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Configuration;
 using System.Diagnostics;
 using System.IO;
@@ -25,14 +24,14 @@ internal static class HttpSupport
 {
     private static readonly TimeSpan AbortedReadObservationGrace = TimeSpan.FromMilliseconds(250);
 
-    extension(HttpRequest request)
+    extension(HttpRequestBase request)
     {
         /// <summary>The application's virtual path without a trailing slash; empty at a site root.</summary>
         internal string ApplicationBasePath =>
             request.ApplicationPath == "/" ? string.Empty : request.ApplicationPath.TrimEnd('/');
     }
 
-    internal static string GetCorrelationId(HttpContext context)
+    internal static string GetCorrelationId(HttpContextBase context)
     {
         const string key = "OpenTimeStamp.CorrelationId";
         if (context.Items[key] is string existing) return existing;
@@ -42,7 +41,7 @@ internal static class HttpSupport
         return correlationId;
     }
 
-    public static void ApplySecurityHeaders(HttpResponse response)
+    public static void ApplySecurityHeaders(HttpResponseBase response)
     {
         // Apply one restrictive response policy to protocol and administrative endpoints.
         response.Headers["X-Content-Type-Options"] = "nosniff";
@@ -55,7 +54,7 @@ internal static class HttpSupport
         response.Cache.SetRevalidation(HttpCacheRevalidation.AllCaches);
     }
 
-    public static bool HasExactMediaType(HttpRequest request, string expected) =>
+    public static bool HasExactMediaType(HttpRequestBase request, string expected) =>
         HasExactMediaTypeValue(request?.ContentType, expected);
 
     internal static bool HasExactMediaTypeValue(string contentType, string expected) =>
@@ -71,7 +70,7 @@ internal static class HttpSupport
     }
 
     public static async Task<byte[]> ReadBoundedBodyAsync(
-        HttpRequest request,
+        HttpRequestBase request,
         int maximumBytes,
         TimeSpan deadline,
         CancellationToken cancellationToken = default)
@@ -80,8 +79,8 @@ internal static class HttpSupport
 
         var input = request.GetBufferlessInputStream(false);
         // HttpRequest.ContentLength is zero when no Content-Length header is present,
-        // including normal chunked requests. Preserve that distinction so streamed
-        // bodies use the pooled growth path instead of repeated exact-array growth.
+        // including normal chunked requests. Preserve that distinction so a streamed
+        // body grows a buffer instead of being read into a zero-length one.
         var declaredLength = request.Headers["Content-Length"] is null ? -1 : request.ContentLength;
         try
         {
@@ -134,8 +133,7 @@ internal static class HttpSupport
         TimeSpan deadline,
         Action abortPendingRead,
         CancellationToken cancellationToken,
-        Action abandonedReadObserved = null,
-        ArrayPool<byte> bufferPool = null)
+        Action abandonedReadObserved = null)
     {
         if (input is null) throw new ArgumentNullException(nameof(input));
         if (maximumBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maximumBytes));
@@ -143,118 +141,82 @@ internal static class HttpSupport
         if (declaredLength > maximumBytes)
             throw new RequestBodyException(413, false, "The request body exceeds the configured limit.");
 
-        // Exact-allocate honest Content-Length bodies. Unknown-length bodies use
-        // cleared pooled growth buffers so overload cannot create avoidable LOH churn.
-        var pooled = declaredLength < 0;
-        bufferPool ??= ArrayPool<byte>.Shared;
-        var initialLength = pooled ? Math.Min(8192, maximumBytes) : declaredLength;
-        var output = pooled ? bufferPool.Rent(initialLength) : initialLength == 0 ? [] : new byte[initialLength];
-        var capacity = pooled ? Math.Min(output.Length, maximumBytes) : output.Length;
+        // An honest Content-Length body fills one exact array. A body of unknown length grows a
+        // private buffer up to the bound. Nothing is shared, so a read abandoned at the deadline
+        // can finish writing into its own array without touching another request.
+        var output = new byte[declaredLength >= 0 ? declaredLength : Math.Min(8192, maximumBytes)];
         var overflow = new byte[1];
         var length = 0;
         var stopwatch = Stopwatch.StartNew();
-        Task<int> readTask = null;
-        try
+        while (true)
         {
-            while (true)
+            cancellationToken.ThrowIfCancellationRequested();
+            var remainingTime = deadline - stopwatch.Elapsed;
+            if (remainingTime <= TimeSpan.Zero)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var remainingTime = deadline - stopwatch.Elapsed;
-                if (remainingTime <= TimeSpan.Zero)
+                AbortPendingRead(abortPendingRead);
+                throw TimedOutBody();
+            }
+
+            // HttpBufferlessInputStream supplies native BeginRead/EndRead methods on
+            // ASP.NET 4.8, so this does not pin a worker thread while a client stalls.
+            // Once the buffer is full, one more byte decides between a complete body and growth.
+            var probingForOverflow = length == output.Length;
+            var readTask = input.ReadAsync(
+                probingForOverflow ? overflow : output,
+                probingForOverflow ? 0 : length,
+                probingForOverflow ? 1 : output.Length - length,
+                cancellationToken);
+            int read;
+            if (readTask.IsCompleted)
+            {
+                read = await readTask.ConfigureAwait(false);
+            }
+            else
+            {
+                using var delayCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                var delayTask = Task.Delay(remainingTime, delayCancellation.Token);
+                if (await Task.WhenAny(readTask, delayTask).ConfigureAwait(false) != readTask)
                 {
                     AbortPendingRead(abortPendingRead);
+
+                    // Give ASP.NET's aborted native read a short window to complete,
+                    // but never let a defective stream defeat the configured intake
+                    // bound. A continuation observes any later fault after release.
+                    await ObserveAbortedReadAsync(readTask, abandonedReadObserved).ConfigureAwait(false);
+
+                    if (cancellationToken.IsCancellationRequested)
+                        throw new OperationCanceledException(cancellationToken);
                     throw TimedOutBody();
                 }
 
-                // HttpBufferlessInputStream supplies native BeginRead/EndRead methods on
-                // ASP.NET 4.8, so this does not pin a worker thread while a client stalls.
-                var probingForOverflow = length == capacity;
-                readTask = input.ReadAsync(
-                    probingForOverflow ? overflow : output,
-                    probingForOverflow ? 0 : length,
-                    probingForOverflow ? 1 : capacity - length,
-                    cancellationToken);
-                int read;
-                if (readTask.IsCompleted)
-                {
-                    read = await readTask.ConfigureAwait(false);
-                }
-                else
-                {
-                    using var delayCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                    var delayTask = Task.Delay(remainingTime, delayCancellation.Token);
-                    if (await Task.WhenAny(readTask, delayTask).ConfigureAwait(false) != readTask)
-                    {
-                        AbortPendingRead(abortPendingRead);
-
-                        // Give ASP.NET's aborted native read a short window to complete,
-                        // but never let a defective stream defeat the configured intake
-                        // bound. A continuation observes any later fault after release.
-                        await ObserveAbortedReadAsync(readTask, abandonedReadObserved).ConfigureAwait(false);
-
-                        if (cancellationToken.IsCancellationRequested)
-                            throw new OperationCanceledException(cancellationToken);
-                        throw TimedOutBody();
-                    }
-
-                    delayCancellation.Cancel();
-                    read = await readTask.ConfigureAwait(false);
-                }
-
-                if (read == 0) break;
-                if (!probingForOverflow)
-                {
-                    length += read;
-                    continue;
-                }
-
-                if (length >= maximumBytes)
-                    throw new RequestBodyException(413, false, "The request body exceeds the configured limit.");
-
-                var doubledLength = capacity <= maximumBytes / 2 ? capacity * 2 : maximumBytes;
-                var expandedLength = Math.Max(length + 1, Math.Max(1, doubledLength));
-                var expanded = pooled ? bufferPool.Rent(expandedLength) : new byte[expandedLength];
-                if (length != 0) Buffer.BlockCopy(output, 0, expanded, 0, length);
-                expanded[length++] = overflow[0];
-                if (pooled)
-                {
-                    var previous = output;
-                    output = expanded;
-                    capacity = Math.Min(output.Length, maximumBytes);
-                    bufferPool.Return(previous, true);
-                }
-                else
-                {
-                    output = expanded;
-                    capacity = output.Length;
-                }
+                delayCancellation.Cancel();
+                read = await readTask.ConfigureAwait(false);
             }
 
-            if (!pooled && length == output.Length) return output;
-            if (length == 0) return [];
-            var result = new byte[length];
-            Buffer.BlockCopy(output, 0, result, 0, length);
-            return result;
-        }
-        finally
-        {
-            // A detached read still owns its destination buffer until it completes.
-            if (pooled && readTask is not null && !readTask.IsCompleted)
+            if (read == 0) break;
+            if (!probingForOverflow)
             {
-                _ = readTask.ContinueWith(
-                    _ => bufferPool.Return(output, true),
-                    CancellationToken.None,
-                    TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
+                length += read;
+                continue;
             }
-            else if (pooled)
-            {
-                bufferPool.Return(output, true);
-            }
+
+            if (length >= maximumBytes)
+                throw new RequestBodyException(413, false, "The request body exceeds the configured limit.");
+
+            var expanded = new byte[Math.Min(maximumBytes, Math.Max(length * 2, length + 1))];
+            Buffer.BlockCopy(output, 0, expanded, 0, length);
+            expanded[length++] = overflow[0];
+            output = expanded;
         }
+
+        if (length == output.Length) return output;
+        var result = new byte[length];
+        Buffer.BlockCopy(output, 0, result, 0, length);
+        return result;
     }
 
-    internal static string GetRemoteAddressKey(HttpRequest request)
+    internal static string GetRemoteAddressKey(HttpRequestBase request)
     {
         const string unknown = "<unknown>";
         if (request is null) return unknown;
@@ -321,7 +283,7 @@ internal static class HttpSupport
     private static RequestBodyException TimedOutBody() =>
         new(408, true, "The request body was not received before the configured deadline.");
 
-    public static RequestIdentity GetRequestIdentity(HttpRequest request)
+    public static RequestIdentity GetRequestIdentity(HttpRequestBase request)
     {
         // Prefer the IIS logon token because it carries the authoritative Windows SID.
         try
@@ -352,7 +314,7 @@ internal static class HttpSupport
         };
     }
 
-    public static bool IsLocalAdminRequest(HttpRequest request)
+    public static bool IsLocalAdminRequest(HttpRequestBase request)
     {
         // Never trust a request that advertises traversal through a forwarding proxy.
         if (!string.IsNullOrEmpty(request.Headers["Forwarded"]) ||
@@ -385,7 +347,7 @@ internal static class HttpSupport
             : value;
     }
 
-    public static void WritePlainError(HttpContext context, int statusCode, string message)
+    public static void WritePlainError(HttpContextBase context, int statusCode, string message)
     {
         context.Response.StatusCode = statusCode;
         context.Response.TrySkipIisCustomErrors = true;

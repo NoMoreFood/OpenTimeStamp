@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -17,21 +18,22 @@ public sealed class CertificateDescriptor
 {
     public StoreLocation StoreLocation { get; internal set; }
 
-    public string Thumbprint { get; internal set; }
+    // Absent, with the issuer and key algorithm, when the certificate's metadata could not be read.
+    public string? Thumbprint { get; internal set; }
 
-    public string Subject { get; internal set; }
+    public string Subject { get; internal set; } = string.Empty;
 
-    public string Issuer { get; internal set; }
+    public string? Issuer { get; internal set; }
 
     public DateTime NotBefore { get; internal set; }
 
     public DateTime NotAfter { get; internal set; }
 
-    public string KeyAlgorithm { get; internal set; }
+    public string? KeyAlgorithm { get; internal set; }
 
     public bool IsEligible { get; internal set; }
 
-    public string IneligibilityReason { get; internal set; }
+    public string? IneligibilityReason { get; internal set; }
 }
 
 public sealed class CertificateRepository : IDisposable
@@ -45,14 +47,14 @@ public sealed class CertificateRepository : IDisposable
     private static readonly TimeSpan SelectionValidationHorizon =
         SelectionCacheDuration + SelectionRefreshWaitTimeout;
     private readonly object selectionCacheLock = new();
-    private X509Certificate2 cachedSelection;
-    private string cachedSelectionKey;
+    private X509Certificate2? cachedSelection;
+    private string? cachedSelectionKey;
     private DateTime cachedSelectionExpiresUtc;
     private DateTime cachedSelectionValidatedUntilUtc;
     private bool selectionRefreshInProgress;
     private long selectionCacheGeneration;
-    private string cachedSelectionFailureKey;
-    private string cachedSelectionFailureReason;
+    private string? cachedSelectionFailureKey;
+    private string? cachedSelectionFailureReason;
     private DateTime cachedSelectionFailureExpiresUtc;
     private long cachedSelectionFailureGeneration;
 
@@ -106,7 +108,7 @@ public sealed class CertificateRepository : IDisposable
 
     internal X509Certificate2 GetSelectedCertificate(
         ServiceConfiguration configuration,
-        Func<ServiceConfiguration, DateTime, DateTime, X509Certificate2> loadSelection,
+        Func<ServiceConfiguration, DateTime, DateTime, X509Certificate2>? loadSelection,
         CancellationToken cancellationToken = default)
     {
         if (configuration is null) throw new ArgumentNullException(nameof(configuration));
@@ -118,7 +120,7 @@ public sealed class CertificateRepository : IDisposable
         });
         long requestGeneration;
         lock (selectionCacheLock) requestGeneration = selectionCacheGeneration;
-        Stopwatch refreshWait = null;
+        Stopwatch? refreshWait = null;
         DateTime now;
         while (true)
         {
@@ -138,7 +140,8 @@ public sealed class CertificateRepository : IDisposable
                     return new X509Certificate2(cachedSelection);
                 }
 
-                if (now < cachedSelectionFailureExpiresUtc &&
+                if (cachedSelectionFailureReason is not null &&
+                    now < cachedSelectionFailureExpiresUtc &&
                     cachedSelectionFailureGeneration == selectionCacheGeneration &&
                     string.Equals(cacheKey, cachedSelectionFailureKey, StringComparison.Ordinal))
                 {
@@ -175,7 +178,7 @@ public sealed class CertificateRepository : IDisposable
             }
         }
 
-        X509Certificate2 loaded = null;
+        X509Certificate2? loaded = null;
         try
         {
             var validationHorizonUtc = GetSelectionValidationTimeUtc(now, TimeSpan.Zero);
@@ -287,9 +290,8 @@ public sealed class CertificateRepository : IDisposable
             ServiceConfiguration manual = configuration.Clone();
             manual.CertificateSelectionMode = ServiceConfiguration.ManualCertificateSelection;
             manual.CertificateStoreLocation = candidate.StoreLocation.ToString();
-            manual.CertificateStoreName = StoreName.My.ToString();
             manual.CertificateThumbprint = candidate.Thumbprint;
-            X509Certificate2 certificate = null;
+            X509Certificate2? certificate = null;
             try
             {
                 certificate = LoadManualCertificate(manual, signingTimeUtc, trustValidationTimeUtc);
@@ -340,7 +342,7 @@ public sealed class CertificateRepository : IDisposable
         using X509Store store = new(StoreName.My, location);
         store.Open(OpenFlags.OpenExistingOnly | OpenFlags.ReadOnly);
         var certificates = store.Certificates;
-        X509Certificate2Collection matches = null;
+        X509Certificate2Collection? matches = null;
         try
         {
             matches = certificates.Find(X509FindType.FindByThumbprint, thumbprint, false);
@@ -391,7 +393,10 @@ public sealed class CertificateRepository : IDisposable
         }
     }
 
-    public bool ValidateSelection(ServiceConfiguration configuration, DateTime signingTimeUtc, out string reason)
+    public bool ValidateSelection(
+        ServiceConfiguration configuration,
+        DateTime signingTimeUtc,
+        [NotNullWhen(false)] out string? reason)
     {
         if (configuration is null) throw new ArgumentNullException(nameof(configuration));
 
@@ -518,18 +523,18 @@ public sealed class CertificateRepository : IDisposable
     }
 
     internal static bool ValidateCertificate(
-        X509Certificate2 certificate,
+        X509Certificate2? certificate,
         string signingDigestAlgorithm,
         DateTime signingTimeUtc,
-        out string reason) =>
+        [NotNullWhen(false)] out string? reason) =>
         ValidateCertificate(certificate, signingDigestAlgorithm, signingTimeUtc, false, out reason);
 
     internal static bool ValidateCertificate(
-        X509Certificate2 certificate,
+        X509Certificate2? certificate,
         string signingDigestAlgorithm,
         DateTime signingTimeUtc,
         bool authenticodeEnabled,
-        out string reason)
+        [NotNullWhen(false)] out string? reason)
     {
         if (certificate is null)
         {
@@ -547,11 +552,11 @@ public sealed class CertificateRepository : IDisposable
     }
 
     internal static bool ValidateCertificateProfile(
-        X509Certificate2 certificate,
+        X509Certificate2? certificate,
         string signingDigestAlgorithm,
         DateTime signingTimeUtc,
         bool authenticodeEnabled,
-        out string reason)
+        [NotNullWhen(false)] out string? reason)
     {
         if (certificate is null)
         {
@@ -569,10 +574,10 @@ public sealed class CertificateRepository : IDisposable
     }
 
     internal static bool ValidateCertificateTrust(
-        X509Certificate2 certificate,
+        X509Certificate2? certificate,
         DateTime validationTimeUtc,
         bool allowUntrustedDevelopmentCertificate,
-        out string reason)
+        [NotNullWhen(false)] out string? reason)
     {
         if (certificate is null)
         {
@@ -617,7 +622,7 @@ public sealed class CertificateRepository : IDisposable
         }
     }
 
-    private static void DisposeCertificates(X509Certificate2Collection certificates)
+    private static void DisposeCertificates(X509Certificate2Collection? certificates)
     {
         if (certificates is null) return;
         foreach (var certificate in certificates) certificate?.Dispose();
@@ -629,7 +634,7 @@ public sealed class CertificateRepository : IDisposable
         string signingDigestAlgorithm,
         bool authenticodeEnabled,
         DateTime signingTimeUtc,
-        out string reason)
+        [NotNullWhen(false)] out string? reason)
     {
         // Enforce certificate lifetime at the intended signing instant and access to an
         // associated private key. X509Certificate2 exposes lifetime values in local time.
@@ -701,14 +706,14 @@ public sealed class CertificateRepository : IDisposable
         return true;
     }
 
-    internal static bool IsMldsaCertificate(X509Certificate2 certificate) =>
+    internal static bool IsMldsaCertificate([NotNullWhen(true)] X509Certificate2? certificate) =>
         certificate is not null && IsMldsaOid(certificate.PublicKey?.Oid?.Value);
 
     internal static bool IsSigningKeyCompatible(
-        X509Certificate2 certificate,
-        TimestampHashAlgorithm signingHash,
+        X509Certificate2? certificate,
+        TimestampHashAlgorithm? signingHash,
         bool authenticodeEnabled,
-        out string reason)
+        [NotNullWhen(false)] out string? reason)
     {
         if (certificate is null)
         {
@@ -767,8 +772,8 @@ public sealed class CertificateRepository : IDisposable
 
     internal static bool IsMldsaSigningHashCompatible(
         string algorithmOid,
-        TimestampHashAlgorithm signingHash,
-        out string reason)
+        TimestampHashAlgorithm? signingHash,
+        [NotNullWhen(false)] out string? reason)
     {
         var minimumDigestLength = algorithmOid switch
         {
@@ -796,9 +801,9 @@ public sealed class CertificateRepository : IDisposable
 
     internal static bool IsMldsaPublicKeyEncodingCompatible(
         string algorithmOid,
-        byte[] encodedParameters,
-        byte[] encodedKeyValue,
-        out string reason)
+        byte[]? encodedParameters,
+        byte[]? encodedKeyValue,
+        [NotNullWhen(false)] out string? reason)
     {
         var expectedKeyLength = algorithmOid switch
         {
@@ -829,7 +834,7 @@ public sealed class CertificateRepository : IDisposable
         return true;
     }
 
-    internal static bool IsMldsaKeyUsageCompatible(X509KeyUsageFlags keyUsages, out string reason)
+    internal static bool IsMldsaKeyUsageCompatible(X509KeyUsageFlags keyUsages, [NotNullWhen(false)] out string? reason)
     {
         const X509KeyUsageFlags signatureUsages =
             X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.NonRepudiation;
@@ -857,7 +862,7 @@ public sealed class CertificateRepository : IDisposable
 
     internal static bool HasValidMldsaCertificateSignatureAlgorithmIdentifiers(
         byte[] rawCertificate,
-        out string reason)
+        [NotNullWhen(false)] out string? reason)
     {
         if (rawCertificate is null || rawCertificate.Length == 0)
         {
@@ -940,7 +945,7 @@ public sealed class CertificateRepository : IDisposable
     internal static bool CanServeCachedSelectionDuringRefresh(
         bool hasCachedSelection,
         string requestedCacheKey,
-        string cachedCacheKey,
+        string? cachedCacheKey,
         DateTime utcNow,
         DateTime cacheExpiresUtc,
         DateTime validationHorizonUtc) =>
@@ -949,7 +954,7 @@ public sealed class CertificateRepository : IDisposable
         utcNow >= cacheExpiresUtc &&
         utcNow < validationHorizonUtc;
 
-    private static bool CanAccessAssociatedPrivateKey(X509Certificate2 certificate, out string reason)
+    private static bool CanAccessAssociatedPrivateKey(X509Certificate2 certificate, [NotNullWhen(false)] out string? reason)
     {
         // Ask Windows to open the key silently and compare its public half with the certificate.
         // ML-DSA is CNG-only; RSA remains compatible with both legacy CSP and CNG providers.
@@ -1022,7 +1027,7 @@ public sealed class CertificateRepository : IDisposable
             isNCrypt ? NCryptFreeObject(handle) == 0 : CryptReleaseContext(handle, 0);
     }
 
-    private static bool IsMldsaOid(string oid) =>
+    private static bool IsMldsaOid(string? oid) =>
         string.Equals(oid, KnownOids.MlDsa44, StringComparison.Ordinal) ||
         string.Equals(oid, KnownOids.MlDsa65, StringComparison.Ordinal) ||
         string.Equals(oid, KnownOids.MlDsa87, StringComparison.Ordinal);
@@ -1030,7 +1035,6 @@ public sealed class CertificateRepository : IDisposable
     internal static string BuildSelectionCacheKey(ServiceConfiguration configuration) =>
         (configuration.CertificateSelectionMode ?? string.Empty).Trim().ToUpperInvariant() + "|" +
         (configuration.CertificateStoreLocation ?? string.Empty).Trim().ToUpperInvariant() + "|" +
-        (configuration.CertificateStoreName ?? string.Empty).Trim().ToUpperInvariant() + "|" +
         ConfigurationStore.NormalizeThumbprint(configuration.CertificateThumbprint) + "|" +
         HashAlgorithmCatalog.NormalizeName(configuration.SigningDigestAlgorithm) + "|" +
         (configuration.AuthenticodeEnabled ? "1" : "0") + "|" +

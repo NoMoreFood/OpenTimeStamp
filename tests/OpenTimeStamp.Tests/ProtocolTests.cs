@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.Pkcs;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 using OpenTimeStamp.Asn1;
 using OpenTimeStamp.Configuration;
 using OpenTimeStamp.Cryptography;
@@ -14,7 +15,8 @@ using OpenTimeStamp.Protocols;
 
 namespace OpenTimeStamp.Tests;
 
-internal static class ProtocolTests
+[TestClass]
+public sealed class ProtocolTests
 {
     private const string SigningCertificateOid = "1.2.840.113549.1.9.16.2.12";
     private const string SigningCertificateV2Oid = "1.2.840.113549.1.9.16.2.47";
@@ -22,38 +24,8 @@ internal static class ProtocolTests
     private const string Pkcs7SignedDataOid = "1.2.840.113549.1.7.2";
     private const string TstInfoContentTypeOid = "1.2.840.113549.1.9.16.1.4";
 
-    public static void Register(ICollection<TestCase> tests)
-    {
-        // Exercise wire rejections, token semantics, CMS attributes, and legacy countersigning.
-        tests.Add(new TestCase("RFC3161 processor rejection responses", Rfc3161Rejections));
-        tests.Add(new TestCase("RFC3161 rejects generation outside certificate validity", Rfc3161CertificateValidityAtGenerationTime));
-        tests.Add(new TestCase(
-            "Certificate validation uses supplied signing time and associated private key",
-            CertificateValidationAtSigningTime));
-        tests.Add(new TestCase("Certificate trust validation is production-default and explicitly bypassable", CertificateTrustPolicy));
-        tests.Add(new TestCase("Automatic certificate ordering prefers the latest expiration", AutomaticCertificateOrdering));
-        tests.Add(new TestCase(
-            "Certificate refresh stale reuse is bounded by the validated horizon",
-            CertificateRefreshStaleReuse));
-        tests.Add(new TestCase(
-            "Certificate refresh single-flight waits for a cold selection",
-            CertificateRefreshSingleFlight));
-        tests.Add(new TestCase(
-            "Certificate refresh wait honors cancellation and invalidation",
-            CertificateRefreshWaitInterruption));
-        tests.Add(new TestCase("Platform FIPS registry interpretation fails closed", FipsRegistryInterpretation));
-        tests.Add(new TestCase("Certificate profile and cancellation precede durable allocation", PreallocationGuards));
-        tests.Add(new TestCase("Protocols resample the clock for durable allocation", ProtocolAllocationResamplesClock));
-        tests.Add(new TestCase("RFC3161 common request hashes honor Windows FIPS policy", Rfc3161CommonHashAlgorithms));
-        tests.Add(new TestCase("RFC3161 happy path preserves policy, nonce, and imprint", Rfc3161HappyPath));
-        tests.Add(new TestCase("RFC3161 certReq controls certificate inclusion", Rfc3161CertificateInclusion));
-        tests.Add(new TestCase("RFC3161 echoes a negative nonce unchanged", Rfc3161EchoesNegativeNonce));
-        tests.Add(new TestCase("RFC3161 CMS signature and ESS attribute", Rfc3161CmsSignatureAndEss));
-        tests.Add(new TestCase("RFC3161 CMS signing digests and legacy ESS attribute", Rfc3161SigningDigestAlgorithms));
-        tests.Add(new TestCase("Authenticode response is a verified CMS countersignature", AuthenticodeResponse));
-    }
-
-    private static void AutomaticCertificateOrdering()
+    [TestMethod(DisplayName = "Automatic certificate ordering prefers the latest expiration")]
+    public void AutomaticCertificateOrdering()
     {
         var latest = new DateTime(2030, 1, 1);
         List<CertificateDescriptor> certificates =
@@ -80,7 +52,8 @@ internal static class ProtocolTests
         AssertEx.Throws<ArgumentNullException>(() => repository.ValidateSelection(null, latest, out _));
     }
 
-    private static void CertificateRefreshStaleReuse()
+    [TestMethod(DisplayName = "Certificate refresh stale reuse is bounded by the validated horizon")]
+    public void CertificateRefreshStaleReuse()
     {
         const string cacheKey = "selection";
         var validationStartedUtc = new DateTime(2026, 7, 16, 12, 0, 0, DateTimeKind.Utc);
@@ -135,7 +108,8 @@ internal static class ProtocolTests
             validationHorizonUtc));
     }
 
-    private static void CertificateRefreshSingleFlight()
+    [TestMethod(DisplayName = "Certificate refresh single-flight waits for a cold selection")]
+    public void CertificateRefreshSingleFlight()
     {
         using var fixture = new TimestampCertificateFixture();
         using var repository = new CertificateRepository();
@@ -204,7 +178,8 @@ internal static class ProtocolTests
         }
     }
 
-    private static void CertificateRefreshWaitInterruption()
+    [TestMethod(DisplayName = "Certificate refresh wait honors cancellation and invalidation")]
+    public void CertificateRefreshWaitInterruption()
     {
         using var fixture = new TimestampCertificateFixture();
         var configuration = TestFixtures.CreateConfiguration();
@@ -368,19 +343,19 @@ internal static class ProtocolTests
         AssertEx.True(thread.IsAlive && (thread.ThreadState & ThreadState.WaitSleepJoin) != 0, message);
     }
 
-    private static void Rfc3161CommonHashAlgorithms()
+    [TestMethod(DisplayName = "RFC3161 common request hashes honor Windows FIPS policy")]
+    public void Rfc3161CommonHashAlgorithms()
     {
         using (var directory = new TemporaryDirectory())
         using (var certificate = new TimestampCertificateFixture())
         {
             var configuration = TestFixtures.CreateConfiguration();
             configuration.AllowedHashAlgorithms = HashAlgorithmCatalog.All.Select(item => item.Name).ToList();
-            var processor = new Rfc3161TimestampProcessor();
             var stateStore = TestFixtures.CreateInitializedStateStore(directory.File("all-hashes.bin"));
             var now = new DateTime(2026, 7, 16, 13, 0, 0, DateTimeKind.Utc);
             foreach (var algorithm in HashAlgorithmCatalog.All)
             {
-                var result = processor.Process(
+                var result = Rfc3161.Process(
                     TestFixtures.BuildRfc3161Request(algorithm.Oid, new byte[algorithm.DigestLength]),
                     configuration,
                     certificate.Certificate,
@@ -399,24 +374,24 @@ internal static class ProtocolTests
         }
     }
 
-    private static void Rfc3161Rejections()
+    [TestMethod(DisplayName = "RFC3161 processor rejection responses")]
+    public void Rfc3161Rejections()
     {
         using (var directory = new TemporaryDirectory())
         using (var certificate = new TimestampCertificateFixture())
         {
             var configuration = TestFixtures.CreateConfiguration();
-            var processor = new Rfc3161TimestampProcessor();
             var store = TestFixtures.CreateInitializedStateStore(directory.File("issuance.bin"));
             var now = new DateTime(2026, 7, 16, 12, 30, 0, DateTimeKind.Utc);
 
             var unknownHashRequest = TestFixtures.BuildRfc3161Request("1.2.3.4.5", new byte[32]);
-            AssertEx.False(processor.TryPreflight(
+            AssertEx.False(Rfc3161TimestampProcessor.TryPreflight(
                 Rfc3161Request.Parse(unknownHashRequest),
                 configuration,
                 out var preflightRejection));
             AssertRejected(preflightRejection, Rfc3161FailureInfo.BadAlgorithm);
 
-            var unknownHash = processor.Process(
+            var unknownHash = Rfc3161.Process(
                 unknownHashRequest,
                 configuration,
                 certificate.Certificate,
@@ -424,7 +399,7 @@ internal static class ProtocolTests
                 now);
             AssertRejected(unknownHash, Rfc3161FailureInfo.BadAlgorithm);
 
-            var wrongDigestSize = processor.Process(
+            var wrongDigestSize = Rfc3161.Process(
                 TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[31]),
                 configuration,
                 certificate.Certificate,
@@ -433,7 +408,7 @@ internal static class ProtocolTests
             AssertRejected(wrongDigestSize, Rfc3161FailureInfo.BadAlgorithm);
 
             configuration.AllowedHashAlgorithms = new List<string> { "SHA384" };
-            var disabledHash = processor.Process(
+            var disabledHash = Rfc3161.Process(
                 TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32]),
                 configuration,
                 certificate.Certificate,
@@ -442,7 +417,7 @@ internal static class ProtocolTests
             AssertRejected(disabledHash, Rfc3161FailureInfo.BadAlgorithm);
 
             configuration.AllowedHashAlgorithms = new List<string> { "SHA256" };
-            var policy = processor.Process(
+            var policy = Rfc3161.Process(
                 TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32], "1.2.3.999"),
                 configuration,
                 certificate.Certificate,
@@ -450,7 +425,7 @@ internal static class ProtocolTests
                 now);
             AssertRejected(policy, Rfc3161FailureInfo.UnacceptedPolicy);
 
-            var extensions = processor.Process(
+            var extensions = Rfc3161.Process(
                 TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32], includeExtensions: true),
                 configuration,
                 certificate.Certificate,
@@ -458,10 +433,10 @@ internal static class ProtocolTests
                 now);
             AssertRejected(extensions, Rfc3161FailureInfo.UnacceptedExtension);
 
-            var malformed = processor.Process(new byte[] { 0x30, 0x80 }, configuration, certificate.Certificate, store, now);
+            var malformed = Rfc3161.Process(new byte[] { 0x30, 0x80 }, configuration, certificate.Certificate, store, now);
             AssertRejected(malformed, Rfc3161FailureInfo.BadDataFormat);
 
-            var noCertificate = processor.Process(
+            var noCertificate = Rfc3161.Process(
                 TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32]),
                 configuration,
                 null,
@@ -471,16 +446,16 @@ internal static class ProtocolTests
         }
     }
 
-    private static void Rfc3161CertificateValidityAtGenerationTime()
+    [TestMethod(DisplayName = "RFC3161 rejects generation outside certificate validity")]
+    public void Rfc3161CertificateValidityAtGenerationTime()
     {
         using (var directory = new TemporaryDirectory())
         using (var certificate = new TimestampCertificateFixture())
         {
             var configuration = TestFixtures.CreateConfiguration();
-            var processor = new Rfc3161TimestampProcessor();
             var request = TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32]);
 
-            var beforeValidity = processor.Process(
+            var beforeValidity = Rfc3161.Process(
                 request,
                 configuration,
                 certificate.Certificate,
@@ -489,7 +464,7 @@ internal static class ProtocolTests
             AssertRejected(beforeValidity, Rfc3161FailureInfo.SystemFailure);
             AssertEx.Contains("next timestamp signing time", beforeValidity.Detail);
 
-            var afterValidity = processor.Process(
+            var afterValidity = Rfc3161.Process(
                 request,
                 configuration,
                 certificate.Certificate,
@@ -500,7 +475,8 @@ internal static class ProtocolTests
         }
     }
 
-    private static void CertificateValidationAtSigningTime()
+    [TestMethod(DisplayName = "Certificate validation uses supplied signing time and associated private key")]
+    public void CertificateValidationAtSigningTime()
     {
         using (var certificate = new TimestampCertificateFixture())
         {
@@ -538,7 +514,8 @@ internal static class ProtocolTests
         }
     }
 
-    private static void CertificateTrustPolicy()
+    [TestMethod(DisplayName = "Certificate trust validation is production-default and explicitly bypassable")]
+    public void CertificateTrustPolicy()
     {
         using (var certificate = new TimestampCertificateFixture())
         {
@@ -565,7 +542,8 @@ internal static class ProtocolTests
         }
     }
 
-    private static void FipsRegistryInterpretation()
+    [TestMethod(DisplayName = "Platform FIPS registry interpretation fails closed")]
+    public void FipsRegistryInterpretation()
     {
         AssertEx.Equal(MLDsa.IsSupported, PlatformSecurityPolicy.IsMldsaSupported);
         AssertEx.False(PlatformSecurityPolicy.InterpretFipsRegistryValue(null));
@@ -576,7 +554,8 @@ internal static class ProtocolTests
         AssertEx.True(PlatformSecurityPolicy.InterpretFipsRegistryValue(0L));
     }
 
-    private static void PreallocationGuards()
+    [TestMethod(DisplayName = "Certificate profile and cancellation precede durable allocation")]
+    public void PreallocationGuards()
     {
         using (var directory = new TemporaryDirectory())
         using (var weakCertificate = new TimestampCertificateFixture(1024))
@@ -587,9 +566,8 @@ internal static class ProtocolTests
             var configuration = TestFixtures.CreateConfiguration();
             var request = TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32]);
             var now = new DateTime(2026, 7, 16, 12, 0, 0, DateTimeKind.Utc);
-            var processor = new Rfc3161TimestampProcessor();
 
-            var weakKey = processor.Process(
+            var weakKey = Rfc3161.Process(
                 request,
                 configuration,
                 weakCertificate.Certificate,
@@ -601,14 +579,14 @@ internal static class ProtocolTests
 
             using (var certificate = new TimestampCertificateFixture())
             {
-                AssertEx.Throws<ArgumentNullException>(() => new AuthenticodeTimestampProcessor().Process(
+                AssertEx.Throws<ArgumentNullException>(() => Authenticode.Process(
                     TestFixtures.BuildAuthenticodeRequest([1, 2, 3]),
                     null,
                     certificate.Certificate,
                     stateStore,
                     now));
 
-                AssertEx.Throws<OperationCanceledException>(() => processor.Process(
+                AssertEx.Throws<OperationCanceledException>(() => Rfc3161.Process(
                     request,
                     configuration,
                     certificate.Certificate,
@@ -621,7 +599,7 @@ internal static class ProtocolTests
                     var parsedSignature = AuthenticodeTimestampProcessor.ParseRequest(
                         TestFixtures.BuildAuthenticodeRequest([1, 2, 3]));
                     AssertEx.Throws<OperationCanceledException>(() =>
-                        new AuthenticodeTimestampProcessor().ProcessParsedSignature(
+                        Authenticode.ProcessParsedSignature(
                             parsedSignature,
                             configuration,
                             certificate.Certificate,
@@ -635,7 +613,8 @@ internal static class ProtocolTests
         }
     }
 
-    private static void ProtocolAllocationResamplesClock()
+    [TestMethod(DisplayName = "Protocols resample the clock for durable allocation")]
+    public void ProtocolAllocationResamplesClock()
     {
         using var directory = new TemporaryDirectory();
         using var certificate = new TimestampCertificateFixture();
@@ -646,19 +625,20 @@ internal static class ProtocolTests
         var sample = 0;
         Func<DateTime> clock = () => ++sample == 1 ? now : now.AddSeconds(4);
         var request = Rfc3161Request.Parse(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32]));
-        var rfc3161 = new Rfc3161TimestampProcessor().Process(
+        var rfc3161 = Rfc3161TimestampProcessor.Process(
             request, configuration, certificate.Certificate, store, clock, CancellationToken.None);
         AssertEx.True(rfc3161.Granted, rfc3161.Detail);
         AssertEx.Equal(now.AddSeconds(4), rfc3161.GenerationTimeUtc);
         if (!PlatformSecurityPolicy.IsLegacyAuthenticodeAllowed) return;
 
         sample = 0;
-        var authenticode = new AuthenticodeTimestampProcessor().ProcessParsedSignature(
+        var authenticode = AuthenticodeTimestampProcessor.ProcessParsedSignature(
             [1, 2, 3], configuration, certificate.Certificate, store, clock, CancellationToken.None);
         AssertEx.Equal(now.AddSeconds(4), authenticode.GenerationTimeUtc);
     }
 
-    private static void Rfc3161EchoesNegativeNonce()
+    [TestMethod(DisplayName = "RFC3161 echoes a negative nonce unchanged")]
+    public void Rfc3161EchoesNegativeNonce()
     {
         using (var directory = new TemporaryDirectory())
         using (var certificate = new TimestampCertificateFixture())
@@ -668,7 +648,7 @@ internal static class ProtocolTests
                 TestFixtures.Sha256Oid,
                 new byte[32],
                 signedNonce: nonce));
-            var result = new Rfc3161TimestampProcessor().Process(
+            var result = Rfc3161.Process(
                 request,
                 TestFixtures.CreateConfiguration(),
                 certificate.Certificate,
@@ -688,7 +668,8 @@ internal static class ProtocolTests
         }
     }
 
-    private static void Rfc3161HappyPath()
+    [TestMethod(DisplayName = "RFC3161 happy path preserves policy, nonce, and imprint")]
+    public void Rfc3161HappyPath()
     {
         using (var directory = new TemporaryDirectory())
         using (var certificate = new TimestampCertificateFixture())
@@ -706,12 +687,12 @@ internal static class ProtocolTests
                 true);
 
             var parsedRequest = Rfc3161Request.Parse(request);
-            AssertEx.True(new Rfc3161TimestampProcessor().TryPreflight(
+            AssertEx.True(Rfc3161TimestampProcessor.TryPreflight(
                 parsedRequest,
                 configuration,
                 out var preflightRejection));
             AssertEx.Equal<Rfc3161Result>(null, preflightRejection);
-            var result = new Rfc3161TimestampProcessor().Process(
+            var result = Rfc3161.Process(
                 parsedRequest,
                 configuration,
                 certificate.Certificate,
@@ -749,17 +730,17 @@ internal static class ProtocolTests
         }
     }
 
-    private static void Rfc3161CertificateInclusion()
+    [TestMethod(DisplayName = "RFC3161 certReq controls certificate inclusion")]
+    public void Rfc3161CertificateInclusion()
     {
         using (var directory = new TemporaryDirectory())
         using (var certificate = new TimestampCertificateFixture())
         {
             var configuration = TestFixtures.CreateConfiguration();
             var now = new DateTime(2026, 7, 16, 14, 0, 0, DateTimeKind.Utc);
-            var processor = new Rfc3161TimestampProcessor();
 
             var requestedStore = TestFixtures.CreateInitializedStateStore(directory.File("with-cert.bin"));
-            var withCertificate = processor.Process(
+            var withCertificate = Rfc3161.Process(
                 TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32], certificateRequested: true),
                 configuration,
                 certificate.Certificate,
@@ -772,7 +753,7 @@ internal static class ProtocolTests
 
             configuration.IncludeCertificateChain = true;
             var chainStore = TestFixtures.CreateInitializedStateStore(directory.File("with-chain.bin"));
-            var withChain = processor.Process(
+            var withChain = Rfc3161.Process(
                 TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32], certificateRequested: true),
                 configuration,
                 certificate.Certificate,
@@ -786,7 +767,7 @@ internal static class ProtocolTests
 
             var omittedStore = TestFixtures.CreateInitializedStateStore(directory.File("without-cert.bin"));
             configuration.IncludeCertificateChain = false;
-            var withoutCertificate = processor.Process(
+            var withoutCertificate = Rfc3161.Process(
                 TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32]),
                 configuration,
                 certificate.Certificate,
@@ -799,7 +780,8 @@ internal static class ProtocolTests
         }
     }
 
-    private static void Rfc3161CmsSignatureAndEss()
+    [TestMethod(DisplayName = "RFC3161 CMS signature and ESS attribute")]
+    public void Rfc3161CmsSignatureAndEss()
     {
         using (var directory = new TemporaryDirectory())
         using (var certificate = new TimestampCertificateFixture())
@@ -807,7 +789,7 @@ internal static class ProtocolTests
             var configuration = TestFixtures.CreateConfiguration();
             var stateStore = TestFixtures.CreateInitializedStateStore(directory.File("issuance.bin"));
             var now = new DateTime(2026, 7, 16, 15, 0, 0, DateTimeKind.Utc);
-            var result = new Rfc3161TimestampProcessor().Process(
+            var result = Rfc3161.Process(
                 TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32], certificateRequested: true),
                 configuration,
                 certificate.Certificate,
@@ -825,7 +807,8 @@ internal static class ProtocolTests
                 .SingleOrDefault(attribute => attribute.Oid.Value == SigningCertificateV2Oid);
             AssertEx.NotNull(ess, "CMS signer must carry ESS signingCertificateV2.");
             AssertEx.Equal(1, ess.Values.Count);
-            var actualCertificateHash = ReadEssCertificateHash(ess.Values[0], out var certificateHashAlgorithmOid);
+            var actualCertificateHash = ReadEssCertificateHash(
+                ess.Values[0], certificate.Certificate, out var certificateHashAlgorithmOid);
             AssertEx.Equal<string>(null, certificateHashAlgorithmOid,
                 "SHA256 ESSCertIDv2 must use the omitted default hash algorithm.");
             byte[] expectedCertificateHash;
@@ -838,19 +821,19 @@ internal static class ProtocolTests
         }
     }
 
-    private static void Rfc3161SigningDigestAlgorithms()
+    [TestMethod(DisplayName = "RFC3161 CMS signing digests and legacy ESS attribute")]
+    public void Rfc3161SigningDigestAlgorithms()
     {
         using (var directory = new TemporaryDirectory())
         using (var certificate = new TimestampCertificateFixture())
         {
             var configuration = TestFixtures.CreateConfiguration();
-            var processor = new Rfc3161TimestampProcessor();
             var now = new DateTime(2026, 7, 16, 15, 30, 0, DateTimeKind.Utc);
             foreach (var algorithm in HashAlgorithmCatalog.All.Where(item => item.CmsSigningSupported))
             {
                 configuration.SigningDigestAlgorithm = algorithm.Name;
                 var stateStore = TestFixtures.CreateInitializedStateStore(directory.File("sign-" + algorithm.Name + ".bin"));
-                var result = processor.Process(
+                var result = Rfc3161.Process(
                     TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32], certificateRequested: true),
                     configuration,
                     certificate.Certificate,
@@ -887,6 +870,7 @@ internal static class ProtocolTests
                 var expectedCertificateHash = certificateHashAlgorithm.ComputeHash(certificate.Certificate.RawData);
                 var actualCertificateHash = ReadEssCertificateHash(
                     ess.Values[0],
+                    certificate.Certificate,
                     out var certificateHashAlgorithmOid);
                 var expectedCertificateHashAlgorithmOid = algorithm.Name is "SHA1" or "SHA256"
                     ? null
@@ -898,7 +882,8 @@ internal static class ProtocolTests
         }
     }
 
-    private static void AuthenticodeResponse()
+    [TestMethod(DisplayName = "Authenticode response is a verified CMS countersignature")]
+    public void AuthenticodeResponse()
     {
         using (var directory = new TemporaryDirectory())
         using (var certificate = new TimestampCertificateFixture())
@@ -906,7 +891,6 @@ internal static class ProtocolTests
             var signature = Enumerable.Range(0, 96).Select(value => (byte)(value * 3)).ToArray();
             var request = TestFixtures.BuildAuthenticodeRequest(signature);
             var parsedSignature = AuthenticodeTimestampProcessor.ParseRequest(request);
-            var processor = new AuthenticodeTimestampProcessor();
             var configuration = TestFixtures.CreateConfiguration();
             var store = TestFixtures.CreateInitializedStateStore(directory.File("authenticode.bin"));
             var now = new DateTime(2026, 7, 16, 16, 0, 0, DateTimeKind.Utc);
@@ -914,7 +898,7 @@ internal static class ProtocolTests
             if (!PlatformSecurityPolicy.IsLegacyAuthenticodeAllowed)
             {
                 var disabled = AssertEx.Throws<AuthenticodeProtocolException>(() =>
-                    processor.ProcessParsedSignature(
+                    Authenticode.ProcessParsedSignature(
                         parsedSignature,
                         configuration,
                         certificate.Certificate,
@@ -924,7 +908,7 @@ internal static class ProtocolTests
                 return;
             }
 
-            var result = processor.ProcessParsedSignature(
+            var result = Authenticode.ProcessParsedSignature(
                 parsedSignature,
                 configuration,
                 certificate.Certificate,
@@ -1029,6 +1013,7 @@ internal static class ProtocolTests
 
     private static byte[] ReadEssCertificateHash(
         AsnEncodedData encodedAttributeValue,
+        X509Certificate2 signer,
         out string hashAlgorithmOid)
     {
         var outer = new DerReader(encodedAttributeValue.RawData);
@@ -1046,7 +1031,24 @@ internal static class ProtocolTests
         }
 
         var certificateHash = essCertId.ReadOctetString();
+
+        // issuerSerial names the signer the same way its certificate does: the issuer as the
+        // only GeneralName, a directoryName, followed by the certificate's serial number.
+        var issuerSerial = essCertId.ReadSequence();
         essCertId.ThrowIfNotEmpty();
+        var generalNames = issuerSerial.ReadSequence();
+        var directoryName = generalNames.ReadConstructed(0xa4);
+        generalNames.ThrowIfNotEmpty();
+        AssertEx.SequenceEqual(signer.IssuerName.RawData, directoryName.ReadEncodedValue(),
+            "ESS issuerSerial must carry the signing certificate's issuer name.");
+        directoryName.ThrowIfNotEmpty();
+        var serialNumber = issuerSerial.ReadEncodedValue();
+        issuerSerial.ThrowIfNotEmpty();
+        AssertEx.Equal((byte)0x02, serialNumber[0]);
+        AssertEx.SequenceEqual(
+            Enumerable.Reverse(signer.GetSerialNumber()).ToArray(),
+            serialNumber.Skip(2).ToArray(),
+            "ESS issuerSerial must carry the signing certificate's serial number.");
         return certificateHash;
     }
 

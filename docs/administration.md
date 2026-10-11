@@ -65,9 +65,11 @@ Prefer RFC 3161 and SHA-256 or stronger for every new integration.
 ## State, Logs, and Operations
 
 Mutable data is under the configured data directory (`App_Data` by default).
-Settings are written atomically with a backup; timestamp state reliably
-allocates serial numbers, authenticates its state/high-water metadata, repairs
-only consistent redundant copies, and detects clock rollback. UTF-8 JSON Lines
+Settings are written atomically with a backup. Serial numbers are random
+128-bit positive integers drawn for each timestamp, so they do not depend on
+stored state. Timestamp state records the last issuance time, which detects a
+clock stepped backward and keeps ordered timestamps strictly increasing; it is
+written atomically, with the previous record kept as a backup. UTF-8 JSON Lines
 audit logs are stored in its `Logs` subdirectory. Daily rollover produces
 `timestamp-YYYYMMDD.jsonl`; hourly rollover produces
 `timestamp-YYYYMMDD-HH.jsonl`; weekly rollover produces
@@ -78,10 +80,9 @@ and 365 days of retention.
 Cross-process coordination uses persistent zero-content `tsa.config.lock`,
 `issuance.state.lock`, and `Logs\.audit.lock` files. These are neither state nor
 backup payloads and should not be deleted during normal operation or recovery.
-Local validation cannot detect a coherent rollback of every issuance-state and
-high-water copy. Backup and restore procedures must compare an external
-monotonic generation checkpoint or append-only/off-host audit anchor before the
-service resumes issuance.
+Restoring an older `issuance.state` cannot cause a serial number to repeat, but
+local validation cannot tell that the restored issuance time is stale. After a
+restore, confirm the host clock is correct before the service resumes issuance.
 
 Audit records include result, protocol, correlation ID, remote address, policy,
 hash OID, serial, certificate thumbprint, elapsed time, and identity fields.
@@ -100,14 +101,14 @@ for the audit logs on disk.
 - Synchronize the host through Windows Time and alert on loss of synchronization
   or clock steps.
 - Restrict server administration and back up the configured data directory
-  securely as one application-consistent set. Treat issuance state as
-  consistency-critical; do not select an older individual `.bak` file or roll the
-  state/high-water generation backward during a restore.
+  securely as one application-consistent set. Prefer the most recent
+  `issuance.state`; an older copy weakens only the clock-rollback check.
 - Forward audit logs to append-only or off-host protected storage before local
   retention expires.
 - Monitor certificate expiry, private-key availability, disk space, HTTP errors,
   audit-write failures, and health.
-- Keep each active instance's serial-number state coherent. Do not clone a live
-  data directory into two independently issuing servers.
+- Give each issuing server its own data directory. A cloned directory cannot
+  repeat serial numbers, but two servers sharing one would contend for its state,
+  settings, and audit log.
 
 See [Security Guidance](../.github/SECURITY.md) before exposing the service.

@@ -16,8 +16,9 @@ public class Global : HttpApplication
     protected void Application_BeginRequest(object sender, EventArgs e)
     {
         // Give every endpoint a server-generated identifier for operational diagnostics.
-        HttpSupport.ApplySecurityHeaders(Context.Response);
-        _ = HttpSupport.GetCorrelationId(Context);
+        HttpContextWrapper context = new(Context);
+        HttpSupport.ApplySecurityHeaders(context.Response);
+        _ = HttpSupport.GetCorrelationId(context);
     }
 
     protected void Application_EndRequest(object sender, EventArgs e) => RemoveFrameworkHeaders();
@@ -50,7 +51,7 @@ public class Global : HttpApplication
             {
                 EventType = "unhandled-error",
                 Result = "error",
-                CorrelationId = HttpSupport.GetCorrelationId(Context),
+                CorrelationId = HttpSupport.GetCorrelationId(new HttpContextWrapper(Context)),
                 Detail = Context.Request.HttpMethod + " " + Context.Request.Path + Environment.NewLine + exception
             });
         }
@@ -60,7 +61,7 @@ public class Global : HttpApplication
         Server.ClearError();
         Context.Response.Clear();
         Context.Response.TrySkipIisCustomErrors = true;
-        HttpSupport.WritePlainError(Context, invalidInput ? 400 : 500, invalidInput
+        HttpSupport.WritePlainError(new HttpContextWrapper(Context), invalidInput ? 400 : 500, invalidInput
             ? "The request contains an invalid value."
             : "The timestamp service encountered an internal error.");
         CompleteRequest();

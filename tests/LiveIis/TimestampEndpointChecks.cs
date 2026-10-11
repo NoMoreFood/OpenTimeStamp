@@ -305,10 +305,26 @@ internal static class TimestampEndpointChecks
         var clientBaseUrl = string.IsNullOrWhiteSpace(profile.NativeClientBaseUrl)
             ? profile.BaseUrl : profile.NativeClientBaseUrl;
         Require(new Uri(clientBaseUrl, UriKind.Absolute).IsLoopback, "Native signing requires a loopback URL.");
-        if (legacy) arguments.AddRange(["/t", clientBaseUrl + "/timestamp/authenticode"]);
-        else arguments.AddRange(["/tr", clientBaseUrl + "/timestamp/rfc3161", "/td", "SHA256"]);
-        arguments.Add(path);
-        RunProcess(manifest.SignToolPath, [.. arguments]);
+        if (new Uri(clientBaseUrl).Scheme == "https" && !string.IsNullOrWhiteSpace(manifest.NativeSigningScript))
+        {
+            using var tsa = new X509Certificate2(profile.CertificateFile);
+            var command = "& '" + manifest.NativeSigningScript.Replace("'", "''") + "' -LiteralPath '" +
+                path.Replace("'", "''") + "' -ServerUrl '" + clientBaseUrl.Replace("'", "''") +
+                "' -CertificateThumbprint '" + manifest.SigningCertificateThumbprint +
+                "' -CertificateStoreLocation LocalMachine -ExpectedTsaThumbprint '" + tsa.Thumbprint +
+                "' -Tool " + (legacy ? "PowerShell" : "SignTool") + " -SignToolPath '" +
+                manifest.SignToolPath.Replace("'", "''") + "'";
+            RunProcess(Path.Combine(Environment.SystemDirectory, "WindowsPowerShell\\v1.0\\powershell.exe"),
+                "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                Convert.ToBase64String(Encoding.Unicode.GetBytes(command)));
+        }
+        else
+        {
+            if (legacy) arguments.AddRange(["/t", clientBaseUrl + "/timestamp/authenticode"]);
+            else arguments.AddRange(["/tr", clientBaseUrl + "/timestamp/rfc3161", "/td", "SHA256"]);
+            arguments.Add(path);
+            RunProcess(manifest.SignToolPath, [.. arguments]);
+        }
         RunProcess(manifest.SignToolPath, "verify", "/pa", "/all", "/tw", path);
     }
 
@@ -553,6 +569,7 @@ internal sealed class EndpointManifest
     [DataMember] public string OpenSslPath { get; set; }
     [DataMember] public string SignToolPath { get; set; }
     [DataMember] public string SigningCertificateThumbprint { get; set; }
+    [DataMember] public string NativeSigningScript { get; set; }
     [DataMember] public string CertificateRequestFile { get; set; }
     [DataMember] public EndpointProfile[] Profiles { get; set; }
 }

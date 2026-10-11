@@ -21,24 +21,30 @@ public sealed class Rfc3161Request
     private const int MaximumMessageImprintLength = 64;
     private const int MaximumNonceLength = 32;
 
-    private Rfc3161Request()
+    private Rfc3161Request(byte[] algorithmIdentifier, string hashAlgorithmOid, byte[] messageImprint)
     {
+        AlgorithmIdentifier = algorithmIdentifier;
+        HashAlgorithmOid = hashAlgorithmOid;
+        MessageImprint = messageImprint;
     }
 
-    public byte[] AlgorithmIdentifier { get; private set; }
+    public byte[] AlgorithmIdentifier { get; }
 
-    public string HashAlgorithmOid { get; private set; }
+    public string HashAlgorithmOid { get; }
 
-    public byte[] MessageImprint { get; private set; }
+    public byte[] MessageImprint { get; }
 
-    public string RequestedPolicyOid { get; private set; }
+    public string? RequestedPolicyOid { get; private set; }
 
-    /// <summary>The nonce INTEGER's two's-complement content octets exactly as received.</summary>
-    public byte[] Nonce { get; private set; }
+    /// <summary>
+    /// The nonce INTEGER's two's-complement content octets exactly as received, or null when the
+    /// request carried none.
+    /// </summary>
+    public byte[]? Nonce { get; private set; }
 
     public bool CertificateRequested { get; private set; }
 
-    public static Rfc3161Request Parse(byte[] encoded)
+    public static Rfc3161Request Parse(byte[]? encoded)
     {
         if (encoded is null || encoded.Length == 0)
         {
@@ -80,8 +86,8 @@ public sealed class Rfc3161Request
             imprint.ThrowIfNotEmpty();
 
             // Read the optional policy, nonce, certificate flag, and unsupported extensions in order.
-            string requestedPolicy = null;
-            byte[] nonce = null;
+            string? requestedPolicy = null;
+            byte[]? nonce = null;
             var certificateRequested = false;
             if (request.HasData && request.PeekTag() == 0x06) requestedPolicy = request.ReadObjectIdentifier();
 
@@ -117,11 +123,8 @@ public sealed class Rfc3161Request
             }
 
             request.ThrowIfNotEmpty();
-            return new Rfc3161Request
+            return new Rfc3161Request(algorithmIdentifier, hashOid, digest)
             {
-                AlgorithmIdentifier = algorithmIdentifier,
-                HashAlgorithmOid = hashOid,
-                MessageImprint = digest,
                 RequestedPolicyOid = requestedPolicy,
                 Nonce = nonce,
                 CertificateRequested = certificateRequested
@@ -136,35 +139,38 @@ public sealed class Rfc3161Request
 
 public sealed class Rfc3161Result
 {
-    internal Rfc3161Result()
+    internal Rfc3161Result(byte[] encodedResponse, string detail)
     {
+        EncodedResponse = encodedResponse;
+        Detail = detail;
     }
 
-    public byte[] EncodedResponse { get; internal set; }
+    public byte[] EncodedResponse { get; }
 
     public bool Granted { get; internal set; }
 
     public Rfc3161FailureInfo? FailureInfo { get; internal set; }
 
-    public string Detail { get; internal set; }
+    public string Detail { get; }
 
-    public string PolicyOid { get; internal set; }
+    // A rejection carries only what could be read from the request before it failed.
+    public string? PolicyOid { get; internal set; }
 
-    public string HashAlgorithmOid { get; internal set; }
+    public string? HashAlgorithmOid { get; internal set; }
 
-    public byte[] MessageImprint { get; internal set; }
+    public byte[]? MessageImprint { get; internal set; }
 
-    public byte[] SerialNumber { get; internal set; }
+    public byte[]? SerialNumber { get; internal set; }
 
     public DateTime GenerationTimeUtc { get; internal set; }
 
-    public string CertificateThumbprint { get; internal set; }
+    public string? CertificateThumbprint { get; internal set; }
 }
 
 public sealed class Rfc3161ProtocolException(
     Rfc3161FailureInfo failureInfo,
     string message,
-    Exception innerException = null) : Exception(message, innerException)
+    Exception? innerException = null) : Exception(message, innerException)
 {
     public Rfc3161FailureInfo FailureInfo { get; } = failureInfo;
 }

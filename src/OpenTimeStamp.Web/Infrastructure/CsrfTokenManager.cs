@@ -18,7 +18,7 @@ internal static class CsrfTokenManager
     private static readonly TimeSpan TokenLifetime = TimeSpan.FromHours(1);
     private static readonly TimeSpan FutureClockTolerance = TimeSpan.FromMinutes(5);
 
-    public static string GetOrCreate(HttpContext context, RequestIdentity identity)
+    public static string GetOrCreate(HttpContextBase context, RequestIdentity identity)
     {
         var existing = context.Request.Cookies[CookieName]?.Value;
         if (!TryDecode(existing, out var protectedToken) ||
@@ -40,7 +40,7 @@ internal static class CsrfTokenManager
         return existing;
     }
 
-    public static bool Validate(HttpContext context, string submitted, RequestIdentity identity)
+    public static bool Validate(HttpContextBase context, string submitted, RequestIdentity identity)
     {
         if (!TryDecode(context.Request.Cookies[CookieName]?.Value, out var cookie) ||
             !TryDecode(submitted, out var form) || !WindowsHash.FixedTimeEquals(cookie, form) ||
@@ -109,7 +109,7 @@ internal static class CsrfTokenManager
         return WindowsHash.ComputeSha256(Encoding.UTF8.GetBytes(identityKey));
     }
 
-    internal static string AdminPath(HttpRequest request) => request.ApplicationBasePath + "/admin";
+    internal static string AdminPath(HttpRequestBase request) => request.ApplicationBasePath + "/admin";
 
     private static string Encode(byte[] value) =>
         Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');

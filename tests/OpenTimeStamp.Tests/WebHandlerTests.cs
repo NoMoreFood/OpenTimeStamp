@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -8,6 +7,7 @@ using System.Runtime.Serialization;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 using OpenTimeStamp.Audit;
 using OpenTimeStamp.Configuration;
 using OpenTimeStamp.Web.Handlers;
@@ -15,48 +15,11 @@ using OpenTimeStamp.Web.Infrastructure;
 
 namespace OpenTimeStamp.Tests;
 
-internal static class WebHandlerTests
+[TestClass]
+public sealed class WebHandlerTests
 {
-    public static void Register(ICollection<TestCase> tests)
-    {
-        tests.Add(new TestCase("Health policy rejects unusable enabled protocols", HealthPolicyRequiresEveryEnabledProtocol));
-        tests.Add(new TestCase("Health certificate horizon covers cache and durable time", HealthCertificateValidationHorizon));
-        tests.Add(new TestCase("Health cache serves a bounded stale result during refresh", HealthCacheUsesBoundedStaleWindow));
-        tests.Add(new TestCase(
-            "Health refresh scheduling preserves timeout and late completion",
-            HealthRefreshSchedulingIsBounded));
-        tests.Add(new TestCase("FIPS policy permits Authenticode disable but not enable", FipsAuthenticodeTransitionIsFailSafe));
-        tests.Add(new TestCase("FIPS policy permits legacy hash removal but not addition", FipsLegacyHashTransitionIsFailSafe));
-        tests.Add(new TestCase("Web runtime settings reject invalid configured limits", WebRuntimeSettingsRejectInvalidLimits));
-        tests.Add(new TestCase(
-            "Timestamp media types use strict first-party parsing",
-            TimestampMediaTypesAreStrictlyParsed));
-        tests.Add(new TestCase("Timestamp body intake does not consume processing capacity", TimestampAdmissionUsesIndependentTiers));
-        tests.Add(new TestCase("Timestamp body intake is bounded per transport peer", TimestampAdmissionUsesPerPeerLimit));
-        tests.Add(new TestCase("Timestamp processing is bounded per transport peer", TimestampProcessingUsesPerPeerLimit));
-        tests.Add(new TestCase("Timestamp body deadline aborts and observes pending read", TimestampBodyDeadlineAbortsPendingRead));
-        tests.Add(new TestCase("Timestamp body deadline releases a non-cancelable read", TimestampBodyDeadlineBoundsAbortObservation));
-        tests.Add(new TestCase(
-            "Timestamp abandoned body read retains its pooled buffer until completion",
-            TimestampAbandonedReadRetainsPooledBuffer));
-        tests.Add(new TestCase("Timestamp body cancellation remains distinguishable from deadline", TimestampBodyCancellationIsPreserved));
-        tests.Add(new TestCase("Timestamp declared body length avoids a final copy", TimestampDeclaredBodyIsExactAllocated));
-        tests.Add(new TestCase("Timestamp chunked body clears and returns pooled growth", TimestampChunkedBodyReturnsPooledBuffers));
-        tests.Add(new TestCase("Timestamp streamed body bound maps to HTTP 413", TimestampBodyBoundMapsToPayloadTooLarge));
-        tests.Add(new TestCase("Administrative CSRF payload expires and binds identity", AdminCsrfPayloadBindsIdentity));
-        tests.Add(new TestCase("Administrative host normalization accepts bracketed IPv6", AdminHostNormalizationHandlesIpv6));
-        tests.Add(new TestCase("Service landing page documents public and local endpoints", HomeLandingPageDocumentsEndpoints));
-        tests.Add(new TestCase("Audit logger rejects a torn JSONL tail", AuditLoggerRejectsTornTail));
-        tests.Add(new TestCase("Recent request dashboard activity is bounded, ordered, and expired", RecentRequestActivityIsBounded));
-        tests.Add(new TestCase("Recent request dashboard activity is concurrency safe", RecentRequestActivityIsConcurrencySafe));
-        tests.Add(new TestCase("Administrative activity rendering is explicit and escaped", AdminActivityRenderingIsExplicitAndEscaped));
-        tests.Add(new TestCase("Administrative certificate card shows SHA-256 identity", AdminCertificateCardShowsSha256Identity));
-        tests.Add(new TestCase(
-            "Configuration auditing covers every persisted member",
-            ConfigurationAuditCoversPersistedMembers));
-    }
-
-    private static void HomeLandingPageDocumentsEndpoints()
+    [TestMethod(DisplayName = "Service landing page documents public and local endpoints")]
+    public void HomeLandingPageDocumentsEndpoints()
     {
         var localHtml = HomeHandler.Render("/OpenTimeStamp", "https://tsa.example.test", true);
         AssertEx.Contains("Timestamp Endpoints", localHtml);
@@ -99,7 +62,8 @@ internal static class WebHandlerTests
             "The service landing page emitted a path without HTML encoding.");
     }
 
-    private static void FipsAuthenticodeTransitionIsFailSafe()
+    [TestMethod(DisplayName = "FIPS policy permits Authenticode disable but not enable")]
+    public void FipsAuthenticodeTransitionIsFailSafe()
     {
         AssertEx.True(AdminHandler.ResolveAuthenticodeEnabled(false, false, true));
         AssertEx.False(AdminHandler.ResolveAuthenticodeEnabled(false, true, false));
@@ -110,7 +74,8 @@ internal static class WebHandlerTests
             "A forged form value must not enable Authenticode while FIPS is active.");
     }
 
-    private static void RecentRequestActivityIsBounded()
+    [TestMethod(DisplayName = "Recent request dashboard activity is bounded, ordered, and expired")]
+    public void RecentRequestActivityIsBounded()
     {
         long observedTimestamp = 0;
         var tracker = new RecentRequestTracker(
@@ -147,7 +112,8 @@ internal static class WebHandlerTests
             "Expired request data must be removed from memory, not merely hidden by one snapshot.");
     }
 
-    private static void RecentRequestActivityIsConcurrencySafe()
+    [TestMethod(DisplayName = "Recent request dashboard activity is concurrency safe")]
+    public void RecentRequestActivityIsConcurrencySafe()
     {
         var tracker = new RecentRequestTracker(100, TimeSpan.FromHours(1), () => 0);
         Parallel.For(0, 500, index => tracker.Record(new AuditRecord
@@ -165,7 +131,8 @@ internal static class WebHandlerTests
             "Concurrent recording corrupted or duplicated retained request entries.");
     }
 
-    private static void AdminActivityRenderingIsExplicitAndEscaped()
+    [TestMethod(DisplayName = "Administrative activity rendering is explicit and escaped")]
+    public void AdminActivityRenderingIsExplicitAndEscaped()
     {
         var requests = new[]
         {
@@ -275,7 +242,8 @@ internal static class WebHandlerTests
             "Distinct Windows SIDs with the same display name were merged into one recent user.");
     }
 
-    private static void AdminCertificateCardShowsSha256Identity()
+    [TestMethod(DisplayName = "Administrative certificate card shows SHA-256 identity")]
+    public void AdminCertificateCardShowsSha256Identity()
     {
         const string sha256 = "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD";
         var expirationUtc = new DateTime(2030, 1, 2, 3, 4, 5, DateTimeKind.Utc);
@@ -297,7 +265,8 @@ internal static class WebHandlerTests
         AssertEx.Contains("No usable timestamp signing certificate", builder.ToString());
     }
 
-    private static void ConfigurationAuditCoversPersistedMembers()
+    [TestMethod(DisplayName = "Configuration auditing covers every persisted member")]
+    public void ConfigurationAuditCoversPersistedMembers()
     {
         var baseline = new ServiceConfiguration();
         var properties = typeof(ServiceConfiguration).GetProperties()
@@ -337,7 +306,8 @@ internal static class WebHandlerTests
             AdminHandler.DescribeConfigurationChange(baseline, edited));
     }
 
-    private static void FipsLegacyHashTransitionIsFailSafe()
+    [TestMethod(DisplayName = "FIPS policy permits legacy hash removal but not addition")]
+    public void FipsLegacyHashTransitionIsFailSafe()
     {
         AssertEx.Equal(
             "MD5,SHA1,SHA256",
@@ -371,7 +341,8 @@ internal static class WebHandlerTests
             "FIPS must not trap an originally configured legacy request hash in the enabled state.");
     }
 
-    private static void HealthPolicyRequiresEveryEnabledProtocol()
+    [TestMethod(DisplayName = "Health policy rejects unusable enabled protocols")]
+    public void HealthPolicyRequiresEveryEnabledProtocol()
     {
         var configuration = CreateRfcConfiguration();
         configuration.AllowedHashAlgorithms = ["MD5", "SHA1"];
@@ -407,7 +378,8 @@ internal static class WebHandlerTests
             HealthPolicy.GetConfigurationPolicyFailure(configuration, false));
     }
 
-    private static void HealthCertificateValidationHorizon()
+    [TestMethod(DisplayName = "Health certificate horizon covers cache and durable time")]
+    public void HealthCertificateValidationHorizon()
     {
         var utcNow = new DateTime(2026, 7, 16, 12, 0, 0, DateTimeKind.Utc);
         var cacheDuration = TimeSpan.FromSeconds(30);
@@ -434,7 +406,8 @@ internal static class WebHandlerTests
         AssertEx.Equal(DateTimeKind.Utc, saturated.Kind);
     }
 
-    private static void HealthCacheUsesBoundedStaleWindow()
+    [TestMethod(DisplayName = "Health cache serves a bounded stale result during refresh")]
+    public void HealthCacheUsesBoundedStaleWindow()
     {
         var frequency = Stopwatch.Frequency;
         AssertEx.False(HealthHandler.ShouldServeStale(true, frequency * 29, 0));
@@ -447,7 +420,8 @@ internal static class WebHandlerTests
             "A changed configuration or FIPS policy must fail degraded instead of serving stale health.");
     }
 
-    private static void HealthRefreshSchedulingIsBounded()
+    [TestMethod(DisplayName = "Health refresh scheduling preserves timeout and late completion")]
+    public void HealthRefreshSchedulingIsBounded()
     {
         using ManualResetEventSlim refreshEntered = new();
         using ManualResetEventSlim releaseRefresh = new();
@@ -517,7 +491,8 @@ internal static class WebHandlerTests
             "Hosted shutdown cancellation must not publish a probe timeout.");
     }
 
-    private static void WebRuntimeSettingsRejectInvalidLimits()
+    [TestMethod(DisplayName = "Web runtime settings reject invalid configured limits")]
+    public void WebRuntimeSettingsRejectInvalidLimits()
     {
         AssertEx.Equal(4, WebRuntimeSettings.ParseBoundedSetting("Test", null, 4, 1, 8));
         AssertEx.Equal(8, WebRuntimeSettings.ParseBoundedSetting("Test", "8", 4, 1, 8));
@@ -529,7 +504,8 @@ internal static class WebHandlerTests
             WebRuntimeSettings.ParseBoundedSetting("Test", "not-a-number", 4, 1, 8));
     }
 
-    private static void TimestampMediaTypesAreStrictlyParsed()
+    [TestMethod(DisplayName = "Timestamp media types use strict first-party parsing")]
+    public void TimestampMediaTypesAreStrictlyParsed()
     {
         const string expected = "application/timestamp-query";
         AssertEx.True(HttpSupport.HasExactMediaTypeValue("Application/Timestamp-Query", expected));
@@ -543,7 +519,8 @@ internal static class WebHandlerTests
             expected));
     }
 
-    private static void TimestampAdmissionUsesIndependentTiers()
+    [TestMethod(DisplayName = "Timestamp body intake does not consume processing capacity")]
+    public void TimestampAdmissionUsesIndependentTiers()
     {
         var admission = new TimestampAdmissionController(8, 2, 8);
         List<IDisposable> bodyLeases = [];
@@ -584,7 +561,8 @@ internal static class WebHandlerTests
         }
     }
 
-    private static void TimestampAdmissionUsesPerPeerLimit()
+    [TestMethod(DisplayName = "Timestamp body intake is bounded per transport peer")]
+    public void TimestampAdmissionUsesPerPeerLimit()
     {
         var admission = new TimestampAdmissionController(6, 1, 2);
         var firstA = admission.TryEnterBodyIntake("192.0.2.10");
@@ -624,7 +602,8 @@ internal static class WebHandlerTests
         AssertEx.Equal(0, admission.ActiveBodyClientCount);
     }
 
-    private static void TimestampProcessingUsesPerPeerLimit()
+    [TestMethod(DisplayName = "Timestamp processing is bounded per transport peer")]
+    public void TimestampProcessingUsesPerPeerLimit()
     {
         var admission = new TimestampAdmissionController(6, 4, 6, 2);
         var firstA = admission.TryEnterProcessing("192.0.2.10");
@@ -653,7 +632,8 @@ internal static class WebHandlerTests
         AssertEx.Equal(0, admission.ActiveProcessingClientCount);
     }
 
-    private static void TimestampBodyDeadlineAbortsPendingRead()
+    [TestMethod(DisplayName = "Timestamp body deadline aborts and observes pending read")]
+    public void TimestampBodyDeadlineAbortsPendingRead()
     {
         var stream = new AbortablePendingStream();
         var exception = AssertEx.Throws<RequestBodyException>(() =>
@@ -673,7 +653,8 @@ internal static class WebHandlerTests
             "The handler must not attempt to write a response after aborting the transport connection.");
     }
 
-    private static void TimestampBodyDeadlineBoundsAbortObservation()
+    [TestMethod(DisplayName = "Timestamp body deadline releases a non-cancelable read")]
+    public void TimestampBodyDeadlineBoundsAbortObservation()
     {
         var stream = new DeferredReadStream();
         using var observed = new ManualResetEventSlim();
@@ -700,50 +681,10 @@ internal static class WebHandlerTests
             "The detached observer must consume a native-read fault that arrives after the 408 path returns.");
     }
 
-    private static void TimestampAbandonedReadRetainsPooledBuffer()
+    [TestMethod(DisplayName = "Timestamp body cancellation remains distinguishable from deadline")]
+    public void TimestampBodyCancellationIsPreserved()
     {
         var stream = new DeferredReadStream();
-        using var returned = new ManualResetEventSlim();
-        using var observed = new ManualResetEventSlim();
-        var pool = new TrackingArrayPool(returned.Set);
-        var exception = AssertEx.Throws<RequestBodyException>(() =>
-            HttpSupport.ReadBoundedStreamAsync(
-                    stream,
-                    -1,
-                    1024,
-                    TimeSpan.FromMilliseconds(50),
-                    stream.Abort,
-                    CancellationToken.None,
-                    observed.Set,
-                    pool)
-                .GetAwaiter()
-                .GetResult());
-
-        try
-        {
-            AssertEx.Equal(408, exception.StatusCode);
-            AssertEx.True(stream.AbortCalled);
-            AssertEx.Equal(0, pool.ReturnCount,
-                "An incomplete native read still owns its destination and must not return it to the pool.");
-        }
-        finally
-        {
-            stream.CompleteAfterReturn([1, 2, 3]);
-            AssertEx.True(returned.Wait(TimeSpan.FromSeconds(1)),
-                "A detached read must return its buffer after its late successful completion.");
-            AssertEx.True(observed.Wait(TimeSpan.FromSeconds(1)));
-        }
-
-        AssertEx.Equal(1, pool.ReturnCount, "The abandoned read returned its buffer more than once.");
-        AssertEx.True(stream.PendingBuffer.All(value => value == 0),
-            "The late read's bytes were not cleared before its buffer returned to the pool.");
-    }
-
-    private static void TimestampBodyCancellationIsPreserved()
-    {
-        var stream = new DeferredReadStream();
-        using var returned = new ManualResetEventSlim();
-        var pool = new TrackingArrayPool(returned.Set);
         using var cancellation = new CancellationTokenSource();
         using var observed = new ManualResetEventSlim();
         cancellation.CancelAfter(TimeSpan.FromMilliseconds(50));
@@ -755,69 +696,59 @@ internal static class WebHandlerTests
                     TimeSpan.FromSeconds(5),
                     stream.Abort,
                     cancellation.Token,
-                    observed.Set,
-                    pool)
+                    observed.Set)
                 .GetAwaiter()
                 .GetResult());
         AssertEx.True(stream.AbortCalled);
         stream.FaultAfterReturn();
         AssertEx.True(observed.Wait(TimeSpan.FromSeconds(1)));
-        AssertEx.True(returned.Wait(TimeSpan.FromSeconds(1)));
-        AssertEx.Equal(1, pool.ReturnCount);
-        AssertEx.True(pool.AllReturnsRequestedClear);
     }
 
-    private static void TimestampDeclaredBodyIsExactAllocated()
+    [TestMethod(DisplayName = "Timestamp declared body length avoids a final copy")]
+    public void TimestampDeclaredBodyIsExactAllocated()
     {
         var stream = new RecordingReadStream([1, 2, 3, 4, 5]);
-        var pool = new TrackingArrayPool();
         var result = HttpSupport.ReadBoundedStreamAsync(
                 stream,
                 5,
                 16,
                 TimeSpan.FromSeconds(1),
                 null,
-                CancellationToken.None,
-                null,
-                pool)
+                CancellationToken.None)
             .GetAwaiter()
             .GetResult();
 
         AssertEx.True(ReferenceEquals(stream.FirstReadBuffer, result),
             "A truthful Content-Length body should return its directly filled exact-size allocation.");
         AssertEx.SequenceEqual([1, 2, 3, 4, 5], result);
-        AssertEx.Equal(0, pool.RentCount, "Known-length bodies must not borrow pooled storage.");
     }
 
-    private static void TimestampChunkedBodyReturnsPooledBuffers()
+    [TestMethod(DisplayName = "Timestamp chunked body grows to its exact length")]
+    public void TimestampChunkedBodyGrowsToExactLength()
     {
-        var expected = new byte[9000];
-        for (var index = 0; index < expected.Length; index++) expected[index] = (byte)index;
-        var stream = new RecordingReadStream(expected);
-        var pool = new TrackingArrayPool();
-        var result = HttpSupport.ReadBoundedStreamAsync(
-                stream,
-                -1,
-                10000,
-                TimeSpan.FromSeconds(1),
-                null,
-                CancellationToken.None,
-                null,
-                pool)
-            .GetAwaiter()
-            .GetResult();
+        // 9,000 bytes outgrows the initial 8 KiB buffer, and 10,000 fills the bound exactly.
+        foreach (var size in new[] { 0, 1, 8192, 9000, 10000 })
+        {
+            var expected = new byte[size];
+            for (var index = 0; index < expected.Length; index++) expected[index] = (byte)index;
+            var result = HttpSupport.ReadBoundedStreamAsync(
+                    new RecordingReadStream(expected),
+                    -1,
+                    10000,
+                    TimeSpan.FromSeconds(1),
+                    null,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
 
-        AssertEx.SequenceEqual(expected, result);
-        AssertEx.Equal(2, pool.RentCount);
-        AssertEx.Equal(2, pool.ReturnCount);
-        AssertEx.True(pool.AllReturnsRequestedClear,
-            "Every pooled chunked-body buffer must request clearing on return.");
+            AssertEx.SequenceEqual(expected, result, size + " streamed bytes were not returned exactly.");
+        }
     }
 
-    private static void TimestampBodyBoundMapsToPayloadTooLarge()
+    [TestMethod(DisplayName = "Timestamp streamed body bound maps to HTTP 413")]
+    public void TimestampBodyBoundMapsToPayloadTooLarge()
     {
         using var stream = new MemoryStream(new byte[] { 1, 2, 3, 4, 5 });
-        var pool = new TrackingArrayPool();
         var aborted = false;
         var exception = AssertEx.Throws<RequestBodyException>(() =>
             HttpSupport.ReadBoundedStreamAsync(
@@ -826,20 +757,17 @@ internal static class WebHandlerTests
                     4,
                     TimeSpan.FromSeconds(1),
                     () => aborted = true,
-                    CancellationToken.None,
-                    null,
-                    pool)
+                    CancellationToken.None)
                 .GetAwaiter()
                 .GetResult());
 
         AssertEx.Equal(413, exception.StatusCode);
         AssertEx.False(exception.ConnectionAborted);
         AssertEx.False(aborted, "An ordinary size rejection does not require tearing down a completed read.");
-        AssertEx.Equal(1, pool.ReturnCount);
-        AssertEx.True(pool.AllReturnsRequestedClear);
     }
 
-    private static void AdminCsrfPayloadBindsIdentity()
+    [TestMethod(DisplayName = "Administrative CSRF payload expires and binds identity")]
+    public void AdminCsrfPayloadBindsIdentity()
     {
         var now = new DateTime(2026, 7, 18, 12, 0, 0, DateTimeKind.Utc);
         var identity = new RequestIdentity
@@ -867,14 +795,16 @@ internal static class WebHandlerTests
             now));
     }
 
-    private static void AdminHostNormalizationHandlesIpv6()
+    [TestMethod(DisplayName = "Administrative host normalization accepts bracketed IPv6")]
+    public void AdminHostNormalizationHandlesIpv6()
     {
         AssertEx.Equal("::1", HttpSupport.NormalizeHost("[::1]"));
         AssertEx.Equal("::1", HttpSupport.NormalizeHost(" ::1 "));
         AssertEx.Equal("localhost", HttpSupport.NormalizeHost(" localhost "));
     }
 
-    private static void AuditLoggerRejectsTornTail()
+    [TestMethod(DisplayName = "Audit logger rejects a torn JSONL tail")]
+    public void AuditLoggerRejectsTornTail()
     {
         using var directory = new TemporaryDirectory();
         var logDirectory = directory.File("Logs");
@@ -1022,26 +952,5 @@ internal static class WebHandlerTests
         public override long Seek(long seekOffset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int bufferOffset, int count) => throw new NotSupportedException();
-    }
-
-    private sealed class TrackingArrayPool(Action returned = null) : ArrayPool<byte>
-    {
-        internal int RentCount { get; private set; }
-        internal int ReturnCount { get; private set; }
-        internal bool AllReturnsRequestedClear { get; private set; } = true;
-
-        public override byte[] Rent(int minimumLength)
-        {
-            RentCount++;
-            return new byte[minimumLength];
-        }
-
-        public override void Return(byte[] array, bool clearArray = false)
-        {
-            ReturnCount++;
-            AllReturnsRequestedClear &= clearArray;
-            if (clearArray) Array.Clear(array, 0, array.Length);
-            returned?.Invoke();
-        }
     }
 }

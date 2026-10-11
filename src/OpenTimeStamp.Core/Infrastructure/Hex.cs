@@ -1,15 +1,20 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace OpenTimeStamp.Infrastructure;
 
 /// <summary>The single hexadecimal text encoder for digests, serials, and thumbprints.</summary>
 public static class Hex
 {
     /// <summary>Returns lowercase hexadecimal text, or null when <paramref name="value"/> is null.</summary>
-    public static string ToLower(byte[] value) => Encode(value, "0123456789abcdef");
+    [return: NotNullIfNotNull(nameof(value))]
+    public static string? ToLower(byte[]? value) => Encode(value, "0123456789abcdef");
 
     /// <summary>Returns uppercase hexadecimal text, or null when <paramref name="value"/> is null.</summary>
-    public static string ToUpper(byte[] value) => Encode(value, "0123456789ABCDEF");
+    [return: NotNullIfNotNull(nameof(value))]
+    public static string? ToUpper(byte[]? value) => Encode(value, "0123456789ABCDEF");
 
-    private static string Encode(byte[] value, string alphabet)
+    [return: NotNullIfNotNull(nameof(value))]
+    private static string? Encode(byte[]? value, string alphabet)
     {
         if (value is null) return null;
 

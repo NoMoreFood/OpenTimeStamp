@@ -5,8 +5,8 @@ using System.IO;
 using System.Linq;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
-using System.Text;
 using System.Threading;
+using OpenTimeStamp.Cryptography;
 using OpenTimeStamp.Infrastructure;
 
 namespace OpenTimeStamp.Issuance;
@@ -24,30 +24,24 @@ public sealed class IssuanceAllocation
     public DateTime GenerationTimeUtc { get; }
 }
 
+/// <summary>
+/// Supplies the serial number and generation time for each timestamp.
+/// </summary>
+/// <remarks>
+/// Serial numbers are 127 random bits from the system generator, so their uniqueness does not
+/// depend on stored state and survives a restored, cloned, or lost data directory. The only durable
+/// state is the latest generation time: a high-water mark that detects a clock stepped backward
+/// and keeps generation times strictly increasing when ordering is enabled.
+/// </remarks>
 public sealed class IssuanceStateStore
 {
     private const int SerialLength = 16;
-    private const int StateIdentifierLength = 16;
-    private const int IntegrityKeyLength = 32;
-    private const int IntegrityLength = 32;
-    private const int LegacyRecordLength = 4 + SerialLength + sizeof(long);
-    private const int StatePayloadLength = 4 + StateIdentifierLength + sizeof(ulong) + SerialLength + sizeof(long);
-    private const int StateRecordLength = StatePayloadLength + IntegrityLength;
-    private const int MarkerPayloadLength = 4 + StateIdentifierLength + IntegrityKeyLength + sizeof(ulong) + SerialLength;
-    private const int MarkerRecordLength = MarkerPayloadLength + IntegrityLength;
-    private static readonly byte[] LegacyMagic = "OTS1"u8.ToArray();
-    private static readonly byte[] StateMagic = "OTS2"u8.ToArray();
-    private static readonly byte[] MarkerMagic = "OTSM"u8.ToArray();
-    private static readonly byte[] MirroredMarkerMagic = "OTSB"u8.ToArray();
+    private const int PayloadLength = 4 + sizeof(long);
+    private const int RecordLength = PayloadLength + 32;
+    private static readonly byte[] Magic = "OTS3"u8.ToArray();
     private readonly string path;
     private readonly string backupPath;
     private readonly string temporaryPath;
-    private readonly string backupTemporaryPath;
-    private readonly string markerPath;
-    private readonly string markerBackupPath;
-    private readonly string markerTemporaryPath;
-    private readonly string migrationPath;
-    private readonly string migrationTemporaryPath;
     private readonly string lockPath;
 
     public IssuanceStateStore(string path)
@@ -60,25 +54,38 @@ public sealed class IssuanceStateStore
         this.path = Path.GetFullPath(path);
         backupPath = this.path + ".bak";
         temporaryPath = this.path + ".new";
-        backupTemporaryPath = backupPath + ".new";
-        markerPath = this.path + ".meta";
-        markerBackupPath = markerPath + ".bak";
-        markerTemporaryPath = markerPath + ".new";
-        migrationPath = this.path + ".migrate";
-        migrationTemporaryPath = migrationPath + ".new";
         lockPath = this.path + ".lock";
     }
 
     /// <summary>
-    /// Explicitly creates a new state store or migrates a valid legacy OTS1 state.
-    /// Repeated calls validate and repair redundant copies without reseeding the serial space.
+    /// Explicitly creates the state for a new installation, or carries the issuance clock over
+    /// from a state written by an earlier release. Repeated calls change nothing.
     /// </summary>
+    /// <remarks>
+    /// Only this method creates state. Issuance never does, so losing the state stops issuance
+    /// instead of silently discarding the rollback and ordering history.
+    /// </remarks>
     public void Initialize()
     {
         using var storeLock = AcquireLock(TimeSpan.FromSeconds(10), CancellationToken.None);
         try
         {
-            InitializeLocked();
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            if (!TryReadHighWaterMark(out _))
+            {
+                var migrated = LegacyIssuanceState.ReadLastIssuedUtc(path);
+                if (migrated is null && CurrentPaths().Any(File.Exists))
+                {
+                    throw new IssuanceStateException(
+                        "Timestamp state files exist but none is valid. Automatic reset was blocked; " +
+                        "restore the state from backup.");
+                }
+
+                Persist(migrated ?? DateTime.MinValue);
+            }
+
+            // Also finishes the cleanup of a migration that was interrupted after its commit.
+            LegacyIssuanceState.DeleteArtifacts(path);
         }
         catch (Exception ex) when (IsStorageException(ex))
         {
@@ -99,40 +106,19 @@ public sealed class IssuanceStateStore
         using var storeLock = AcquireLock(TimeSpan.FromSeconds(10), cancellationToken);
         try
         {
-            var (markerSelection, loaded) = LoadCommittedState();
-            var marker = markerSelection.Marker;
-            var state = loaded.State;
+            var lastIssuedUtc = ReadHighWaterMark();
 
-            // Complete an interrupted commit before beginning another generation. This
-            // keeps the high-water marker at most one generation behind durable state.
-            if (loaded.RequiresRepair)
-            {
-                RepairState(state, marker);
-            }
-
-            // Sample after locking and recovery so waiting requests cannot report a false clock rollback.
+            // Sample after locking so waiting requests cannot report a false clock rollback.
             var utcNow = utcNowProvider().ToUniversalTime();
-            EnsureClockNotRolledBack(state.LastIssuedUtc, utcNow, rollbackTolerance);
-            var generationTime = CalculateGenerationTime(state.LastIssuedUtc, utcNow, ordering);
+            EnsureClockNotRolledBack(lastIssuedUtc, utcNow, rollbackTolerance);
+            var generationTime = CalculateGenerationTime(lastIssuedUtc, utcNow, ordering);
 
-            if (state.Generation == ulong.MaxValue)
-            {
-                throw new IssuanceStateException("Timestamp state has exhausted its sequence-number range.");
-            }
-
-            // This is the final cancellation boundary. Once the serial changes, finish
-            // every durable publication even if the caller disconnects.
+            // This is the final cancellation boundary. Once the mark moves, the time is issued.
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Persist the next serial, timestamp, redundant copy, and high-water marker
-            // before returning either issued value to the caller.
-            Increment(state.SerialNumber);
-            state.Generation++;
-            state.LastIssuedUtc = generationTime;
-            PersistStateCopies(state, marker);
-            marker.Generation = state.Generation;
-            PersistMarker(marker);
-            return new IssuanceAllocation((byte[])state.SerialNumber.Clone(), generationTime);
+            // Record the generation time durably before returning it to the caller.
+            if (generationTime != lastIssuedUtc) Persist(generationTime);
+            return new IssuanceAllocation(CreateSerialNumber(), generationTime);
         }
         catch (Exception ex) when (IsStorageException(ex))
         {
@@ -142,8 +128,8 @@ public sealed class IssuanceStateStore
     }
 
     /// <summary>
-    /// Validates state integrity, rollback policy, and commit access without consuming a
-    /// serial number, and returns the generation time the next allocation would use.
+    /// Validates state integrity, rollback policy, and commit access without issuing anything,
+    /// and returns the generation time the next allocation would use.
     /// </summary>
     public DateTime ValidateAndGetNextGenerationTime(
         DateTime utcNow,
@@ -156,14 +142,14 @@ public sealed class IssuanceStateStore
         using var storeLock = AcquireLock(TimeSpan.FromSeconds(5), CancellationToken.None);
         try
         {
-            var (_, loaded) = LoadCommittedState();
-            EnsureClockNotRolledBack(loaded.State.LastIssuedUtc, utcNow, rollbackTolerance);
-            var nextGenerationTimeUtc = CalculateGenerationTime(loaded.State.LastIssuedUtc, utcNow, ordering);
+            var lastIssuedUtc = ReadHighWaterMark();
+            EnsureClockNotRolledBack(lastIssuedUtc, utcNow, rollbackTolerance);
+            var nextGenerationTimeUtc = CalculateGenerationTime(lastIssuedUtc, utcNow, ordering);
 
             // File.Replace requires delete access as well as read/write access. Request
             // the same rights here so health validation catches a restrictive file ACL
             // before the next issuance commit reaches its atomic replacement step.
-            foreach (var candidate in PersistentArtifactPaths())
+            foreach (var candidate in CurrentPaths())
             {
                 if (!File.Exists(candidate)) continue;
                 if ((File.GetAttributes(candidate) & FileAttributes.ReadOnly) != 0)
@@ -184,7 +170,6 @@ public sealed class IssuanceStateStore
 
             // Probe creation and durable flush without modifying issuance data.
             var directory = Path.GetDirectoryName(path);
-            Directory.CreateDirectory(directory);
             var probe = Path.Combine(directory, ".state-health-" + Guid.NewGuid().ToString("N") + ".tmp");
             try
             {
@@ -212,629 +197,105 @@ public sealed class IssuanceStateStore
         }
     }
 
-    // Prefer the common steady state, where every copy already agrees, over full recovery analysis.
-    private (MarkerSelection Markers, DurableState Durable) LoadCommittedState()
+    private DateTime ReadHighWaterMark() =>
+        TryReadHighWaterMark(out var lastIssuedUtc)
+            ? lastIssuedUtc
+            : throw new IssuanceStateException(CurrentPaths().Any(File.Exists)
+                ? "Timestamp state is not valid. Restore it from backup, or rerun the installer to migrate " +
+                  "state written by an earlier release."
+                : "Timestamp state has not been initialized.");
+
+    // The mark only ever moves forward, so the newest valid copy is always the right one. A staged
+    // file wins after a crash that preceded its publication. The backup holds the mark before the
+    // latest issuance and is reached only when nothing newer survives; the rollback check then
+    // starts from that earlier time.
+    private bool TryReadHighWaterMark(out DateTime lastIssuedUtc)
     {
-        if (TryReadFullyMirroredState(out var markerSelection, out var durableState))
+        long? newest = null;
+        foreach (var candidate in CurrentPaths())
         {
-            return (markerSelection, durableState);
+            var ticks = ReadRecord(candidate);
+            if (ticks is not null && (newest is null || ticks > newest)) newest = ticks;
         }
 
-        markerSelection = ReadBestMarker() ??
-            throw new IssuanceStateException("Timestamp state has not been initialized.");
-        return (markerSelection, LoadDurableState(markerSelection));
+        lastIssuedUtc = new DateTime(newest ?? 0, DateTimeKind.Utc);
+        return newest is not null;
     }
 
-    private void InitializeLocked()
+    private static long? ReadRecord(string candidate)
     {
-        var directory = Path.GetDirectoryName(path);
-        Directory.CreateDirectory(directory);
+        if (!File.Exists(candidate)) return null;
 
-        RecoverTornInitialMarkerIfSafe();
-        var markerSelection = ReadBestMarker();
-        if (markerSelection is null)
+        var record = new byte[RecordLength];
+        using (FileStream stream = new(candidate, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
-            if (File.Exists(path))
+            if (stream.Length != RecordLength) return null;
+            for (var offset = 0; offset < record.Length;)
             {
-                MigrateLegacyState();
-                return;
-            }
-
-            if (HasAnyStateEvidence())
-            {
-                throw new IssuanceStateException(
-                    "Timestamp state files exist without a matching active state and integrity file. " +
-                    "Automatic reset was blocked to prevent timestamp reuse.");
-            }
-
-            var initialSerial = CreateSerialSeed();
-            var marker = CreateMarker(0, initialSerial);
-            var state = new State
-            {
-                StateIdentifier = (byte[])marker.StateIdentifier.Clone(),
-                Generation = 0,
-                SerialNumber = (byte[])initialSerial.Clone(),
-                LastIssuedUtc = DateTime.MinValue
-            };
-
-            // The generation-zero marker contains the initial serial, so a crash after this
-            // durable write but before the state copies can be completed is recoverable.
-            PersistMarker(marker);
-            PersistStateCopies(state, marker);
-            return;
-        }
-
-        var loaded = LoadDurableState(markerSelection);
-        RepairState(loaded.State, markerSelection.Marker);
-        TryDelete(migrationPath);
-        TryDelete(migrationTemporaryPath);
-    }
-
-    private void RecoverTornInitialMarkerIfSafe()
-    {
-        // A sole malformed staging marker can only be discarded when the filesystem proves
-        // that marker publication never committed: either this is an otherwise fresh store,
-        // or the authoritative active record is still a complete legacy OTS1 record.
-        if (File.Exists(markerPath) || File.Exists(markerBackupPath) || !File.Exists(markerTemporaryPath)) return;
-
-        try
-        {
-            ReadMarker(markerTemporaryPath, out _);
-            return;
-        }
-        catch (CorruptPersistentRecordException)
-        {
-        }
-
-        var isFresh = !HasAnyStateEvidence();
-        var hasValidLegacyActiveState = false;
-        if (!isFresh && File.Exists(path))
-        {
-            try
-            {
-                ReadLegacyState(path);
-                hasValidLegacyActiveState = true;
-            }
-            catch (IssuanceStateException)
-            {
-                // Unknown or unreadable state evidence must continue to fail closed.
+                var read = stream.Read(record, offset, record.Length - offset);
+                if (read == 0) return null;
+                offset += read;
             }
         }
 
-        if (isFresh || hasValidLegacyActiveState)
-        {
-            File.Delete(markerTemporaryPath);
-        }
+        if (!record.AsSpan().StartsWith(Magic)) return null;
+        var checksum = WindowsHash.ComputeSha256(record.AsSpan(0, PayloadLength).ToArray());
+        if (!record.AsSpan(PayloadLength).SequenceEqual(checksum)) return null;
+
+        var ticks = BitConverter.ToInt64(record, Magic.Length);
+        return ticks < 0 || ticks > DateTime.MaxValue.Ticks ? null : ticks;
     }
 
-    private void MigrateLegacyState()
+    private void Persist(DateTime lastIssuedUtc)
     {
-        var legacy = ReadLegacyState(path);
-        var marker = CreateMarker(1, legacy.SerialNumber);
-        var state = new State
-        {
-            StateIdentifier = (byte[])marker.StateIdentifier.Clone(),
-            Generation = 1,
-            SerialNumber = (byte[])legacy.SerialNumber.Clone(),
-            LastIssuedUtc = legacy.LastIssuedUtc
-        };
+        var record = new byte[RecordLength];
+        Buffer.BlockCopy(Magic, 0, record, 0, Magic.Length);
+        Buffer.BlockCopy(BitConverter.GetBytes(lastIssuedUtc.Ticks), 0, record, Magic.Length, sizeof(long));
+        var checksum = WindowsHash.ComputeSha256(record.AsSpan(0, PayloadLength).ToArray());
+        Buffer.BlockCopy(checksum, 0, record, PayloadLength, checksum.Length);
 
-        // Stage an authenticated OTS2 record before publishing its key-bearing marker.
-        // If migration is interrupted, either the authoritative OTS1 active file remains,
-        // or the marker can authenticate this staged copy and finish the migration.
-        WriteAtomicFile(migrationPath, migrationTemporaryPath, SerializeState(state, marker), null);
-        PersistMarker(marker);
-        PersistStateCopies(state, marker);
-        TryDelete(migrationPath);
-        TryDelete(migrationTemporaryPath);
-    }
-
-    private DurableState LoadDurableState(MarkerSelection markerSelection)
-    {
-        List<StateCandidate> candidates = new();
-        AddStateCandidate(candidates, path, markerSelection.Marker);
-        AddStateCandidate(candidates, backupPath, markerSelection.Marker);
-        AddStateCandidate(candidates, temporaryPath, markerSelection.Marker);
-        AddStateCandidate(candidates, backupTemporaryPath, markerSelection.Marker);
-        AddStateCandidate(candidates, migrationPath, markerSelection.Marker);
-        AddStateCandidate(candidates, migrationTemporaryPath, markerSelection.Marker);
-
-        State selected;
-        if (candidates.Count == 0)
-        {
-            if (markerSelection.Marker.Generation != 0 || !markerSelection.CanReconstructInitialState)
-            {
-                throw new IssuanceStateException(
-                    "All timestamp state copies are older than the last committed sequence.");
-            }
-
-            // A published active generation-zero marker, or its sole flushed staging file,
-            // proves no serial has yet been returned. A generation-zero backup may precede
-            // a lost issued generation-one state and must never reconstruct the serial seed.
-            selected = new State
-            {
-                StateIdentifier = (byte[])markerSelection.Marker.StateIdentifier.Clone(),
-                Generation = 0,
-                SerialNumber = (byte[])markerSelection.Marker.InitialSerialNumber.Clone(),
-                LastIssuedUtc = DateTime.MinValue
-            };
-        }
-        else
-        {
-            var maximumGeneration = candidates.Max(item => item.State.Generation);
-            selected = candidates.First(item => item.State.Generation == maximumGeneration).State;
-            foreach (var candidate in candidates.Where(item => item.State.Generation == maximumGeneration))
-            {
-                if (!StatesEqual(selected, candidate.State))
-                {
-                    throw new IssuanceStateException(
-                        "Timestamp state contains conflicting records with the same sequence number.");
-                }
-            }
-        }
-
-        var markerGeneration = markerSelection.Marker.Generation;
-        if (selected.Generation < markerGeneration)
-        {
-            throw new IssuanceStateException(
-                "Timestamp state was restored to an older sequence than the last committed value.");
-        }
-
-        if (selected.Generation > markerGeneration && selected.Generation - markerGeneration > 1)
-        {
-            throw new IssuanceStateException(
-                "Timestamp state is too far ahead of its last committed sequence.");
-        }
-
-        if (selected.Generation == markerGeneration && !markerSelection.HasAuthoritativeMarker)
-        {
-            throw new IssuanceStateException(
-                "A backup integrity file exists without matching timestamp state; current state cannot be verified.");
-        }
-
-        var activeMatches = candidates.Any(item =>
-            string.Equals(item.Path, path, StringComparison.OrdinalIgnoreCase) && StatesEqual(item.State, selected));
-        var backupMatches = candidates.Any(item =>
-            string.Equals(item.Path, backupPath, StringComparison.OrdinalIgnoreCase) && StatesEqual(item.State, selected));
-        var requiresRepair = selected.Generation != markerGeneration ||
-                             !markerSelection.CurrentMatchesSelected ||
-                             !markerSelection.MirroredBackupMatchesSelected ||
-                             !activeMatches ||
-                             !backupMatches;
-        return new DurableState(selected, requiresRepair);
-    }
-
-    private bool TryReadFullyMirroredState(
-        out MarkerSelection markerSelection,
-        out DurableState durableState)
-    {
-        markerSelection = null;
-        durableState = null;
-        if (File.Exists(temporaryPath) || File.Exists(backupTemporaryPath) ||
-            File.Exists(markerTemporaryPath) || File.Exists(migrationPath) ||
-            File.Exists(migrationTemporaryPath) ||
-            !File.Exists(markerPath) || !File.Exists(markerBackupPath) ||
-            !File.Exists(path) || !File.Exists(backupPath))
-        {
-            return false;
-        }
-
-        try
-        {
-            var currentMarker = ReadMarker(markerPath, out var currentIsMirrored);
-            var backupMarker = ReadMarker(markerBackupPath, out var backupIsMirrored);
-            if (currentIsMirrored || !backupIsMirrored || !MarkersEqual(currentMarker, backupMarker)) return false;
-
-            var currentState = ReadState(path, currentMarker);
-            var backupState = ReadState(backupPath, currentMarker);
-            if (!StatesEqual(currentState, backupState) || currentState.Generation != currentMarker.Generation)
-            {
-                return false;
-            }
-
-            markerSelection = new MarkerSelection(currentMarker, true, false, true, true);
-            durableState = new DurableState(currentState, false);
-            return true;
-        }
-        catch (CorruptPersistentRecordException)
-        {
-            return false;
-        }
-    }
-
-    private void RepairState(State state, Marker marker)
-    {
-        PersistStateCopies(state, marker);
-        marker.Generation = state.Generation;
-        PersistMarker(marker);
-    }
-
-    private MarkerSelection ReadBestMarker()
-    {
-        List<MarkerCandidate> candidates = new();
-        AddMarkerCandidate(candidates, markerPath);
-        AddMarkerCandidate(candidates, markerBackupPath);
-        AddMarkerCandidate(candidates, markerTemporaryPath);
-
-        if (candidates.Count == 0)
-        {
-            if (HasAnyMarkerEvidence())
-            {
-                throw new IssuanceStateException("No valid timestamp-state integrity file remains.");
-            }
-
-            return null;
-        }
-
-        var identity = candidates[0].Marker;
-        foreach (var candidate in candidates)
-        {
-            if (!FixedEquals(identity.StateIdentifier, candidate.Marker.StateIdentifier) ||
-                !FixedEquals(identity.IntegrityKey, candidate.Marker.IntegrityKey) ||
-                !FixedEquals(identity.InitialSerialNumber, candidate.Marker.InitialSerialNumber))
-            {
-                throw new IssuanceStateException("Conflicting timestamp-state integrity files were found.");
-            }
-        }
-
-        var maximumGeneration = candidates.Max(item => item.Marker.Generation);
-        var selected = candidates.First(item => item.Marker.Generation == maximumGeneration).Marker;
-        var currentMatches = candidates.Any(item =>
-            string.Equals(item.Path, markerPath, StringComparison.OrdinalIgnoreCase) &&
-            !item.IsMirroredMarker &&
-            MarkersEqual(item.Marker, selected));
-        var temporaryMatches = candidates.Any(item =>
-            string.Equals(item.Path, markerTemporaryPath, StringComparison.OrdinalIgnoreCase) &&
-            !item.IsMirroredMarker &&
-            MarkersEqual(item.Marker, selected));
-        var mirroredBackupMatches = candidates.Any(item =>
-            item.IsMirroredMarker &&
-            (string.Equals(item.Path, markerBackupPath, StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(item.Path, markerTemporaryPath, StringComparison.OrdinalIgnoreCase)) &&
-            MarkersEqual(item.Marker, selected));
-        var canReconstructInitialState = currentMatches ||
-                                          mirroredBackupMatches ||
-                                          (temporaryMatches && !File.Exists(markerPath) &&
-                                           !File.Exists(markerBackupPath) && !HasAnyStateEvidence());
-        return new MarkerSelection(
-            selected,
-            currentMatches,
-            temporaryMatches,
-            mirroredBackupMatches,
-            canReconstructInitialState);
-    }
-
-    private void AddMarkerCandidate(ICollection<MarkerCandidate> candidates, string candidatePath)
-    {
-        if (!File.Exists(candidatePath)) return;
-        try
-        {
-            var marker = ReadMarker(candidatePath, out var isMirroredMarker);
-            candidates.Add(new MarkerCandidate(candidatePath, marker, isMirroredMarker));
-        }
-        catch (CorruptPersistentRecordException)
-        {
-            // A valid redundant marker may recover an independently corrupted copy.
-        }
-    }
-
-    private void AddStateCandidate(ICollection<StateCandidate> candidates, string candidatePath, Marker marker)
-    {
-        if (!File.Exists(candidatePath)) return;
-        try
-        {
-            candidates.Add(new StateCandidate(candidatePath, ReadState(candidatePath, marker)));
-        }
-        catch (CorruptPersistentRecordException)
-        {
-            // A valid same-or-newer redundant state may recover an independently corrupted copy.
-        }
-    }
-
-    private Marker ReadMarker(string candidatePath, out bool isMirroredMarker)
-    {
-        var encoded = ReadExactRecord(candidatePath, MarkerRecordLength, "integrity marker");
-        isMirroredMarker = HasMagic(encoded, MirroredMarkerMagic);
-        if (!isMirroredMarker && !HasMagic(encoded, MarkerMagic))
-        {
-            throw new CorruptPersistentRecordException("The timestamp-state integrity file has an invalid header.");
-        }
-
-        var payload = Slice(encoded, 0, MarkerPayloadLength);
-        var storedIntegrity = Slice(encoded, MarkerPayloadLength, IntegrityLength);
-        if (!FixedEquals(storedIntegrity, Cryptography.WindowsHash.ComputeSha256(payload)))
-        {
-            throw new CorruptPersistentRecordException("The timestamp-state integrity file failed its checksum validation.");
-        }
-
-        using MemoryStream stream = new(payload, false);
-        using BinaryReader reader = new(stream, Encoding.UTF8, false);
-        reader.ReadBytes(MarkerMagic.Length);
-        var stateIdentifier = reader.ReadBytes(StateIdentifierLength);
-        var integrityKey = reader.ReadBytes(IntegrityKeyLength);
-        var generation = reader.ReadUInt64();
-        var initialSerial = reader.ReadBytes(SerialLength);
-        if (IsZero(stateIdentifier) || IsZero(integrityKey) || IsZero(initialSerial))
-        {
-            throw new CorruptPersistentRecordException("The timestamp-state integrity file contains an invalid zero value.");
-        }
-
-        return new Marker
-        {
-            StateIdentifier = stateIdentifier,
-            IntegrityKey = integrityKey,
-            Generation = generation,
-            InitialSerialNumber = initialSerial
-        };
-    }
-
-    private State ReadState(string candidatePath, Marker marker)
-    {
-        var encoded = ReadExactRecord(candidatePath, StateRecordLength, "state record");
-        if (!HasMagic(encoded, StateMagic))
-        {
-            throw new CorruptPersistentRecordException("The timestamp state file has an invalid header.");
-        }
-
-        var payload = Slice(encoded, 0, StatePayloadLength);
-        var storedIntegrity = Slice(encoded, StatePayloadLength, IntegrityLength);
-        if (!FixedEquals(storedIntegrity, ComputeStateIntegrity(marker.IntegrityKey, payload)))
-        {
-            throw new CorruptPersistentRecordException("The timestamp state file failed its integrity check.");
-        }
-
-        using MemoryStream stream = new(payload, false);
-        using BinaryReader reader = new(stream, Encoding.UTF8, false);
-        reader.ReadBytes(StateMagic.Length);
-        var stateIdentifier = reader.ReadBytes(StateIdentifierLength);
-        var generation = reader.ReadUInt64();
-        var serial = reader.ReadBytes(SerialLength);
-        var ticks = reader.ReadInt64();
-        if (!FixedEquals(stateIdentifier, marker.StateIdentifier) || IsZero(serial) ||
-            ticks is < 0 || ticks > DateTime.MaxValue.Ticks)
-        {
-            throw new CorruptPersistentRecordException("The timestamp state file contains invalid values.");
-        }
-
-        if (generation == 0 &&
-            (!FixedEquals(serial, marker.InitialSerialNumber) || ticks != 0))
-        {
-            throw new CorruptPersistentRecordException(
-                "The initial timestamp state does not match its integrity file.");
-        }
-
-        return new State
-        {
-            StateIdentifier = stateIdentifier,
-            Generation = generation,
-            SerialNumber = serial,
-            LastIssuedUtc = ticks == 0 ? DateTime.MinValue : new DateTime(ticks, DateTimeKind.Utc)
-        };
-    }
-
-    private LegacyState ReadLegacyState(string candidatePath)
-    {
-        var encoded = ReadExactRecord(candidatePath, LegacyRecordLength, "legacy state record");
-        if (!HasMagic(encoded, LegacyMagic))
-        {
-            throw new IssuanceStateException(
-                "The existing timestamp state is not a supported OTS1 or OTS2 format.");
-        }
-
-        using MemoryStream stream = new(encoded, false);
-        using BinaryReader reader = new(stream, Encoding.UTF8, false);
-        reader.ReadBytes(LegacyMagic.Length);
-        var serial = reader.ReadBytes(SerialLength);
-        var ticks = reader.ReadInt64();
-        if (IsZero(serial) || ticks is < 0 || ticks > DateTime.MaxValue.Ticks)
-        {
-            throw new IssuanceStateException("Legacy timestamp state is corrupt and cannot be migrated.");
-        }
-
-        return new LegacyState
-        {
-            SerialNumber = serial,
-            LastIssuedUtc = ticks == 0 ? DateTime.MinValue : new DateTime(ticks, DateTimeKind.Utc)
-        };
-    }
-
-    private void PersistStateCopies(State state, Marker marker)
-    {
-        var encoded = SerializeState(state, marker);
-
-        // Flush a complete sibling file, atomically publish it, and then mirror the
-        // identical committed generation to the recovery copy before returning.
-        WriteAtomicFile(path, temporaryPath, encoded, backupPath);
-        WriteAtomicFile(backupPath, backupTemporaryPath, encoded, null);
-    }
-
-    private void PersistMarker(Marker marker)
-    {
-        // First publish the normal high-water marker. Then create a distinct, same-generation
-        // committed mirror. The separate header lets recovery distinguish this mirror from an
-        // older OTSM replacement backup left by a crash between these two atomic operations.
-        WriteAtomicFile(
-            markerPath,
-            markerTemporaryPath,
-            SerializeMarker(marker, MarkerMagic),
-            markerBackupPath);
-        WriteAtomicFile(
-            markerBackupPath,
-            markerTemporaryPath,
-            SerializeMarker(marker, MirroredMarkerMagic),
-            null);
-    }
-
-    private static byte[] SerializeState(State state, Marker marker)
-    {
-        byte[] payload;
-        using (MemoryStream stream = new(StatePayloadLength))
-        {
-            using BinaryWriter writer = new(stream, Encoding.UTF8, true);
-            writer.Write(StateMagic);
-            writer.Write(state.StateIdentifier);
-            writer.Write(state.Generation);
-            writer.Write(state.SerialNumber);
-            writer.Write(state.LastIssuedUtc == DateTime.MinValue ? 0L : state.LastIssuedUtc.Ticks);
-            writer.Flush();
-            payload = stream.ToArray();
-        }
-
-        var result = new byte[StateRecordLength];
-        Buffer.BlockCopy(payload, 0, result, 0, payload.Length);
-        var integrity = ComputeStateIntegrity(marker.IntegrityKey, payload);
-        Buffer.BlockCopy(integrity, 0, result, payload.Length, integrity.Length);
-        return result;
-    }
-
-    private static byte[] SerializeMarker(Marker marker, byte[] magic)
-    {
-        byte[] payload;
-        using (MemoryStream stream = new(MarkerPayloadLength))
-        {
-            using BinaryWriter writer = new(stream, Encoding.UTF8, true);
-            writer.Write(magic);
-            writer.Write(marker.StateIdentifier);
-            writer.Write(marker.IntegrityKey);
-            writer.Write(marker.Generation);
-            writer.Write(marker.InitialSerialNumber);
-            writer.Flush();
-            payload = stream.ToArray();
-        }
-
-        var result = new byte[MarkerRecordLength];
-        Buffer.BlockCopy(payload, 0, result, 0, payload.Length);
-        var integrity = Cryptography.WindowsHash.ComputeSha256(payload);
-        Buffer.BlockCopy(integrity, 0, result, payload.Length, integrity.Length);
-        return result;
-    }
-
-    private static byte[] ComputeStateIntegrity(byte[] integrityKey, byte[] payload)
-    {
-        // The key is stored in the adjacent marker, so this binds a state record to its marker and
-        // detects corruption; it does not resist a principal who can write the data directory.
-        // HMACSHA256 selects a FIPS-validated provider itself when Windows FIPS policy is enforced.
-        using HMACSHA256 hmac = new(integrityKey);
-        return hmac.ComputeHash(payload);
-    }
-
-    private static void WriteAtomicFile(
-        string destination,
-        string temporary,
-        byte[] encoded,
-        string replacementBackup)
-    {
+        // Flush a complete sibling file, then publish it atomically. The record it replaces
+        // becomes the backup.
         using (FileStream stream = new(
-                   temporary,
+                   temporaryPath,
                    FileMode.Create,
                    FileAccess.Write,
                    FileShare.None,
                    4096,
                    FileOptions.WriteThrough))
         {
-            stream.Write(encoded, 0, encoded.Length);
+            stream.Write(record, 0, record.Length);
             stream.Flush(true);
         }
 
-        if (File.Exists(destination))
+        if (File.Exists(path))
         {
-            File.Replace(temporary, destination, replacementBackup, true);
+            File.Replace(temporaryPath, path, backupPath, true);
         }
         else
         {
-            File.Move(temporary, destination);
+            File.Move(temporaryPath, path);
         }
     }
 
-    private static byte[] ReadExactRecord(string candidatePath, int expectedLength, string description)
+    private static byte[] CreateSerialNumber()
     {
-        try
-        {
-            using FileStream stream = new(candidatePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            if (stream.Length != expectedLength)
-            {
-                throw new CorruptPersistentRecordException(
-                    string.Format(CultureInfo.InvariantCulture, "The timestamp {0} has an invalid length.", description));
-            }
-
-            var result = new byte[expectedLength];
-            var position = 0;
-            while (position < result.Length)
-            {
-                var read = stream.Read(result, position, result.Length - position);
-                if (read == 0)
-                {
-                    throw new CorruptPersistentRecordException(
-                        string.Format(CultureInfo.InvariantCulture, "The timestamp {0} is truncated.", description));
-                }
-
-                position += read;
-            }
-
-            return result;
-        }
-        catch (Exception ex) when (ex.IsFileAccessFailure())
-        {
-            throw new IssuanceStateException(
-                string.Format(CultureInfo.InvariantCulture, "The timestamp {0} could not be read.", description),
-                ex);
-        }
-    }
-
-    private static Marker CreateMarker(ulong generation, byte[] initialSerial)
-    {
-        var stateIdentifier = new byte[StateIdentifierLength];
-        var integrityKey = new byte[IntegrityKeyLength];
-        using RandomNumberGenerator random = RandomNumberGenerator.Create();
-        random.GetBytes(stateIdentifier);
-        random.GetBytes(integrityKey);
-        if (IsZero(stateIdentifier)) stateIdentifier[stateIdentifier.Length - 1] = 1;
-        if (IsZero(integrityKey)) integrityKey[integrityKey.Length - 1] = 1;
-        return new Marker
-        {
-            StateIdentifier = stateIdentifier,
-            IntegrityKey = integrityKey,
-            Generation = generation,
-            InitialSerialNumber = (byte[])initialSerial.Clone()
-        };
-    }
-
-    private static byte[] CreateSerialSeed()
-    {
-        // Seed a positive 128-bit serial so independent installations start in unrelated spaces.
         var serial = new byte[SerialLength];
         using RandomNumberGenerator random = RandomNumberGenerator.Create();
         random.GetBytes(serial);
+
+        // RFC 3161 serial numbers are positive integers.
         serial[0] &= 0x7f;
-        if (IsZero(serial)) serial[SerialLength - 1] = 1;
+        if (serial.All(value => value == 0)) serial[SerialLength - 1] = 1;
         return serial;
     }
 
-    private bool HasAnyStateEvidence() =>
-        PersistentStatePaths().Any(File.Exists);
-
-    private bool HasAnyMarkerEvidence() =>
-        MarkerPaths().Any(File.Exists);
-
-    private IEnumerable<string> PersistentStatePaths()
+    private IEnumerable<string> CurrentPaths()
     {
         yield return path;
-        yield return backupPath;
         yield return temporaryPath;
-        yield return backupTemporaryPath;
-        yield return migrationPath;
-        yield return migrationTemporaryPath;
+        yield return backupPath;
     }
-
-    private IEnumerable<string> MarkerPaths()
-    {
-        yield return markerPath;
-        yield return markerBackupPath;
-        yield return markerTemporaryPath;
-    }
-
-    private IEnumerable<string> PersistentArtifactPaths() =>
-        PersistentStatePaths().Concat(MarkerPaths());
 
     private static void EnsureClockNotRolledBack(
         DateTime lastIssuedUtc,
@@ -874,64 +335,8 @@ public sealed class IssuanceStateStore
         }
     }
 
-    private static void Increment(byte[] value)
-    {
-        for (var index = value.Length - 1; index >= 0; index--)
-        {
-            value[index]++;
-            if (value[index] != 0) return;
-        }
-
-        throw new IssuanceStateException("The timestamp serial-number space has been exhausted.");
-    }
-
-    private static bool StatesEqual(State left, State right) =>
-        left.Generation == right.Generation &&
-        left.LastIssuedUtc.Ticks == right.LastIssuedUtc.Ticks &&
-        FixedEquals(left.StateIdentifier, right.StateIdentifier) &&
-        FixedEquals(left.SerialNumber, right.SerialNumber);
-
-    private static bool MarkersEqual(Marker left, Marker right) =>
-        left.Generation == right.Generation &&
-        FixedEquals(left.StateIdentifier, right.StateIdentifier) &&
-        FixedEquals(left.IntegrityKey, right.IntegrityKey) &&
-        FixedEquals(left.InitialSerialNumber, right.InitialSerialNumber);
-
-    private static bool HasMagic(byte[] value, byte[] magic) => value.AsSpan().StartsWith(magic);
-
-    private static byte[] Slice(byte[] value, int offset, int length)
-    {
-        var result = new byte[length];
-        Buffer.BlockCopy(value, offset, result, 0, length);
-        return result;
-    }
-
-    private static bool IsZero(byte[] value)
-    {
-        var aggregate = 0;
-        foreach (var item in value) aggregate |= item;
-        return aggregate == 0;
-    }
-
-    private static bool FixedEquals(byte[] left, byte[] right) =>
-        Cryptography.WindowsHash.FixedTimeEquals(left, right);
-
     private static bool IsStorageException(Exception exception) =>
         exception.IsFileAccessFailure() || exception is CryptographicException;
-
-    private static void TryDelete(string candidatePath)
-    {
-        try
-        {
-            if (File.Exists(candidatePath)) File.Delete(candidatePath);
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
-    }
 
     private FileStream AcquireLock(TimeSpan wait, CancellationToken cancellationToken)
     {
@@ -951,84 +356,9 @@ public sealed class IssuanceStateStore
                 "OpenTimeStamp could not lock timestamp state. Verify the data directory permissions.", ex);
         }
     }
-
-    private sealed class State
-    {
-        public byte[] StateIdentifier { get; set; }
-
-        public ulong Generation { get; set; }
-
-        public byte[] SerialNumber { get; set; }
-
-        public DateTime LastIssuedUtc { get; set; }
-    }
-
-    private sealed class Marker
-    {
-        public byte[] StateIdentifier { get; set; }
-
-        public byte[] IntegrityKey { get; set; }
-
-        public ulong Generation { get; set; }
-
-        public byte[] InitialSerialNumber { get; set; }
-    }
-
-    private sealed class LegacyState
-    {
-        public byte[] SerialNumber { get; set; }
-
-        public DateTime LastIssuedUtc { get; set; }
-    }
-
-    private sealed class DurableState(State state, bool requiresRepair)
-    {
-        public State State { get; } = state;
-
-        public bool RequiresRepair { get; } = requiresRepair;
-    }
-
-    private sealed class StateCandidate(string path, State state)
-    {
-        public string Path { get; } = path;
-
-        public State State { get; } = state;
-    }
-
-    private sealed class MarkerCandidate(string path, Marker marker, bool isMirroredMarker)
-    {
-        public string Path { get; } = path;
-
-        public Marker Marker { get; } = marker;
-
-        public bool IsMirroredMarker { get; } = isMirroredMarker;
-    }
-
-    private sealed class MarkerSelection(
-        Marker marker,
-        bool currentMatchesSelected,
-        bool temporaryMatchesSelected,
-        bool mirroredBackupMatchesSelected,
-        bool canReconstructInitialState)
-    {
-        public Marker Marker { get; } = marker;
-
-        public bool CurrentMatchesSelected { get; } = currentMatchesSelected;
-
-        public bool TemporaryMatchesSelected { get; } = temporaryMatchesSelected;
-
-        public bool MirroredBackupMatchesSelected { get; } = mirroredBackupMatchesSelected;
-
-        public bool CanReconstructInitialState { get; } = canReconstructInitialState;
-
-        public bool HasAuthoritativeMarker =>
-            CurrentMatchesSelected || TemporaryMatchesSelected || MirroredBackupMatchesSelected;
-    }
-
-    private sealed class CorruptPersistentRecordException(string message) : IssuanceStateException(message);
 }
 
-public class IssuanceStateException(string message, Exception innerException = null)
+public class IssuanceStateException(string message, Exception? innerException = null)
     : Exception(message, innerException);
 
 public sealed class ClockRollbackException(string message) : IssuanceStateException(message);

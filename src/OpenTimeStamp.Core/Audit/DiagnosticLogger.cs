@@ -20,8 +20,8 @@ public sealed class DiagnosticLogger
     private readonly Dictionary<string, long> lastFailureReports = new(StringComparer.Ordinal);
     private ServiceConfiguration configuration = new();
     private long nextEventLogAttempt;
-    private string fileWarning;
-    private string eventLogWarning;
+    private string? fileWarning;
+    private string? eventLogWarning;
 
     public DiagnosticLogger(string directory, string instance)
         : this(directory, instance, WriteWindowsEvent)
@@ -35,7 +35,7 @@ public sealed class DiagnosticLogger
         this.eventWriter = eventWriter ?? throw new ArgumentNullException(nameof(eventWriter));
     }
 
-    public string Warning => Volatile.Read(ref fileWarning) ?? Volatile.Read(ref eventLogWarning) ??
+    public string? Warning => Volatile.Read(ref fileWarning) ?? Volatile.Read(ref eventLogWarning) ??
         fileLogger.RetentionWarning;
 
     public void Configure(ServiceConfiguration settings)

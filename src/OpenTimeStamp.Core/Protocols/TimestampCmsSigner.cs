@@ -105,6 +105,8 @@ internal static class TimestampCmsSigner
         var oid = useVersionOne ? KnownOids.SigningCertificate : KnownOids.SigningCertificateV2;
         var certificateHash = WindowsHash.Compute(signingHash.Name, certificate.RawData);
 
+        var issuerName = certificate.IssuerName.RawData;
+        var serialNumber = ReadCertificateSerialNumber(certificate);
         DerWriter writer = new();
         writer.WriteSequence(signingCertificate =>
             signingCertificate.WriteSequence(certs =>
@@ -117,9 +119,40 @@ internal static class TimestampCmsSigner
                     }
 
                     essCertId.WriteOctetString(certificateHash);
+
+                    // RFC 2634 and RFC 5035 say the signer's own entry SHOULD carry issuerSerial:
+                    // GeneralNames holding the issuer as a directoryName, then the serial number.
+                    essCertId.WriteSequence(issuerSerial =>
+                    {
+                        issuerSerial.WriteSequence(generalNames =>
+                            generalNames.WriteContextSpecificConstructed(
+                                4, directoryName => directoryName.WriteEncodedValue(issuerName)));
+                        issuerSerial.WriteEncodedValue(serialNumber);
+                    });
                 })));
         AsnEncodedData value = new(new Oid(oid), writer.Encode());
         return new CryptographicAttributeObject(new Oid(oid), new AsnEncodedDataCollection(value));
+    }
+
+    // Returns the serialNumber INTEGER exactly as the certificate encodes it, so the identifier
+    // matches the certificate octet for octet whatever sign or padding its issuer chose.
+    private static byte[] ReadCertificateSerialNumber(X509Certificate2 certificate)
+    {
+        try
+        {
+            var tbsCertificate = new DerReader(certificate.RawData).ReadSequence().ReadSequence();
+            if (tbsCertificate.PeekTag() == 0xa0) tbsCertificate.ReadEncodedValue();
+            if (tbsCertificate.PeekTag() != 0x02)
+            {
+                throw new DerEncodingException("The certificate serial number is missing.");
+            }
+
+            return tbsCertificate.ReadEncodedValue();
+        }
+        catch (DerEncodingException ex)
+        {
+            throw new CryptographicException("The timestamp signing certificate could not be parsed.", ex);
+        }
     }
 
     internal static CryptographicAttributeObject CreateCmsAlgorithmProtectionAttribute(
@@ -144,7 +177,7 @@ internal static class TimestampCmsSigner
     private static byte[] NormalizeRfc3161SignedData(
         byte[] encodedCms,
         string expectedDigestOid,
-        string expectedSignatureOid)
+        string? expectedSignatureOid)
     {
         try
         {
@@ -170,8 +203,8 @@ internal static class TimestampCmsSigner
             digestAlgorithms.ThrowIfNotEmpty();
             var encapsulatedContent = signedData.ReadEncodedValue();
             ValidateTstInfoEncapsulatedContent(encapsulatedContent);
-            byte[] certificates = null;
-            byte[] revocationInfo = null;
+            byte[]? certificates = null;
+            byte[]? revocationInfo = null;
             if (signedData.HasData && signedData.PeekTag() == 0xa0)
             {
                 certificates = signedData.ReadEncodedValue();
@@ -217,7 +250,7 @@ internal static class TimestampCmsSigner
     private static byte[] NormalizeSignerInfo(
         DerReader signerInfos,
         string expectedDigestOid,
-        string expectedSignatureOid)
+        string? expectedSignatureOid)
     {
         var signerInfo = signerInfos.ReadSequence();
         var version = signerInfo.ReadIntegerInt32();
@@ -245,7 +278,7 @@ internal static class TimestampCmsSigner
         }
 
         var signature = signerInfo.ReadEncodedValue();
-        byte[] unsignedAttributes = null;
+        byte[]? unsignedAttributes = null;
         if (signerInfo.HasData && signerInfo.PeekTag() == 0xa1)
         {
             unsignedAttributes = signerInfo.ReadEncodedValue();
@@ -273,7 +306,7 @@ internal static class TimestampCmsSigner
     {
         var algorithmIdentifier = parent.ReadSequence();
         var algorithmOid = algorithmIdentifier.ReadObjectIdentifier();
-        byte[] parameters = null;
+        byte[]? parameters = null;
         if (algorithmIdentifier.HasData) parameters = algorithmIdentifier.ReadEncodedValue();
         algorithmIdentifier.ThrowIfNotEmpty();
         if (!string.Equals(algorithmOid, expectedDigestOid, StringComparison.Ordinal))

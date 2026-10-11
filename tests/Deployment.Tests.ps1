@@ -1680,13 +1680,14 @@ catch {
             'Installer lock is acquired after mutable preflight observations begin.'
         Assert-True ($installer -match "-Scope 'OpenTimeStamp-MachineDeployment'") `
             'Installer lock is not one machine-global deployment mutex.'
-        Assert-True ($installer -match 'Test-IssuanceStateHasAuthenticatedRuntimeEvidence') `
-            'Installer does not treat authenticated marker publication as the migration commit boundary.'
+        Assert-True ($installer -match
+            '\$issuanceMigrationCommitted = -not \$issuanceStateWasCurrentFormat -and\s+\(Test-IssuanceStateUsesCurrentFormat ') `
+            'Installer does not treat publication of the current state format as the migration commit boundary.'
         Assert-True ($installer -match 'Test-OpenTimeStampNewIisApplicationRollbackCandidate') `
             'Installer does not use the guarded partial-application rollback decision.'
         Assert-True ($installer -notmatch 'newApplicationAppliedSnapshot') `
             'Partial-application rollback still depends on state captured only after New-WebApplication returns.'
-        $authenticatedEvidenceStart = $installer.IndexOf('function Test-IssuanceStateHasAuthenticatedRuntimeEvidence')
+        $authenticatedEvidenceStart = $installer.IndexOf('function Test-IssuanceStateUsesCurrentFormat')
         $artifactPresenceStart = $installer.IndexOf('function Test-IssuanceStateArtifactsPresent')
         $artifactNamesStart = $installer.IndexOf('function Get-IssuanceStateArtifactNames')
         $initializeStateStart = $installer.IndexOf('function Initialize-IssuanceStateFromRelease')
@@ -1697,14 +1698,14 @@ catch {
         $artifactNamesBlock = $installer.Substring(
             $artifactNamesStart, $initializeStateStart - $artifactNamesStart)
         Assert-True ($authenticatedEvidenceBlock -notmatch [regex]::Escape('issuance.state.lock')) `
-            'The coordination lock is incorrectly treated as authenticated issuance-state evidence.'
+            'The coordination lock is incorrectly treated as issuance-state format evidence.'
         Assert-True ($artifactPresenceBlock -notmatch [regex]::Escape('issuance.state.lock')) `
             'The coordination lock is incorrectly treated as issuance-state payload.'
         Assert-True ($artifactNamesBlock -match [regex]::Escape('issuance.state.lock')) `
             'Installer rollback does not track the persistent issuance coordination lock.'
         foreach ($markerEvidence in @('issuance.state.meta', 'issuance.state.meta.bak', 'issuance.state.meta.new')) {
             Assert-True ($installer -match [regex]::Escape($markerEvidence)) `
-                "Installer migration commit evidence omits '$markerEvidence'."
+                "Installer does not recognize earlier-release artifact '$markerEvidence' as existing issuance state."
         }
         Assert-True ($installer -match 'Exit-OpenTimeStampDeploymentLock -Lock \$deploymentLock') `
             'Installer does not release its cross-process application lock in the outer finally.'
@@ -1843,7 +1844,57 @@ catch {
         Assert-True ($installer -notmatch "GetSection\('system.web/httpCookies'") `
             'The installer writes ASP.NET cookie settings into native IIS applicationHost.config.'
     }
-    Invoke-Test 'Deployment invokes the published state initializer with a native string argument' {
+    Invoke-Test 'Installer recognizes current and earlier issuance-state files' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
+        foreach ($name in @('Test-IssuanceStateUsesCurrentFormat', 'Get-IssuanceStateFileNames',
+                'Test-IssuanceStateArtifactsPresent', 'Get-IssuanceStateArtifactNames')) {
+            $definition = $ast.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+            }.GetNewClosure(), $true)
+            Assert-True ($null -ne $definition) "Installer function '$name' is missing."
+            . ([scriptblock]::Create($definition.Extent.Text))
+        }
+
+        $data = Join-Path $testRoot 'issuance-format-data'
+        New-Item -ItemType Directory -Path $data | Out-Null
+        Assert-True (-not (Test-IssuanceStateArtifactsPresent -EffectiveDataPath $data)) `
+            'An empty data directory was reported as holding issuance state.'
+        Assert-True (-not (Test-IssuanceStateUsesCurrentFormat -EffectiveDataPath $data)) `
+            'A missing state file was reported as the current format.'
+
+        # The coordination lock is rollback bookkeeping, never evidence of issuance state.
+        [System.IO.File]::WriteAllBytes((Join-Path $data 'issuance.state.lock'), [byte[]]@())
+        Assert-True (-not (Test-IssuanceStateArtifactsPresent -EffectiveDataPath $data)) `
+            'The coordination lock alone was treated as issuance state.'
+        Assert-Equal 'issuance.state.lock' (@(Get-IssuanceStateArtifactNames -EffectiveDataPath $data) -join ',') `
+            'Rollback bookkeeping does not track the coordination lock.'
+
+        # State from an earlier release proves the directory is in use but is not the commit point.
+        $earlier = [byte[]](0x4f, 0x54, 0x53, 0x32) + (New-Object byte[] 80)
+        [System.IO.File]::WriteAllBytes((Join-Path $data 'issuance.state'), $earlier)
+        [System.IO.File]::WriteAllBytes((Join-Path $data 'issuance.state.meta'), (New-Object byte[] 100))
+        Assert-True (Test-IssuanceStateArtifactsPresent -EffectiveDataPath $data) `
+            'State written by an earlier release was not recognized as existing issuance state.'
+        Assert-True (-not (Test-IssuanceStateUsesCurrentFormat -EffectiveDataPath $data)) `
+            'State written by an earlier release was reported as the current format.'
+        Assert-Equal 'issuance.state,issuance.state.meta,issuance.state.lock' `
+            (@(Get-IssuanceStateArtifactNames -EffectiveDataPath $data) -join ',') `
+            'Issuance artifact names were not reported in their defined order.'
+
+        $current = [byte[]](0x4f, 0x54, 0x53, 0x33) + (New-Object byte[] 40)
+        [System.IO.File]::WriteAllBytes((Join-Path $data 'issuance.state'), $current)
+        Assert-True (Test-IssuanceStateUsesCurrentFormat -EffectiveDataPath $data) `
+            'The current state format was not recognized as the migration commit point.'
+        [System.IO.File]::WriteAllBytes((Join-Path $data 'issuance.state'), [byte[]](0x4f, 0x54))
+        Assert-True (-not (Test-IssuanceStateUsesCurrentFormat -EffectiveDataPath $data)) `
+            'A truncated state file was reported as the current format.'
+    }
+
+    Invoke-Test 'Deployment resolves initializer dependencies and isolates successive releases' {
         $tokens = $null
         $parseErrors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -1854,20 +1905,37 @@ catch {
                 $node.Name -eq 'Initialize-IssuanceStateFromRelease'
         }, $true)
         . ([scriptblock]::Create($definition.Extent.Text))
-        $release = Join-Path $testRoot 'initializer-release'
         $data = Join-Path $testRoot 'initializer-data'
-        New-Item -ItemType Directory -Path (Join-Path $release 'bin'),$data | Out-Null
-        Add-Type -OutputAssembly (Join-Path $release 'bin\OpenTimeStamp.Core.dll') -TypeDefinition '
+        New-Item -ItemType Directory -Path $data | Out-Null
+        $compiler = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+        foreach ($label in @('first', 'second')) {
+            $release = Join-Path $testRoot "initializer-release-$label"
+            $bin = Join-Path $release 'bin'
+            New-Item -ItemType Directory -Path $bin | Out-Null
+            $dependencySource = Join-Path $release 'Dependency.cs'
+            [IO.File]::WriteAllText($dependencySource, '
+public static class StateDependency {
+    public static string Value { get { return "' + $label + '"; } }
+}')
+            $dependency = Join-Path $bin 'StateDependency.dll'
+            & $compiler /nologo /target:library "/out:$dependency" $dependencySource
+            if ($LASTEXITCODE -ne 0) { throw 'Could not compile the initializer dependency fixture.' }
+            $coreSource = Join-Path $release 'Core.cs'
+            [IO.File]::WriteAllText($coreSource, '
 namespace OpenTimeStamp.Issuance {
     public sealed class IssuanceStateStore {
         private readonly string path;
         public IssuanceStateStore(string path) { this.path = path; }
-        public void Initialize() { System.IO.File.WriteAllText(path, "initialized"); }
+        public void Initialize() { System.IO.File.WriteAllText(path, StateDependency.Value); }
     }
-}'
-        Initialize-IssuanceStateFromRelease -ReleasePath $release -EffectiveDataPath $data
-        Assert-Equal 'initialized' ([IO.File]::ReadAllText((Join-Path $data 'issuance.state'))) `
-            'The published state initializer was not called with the requested state path.'
+}')
+            $core = Join-Path $bin 'OpenTimeStamp.Core.dll'
+            & $compiler /nologo /target:library "/out:$core" "/reference:$dependency" $coreSource
+            if ($LASTEXITCODE -ne 0) { throw 'Could not compile the initializer fixture.' }
+            Initialize-IssuanceStateFromRelease -ReleasePath $release -EffectiveDataPath $data
+            Assert-Equal $label ([IO.File]::ReadAllText((Join-Path $data 'issuance.state'))) `
+                'The initializer failed to resolve this release''s dependency or reused an earlier release.'
+        }
     }
 
     Invoke-Test 'IIS rollback removes empty section wrappers but preserves collection directives' {

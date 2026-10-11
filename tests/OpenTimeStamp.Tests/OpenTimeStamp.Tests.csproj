@@ -28,18 +28,19 @@
     <Reference Include="System.Core" />
     <Reference Include="System.Runtime.Serialization" />
     <Reference Include="System.Security" />
+    <Reference Include="System.Web" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="MSTest.TestAdapter" />
     <PackageReference Include="MSTest.TestFramework" />
-    <PackageReference Include="System.Buffers" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Asn1AndRequestTests.cs" />
     <Compile Include="AssertEx.cs" />
+    <Compile Include="FakeHttp.cs" />
+    <Compile Include="HandlerTests.cs" />
     <Compile Include="PersistenceAndConfigurationTests.cs" />
-    <Compile Include="Program.cs" />
     <Compile Include="ProtocolTests.cs" />
     <Compile Include="PostQuantumProtocolTests.cs" />
     <Compile Include="TestFixtures.cs" />

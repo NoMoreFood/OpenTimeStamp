@@ -2,34 +2,18 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 using OpenTimeStamp.Asn1;
 using OpenTimeStamp.Cryptography;
 using OpenTimeStamp.Protocols;
 
 namespace OpenTimeStamp.Tests;
 
-internal static class Asn1AndRequestTests
+[TestClass]
+public sealed class Asn1AndRequestTests
 {
-    public static void Register(ICollection<TestCase> tests)
-    {
-        // Cover canonical DER, RFC 3161 parsing, and legacy HTTP framing independently.
-        tests.Add(new TestCase("DER writer/reader canonical round-trip", CanonicalDerRoundTrip));
-        tests.Add(new TestCase("DER writer canonicalizes SET values and OID text", CanonicalSetAndOidText));
-        tests.Add(new TestCase("DER reader rejects non-canonical encodings", RejectsNonCanonicalDer));
-        tests.Add(new TestCase("DER reader rejects bounded values before copying", RejectsBoundedValues));
-        tests.Add(new TestCase("DER reader bounds untrusted OBJECT IDENTIFIER work", BoundsObjectIdentifierWork));
-        tests.Add(new TestCase("Protocol OID constants keep their standards values", ProtocolOidsKeepStandardsValues));
-        tests.Add(new TestCase("DER reader preserves signed INTEGER octets", PreservesSignedIntegerOctets));
-        tests.Add(new TestCase("RFC3161 request parses all optional fields", ParsesRfc3161Request));
-        tests.Add(new TestCase("RFC3161 request accepts a negative nonce", AcceptsNegativeNonce));
-        tests.Add(new TestCase("RFC3161 request rejects invalid version and nonce", RejectsInvalidVersionAndNonce));
-        tests.Add(new TestCase("RFC3161 request rejects extensions and malformed DER", RejectsExtensionsAndMalformedDer));
-        tests.Add(new TestCase("RFC3161 request rejects invalid algorithm parameters", RejectsInvalidAlgorithmParameters));
-        tests.Add(new TestCase("Authenticode request parsing and rejection", ParsesAndRejectsAuthenticodeRequests));
-        tests.Add(new TestCase("SignTool legacy HTTP base64 framing", SignToolHttpFraming));
-    }
-
-    private static void ProtocolOidsKeepStandardsValues()
+    [TestMethod(DisplayName = "Protocol OID constants keep their standards values")]
+    public void ProtocolOidsKeepStandardsValues()
     {
         // Pin the wire identifiers so an edit to the constants cannot silently change protocol output.
         Dictionary<string, string> expectedHashes = new(StringComparer.Ordinal)
@@ -50,7 +34,8 @@ internal static class Asn1AndRequestTests
         AssertEx.Equal("1.2.840.113549.1.9.16.1.4", Rfc3161TimestampProcessor.TstInfoContentTypeOid);
     }
 
-    private static void CanonicalDerRoundTrip()
+    [TestMethod(DisplayName = "DER writer/reader canonical round-trip")]
+    public void CanonicalDerRoundTrip()
     {
         var writer = new DerWriter();
         writer.WriteSequence(sequence =>
@@ -73,7 +58,8 @@ internal static class Asn1AndRequestTests
         sequenceReader.ThrowIfNotEmpty();
     }
 
-    private static void RejectsNonCanonicalDer()
+    [TestMethod(DisplayName = "DER reader rejects non-canonical encodings")]
+    public void RejectsNonCanonicalDer()
     {
         AssertEx.Throws<DerEncodingException>(() => new DerReader(new byte[] { 0x30, 0x80, 0x00, 0x00 }).ReadSequence());
         AssertEx.Throws<DerEncodingException>(() => new DerReader(new byte[] { 0x04, 0x81, 0x01, 0x00 }).ReadOctetString());
@@ -94,7 +80,8 @@ internal static class Asn1AndRequestTests
         });
     }
 
-    private static void CanonicalSetAndOidText()
+    [TestMethod(DisplayName = "DER writer canonicalizes SET values and OID text")]
+    public void CanonicalSetAndOidText()
     {
         DerWriter writer = new();
         writer.WriteSet(set =>
@@ -114,7 +101,8 @@ internal static class Asn1AndRequestTests
         AssertEx.Throws<ArgumentException>(() => new DerWriter().WriteObjectIdentifier("1.2.03"));
     }
 
-    private static void RejectsBoundedValues()
+    [TestMethod(DisplayName = "DER reader rejects bounded values before copying")]
+    public void RejectsBoundedValues()
     {
         DerWriter writer = new();
         writer.WriteOctetString(new byte[33]);
@@ -131,7 +119,8 @@ internal static class Asn1AndRequestTests
         AssertEx.Throws<DerSizeLimitException>(() => new DerReader(writer.Encode()).ReadEncodedValue(16));
     }
 
-    private static void BoundsObjectIdentifierWork()
+    [TestMethod(DisplayName = "DER reader bounds untrusted OBJECT IDENTIFIER work")]
+    public void BoundsObjectIdentifierWork()
     {
         // The maximum supported component count remains comfortably above standards OIDs.
         var maximumComponents = new byte[128];
@@ -205,7 +194,8 @@ internal static class Asn1AndRequestTests
         return encoded;
     }
 
-    private static void PreservesSignedIntegerOctets()
+    [TestMethod(DisplayName = "DER reader preserves signed INTEGER octets")]
+    public void PreservesSignedIntegerOctets()
     {
         byte[][] values =
         [
@@ -248,7 +238,8 @@ internal static class Asn1AndRequestTests
         return result;
     }
 
-    private static void AcceptsNegativeNonce()
+    [TestMethod(DisplayName = "RFC3161 request accepts a negative nonce")]
+    public void AcceptsNegativeNonce()
     {
         // RFC 3161 defines the nonce as a plain INTEGER, and clients that draw a signed random
         // value send a negative one about half the time. It must parse and keep its exact octets.
@@ -268,7 +259,8 @@ internal static class Asn1AndRequestTests
             signedNonce: minimalNegative)).Nonce);
     }
 
-    private static void ParsesRfc3161Request()
+    [TestMethod(DisplayName = "RFC3161 request parses all optional fields")]
+    public void ParsesRfc3161Request()
     {
         var digest = new byte[32];
         for (var index = 0; index < digest.Length; index++)
@@ -298,7 +290,8 @@ internal static class Asn1AndRequestTests
         AssertEx.False(noOptions.CertificateRequested);
     }
 
-    private static void RejectsInvalidVersionAndNonce()
+    [TestMethod(DisplayName = "RFC3161 request rejects invalid version and nonce")]
+    public void RejectsInvalidVersionAndNonce()
     {
         var badVersion = AssertEx.Throws<Rfc3161ProtocolException>(() => Rfc3161Request.Parse(
             TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32], version: 2)));
@@ -324,7 +317,8 @@ internal static class Asn1AndRequestTests
         AssertEx.True(oversizedAlgorithm.InnerException is DerSizeLimitException);
     }
 
-    private static void RejectsExtensionsAndMalformedDer()
+    [TestMethod(DisplayName = "RFC3161 request rejects extensions and malformed DER")]
+    public void RejectsExtensionsAndMalformedDer()
     {
         var extension = AssertEx.Throws<Rfc3161ProtocolException>(() => Rfc3161Request.Parse(
             TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32], includeExtensions: true)));
@@ -348,14 +342,16 @@ internal static class Asn1AndRequestTests
             AssertEx.Throws<Rfc3161ProtocolException>(() => Rfc3161Request.Parse(null)).FailureInfo);
     }
 
-    private static void RejectsInvalidAlgorithmParameters()
+    [TestMethod(DisplayName = "RFC3161 request rejects invalid algorithm parameters")]
+    public void RejectsInvalidAlgorithmParameters()
     {
         var exception = AssertEx.Throws<Rfc3161ProtocolException>(() => Rfc3161Request.Parse(
             TestFixtures.BuildRfc3161RequestWithAlgorithmParameters(new byte[] { 0x04, 0x00 })));
         AssertEx.Equal(Rfc3161FailureInfo.BadDataFormat, exception.FailureInfo);
     }
 
-    private static void ParsesAndRejectsAuthenticodeRequests()
+    [TestMethod(DisplayName = "Authenticode request parsing and rejection")]
+    public void ParsesAndRejectsAuthenticodeRequests()
     {
         byte[] signature = [0x01, 0x02, 0x80, 0xff, 0x55];
         AssertEx.SequenceEqual(signature, AuthenticodeTimestampProcessor.ParseRequest(
@@ -378,7 +374,8 @@ internal static class Asn1AndRequestTests
         AssertEx.True(oversized.InnerException is DerSizeLimitException);
     }
 
-    private static void SignToolHttpFraming()
+    [TestMethod(DisplayName = "SignTool legacy HTTP base64 framing")]
+    public void SignToolHttpFraming()
     {
         var der = TestFixtures.BuildAuthenticodeRequest([1, 2, 3, 4]);
         var base64 = Encoding.ASCII.GetBytes(Convert.ToBase64String(der, Base64FormattingOptions.InsertLineBreaks));

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.Serialization;
 using System.Text;
 using System.Threading;
@@ -15,6 +16,13 @@ public sealed class ConfigurationStore
 {
     private const int MaximumConfigurationBytes = 1048576;
     private const string MissingGeneration = "missing";
+    private static readonly Dictionary<string, int> MemberOrder = typeof(ServiceConfiguration)
+        .GetProperties()
+        .Where(property => property.IsDefined(typeof(DataMemberAttribute), false))
+        .ToDictionary(
+            property => property.Name,
+            property => property.GetCustomAttribute<DataMemberAttribute>().Order,
+            StringComparer.Ordinal);
 
     private readonly string path;
     private readonly string lockPath;
@@ -39,8 +47,7 @@ public sealed class ConfigurationStore
         // Read and hash the same bytes while holding the writer lock. File length
         // and timestamps are not reliable generations after a same-size replace.
         using var storeLock = AcquireLock(TimeSpan.FromSeconds(10));
-        var loaded = LoadFromDisk(out generation);
-        Normalize(loaded);
+        var loaded = Normalized(LoadFromDisk(out generation));
         var errors = loaded.Validate();
         if (errors.Count != 0)
         {
@@ -70,14 +77,13 @@ public sealed class ConfigurationStore
     }
 
     // A null expected generation saves unconditionally.
-    private string SaveCore(ServiceConfiguration configuration, string expectedGeneration)
+    private string SaveCore(ServiceConfiguration configuration, string? expectedGeneration)
     {
         if (configuration is null) throw new ArgumentNullException(nameof(configuration));
 
         // Validate and serialize before taking the cross-process lock so malformed
         // candidates cannot block readers or another worker process.
-        var copy = configuration.Clone();
-        Normalize(copy);
+        var copy = Normalized(configuration);
         var errors = copy.Validate();
         if (errors.Count != 0) throw new ConfigurationErrorsException(string.Join(" ", errors));
 
@@ -216,6 +222,7 @@ public sealed class ConfigurationStore
     {
         DataContractSerializer serializer = new(typeof(ServiceConfiguration));
         XmlReaderSettings settings = new() { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null };
+        EnsureElementOrder(bytes, settings);
         using MemoryStream stream = new(bytes, false);
         using XmlReader reader = XmlReader.Create(stream, settings);
         reader.MoveToContent();
@@ -226,6 +233,43 @@ public sealed class ConfigurationStore
         }
 
         return (ServiceConfiguration)serializer.ReadObject(reader);
+    }
+
+    // The serializer silently skips a setting that appears after a later-ordered one or a second
+    // time, so a hand-edited file could lose it without any error. Refuse such a file instead.
+    private static void EnsureElementOrder(byte[] bytes, XmlReaderSettings settings)
+    {
+        using MemoryStream stream = new(bytes, false);
+        using XmlReader reader = XmlReader.Create(stream, settings);
+        reader.MoveToContent();
+        if (reader.IsEmptyElement) return;
+
+        var settingDepth = reader.Depth + 1;
+        var previousOrder = 0;
+        reader.Read();
+        while (!reader.EOF && reader.Depth >= settingDepth)
+        {
+            if (reader.NodeType != XmlNodeType.Element || reader.Depth != settingDepth)
+            {
+                reader.Read();
+                continue;
+            }
+
+            if (MemberOrder.TryGetValue(reader.LocalName, out var order))
+            {
+                if (order <= previousOrder)
+                {
+                    throw new ConfigurationErrorsException(
+                        "The settings file lists '" + reader.LocalName + "' twice or out of order, so it would " +
+                        "be ignored. Restore the original element order, or save the settings from the admin console.");
+                }
+
+                previousOrder = order;
+            }
+
+            // Skip moves past this setting's end tag to its next sibling.
+            reader.Skip();
+        }
     }
 
     private static byte[] Serialize(ServiceConfiguration configuration)
@@ -274,13 +318,18 @@ public sealed class ConfigurationStore
     private static string ComputeGeneration(byte[] bytes) =>
         "sha256:" + Hex.ToLower(WindowsHash.ComputeSha256(bytes));
 
-    private static void Normalize(ServiceConfiguration configuration)
+    /// <summary>
+    /// Returns a copy in the canonical form that is saved and loaded, so validation and later
+    /// ordinal comparisons are deterministic.
+    /// </summary>
+    public static ServiceConfiguration Normalized(ServiceConfiguration source)
     {
-        // Canonical values keep validation and later ordinal comparisons deterministic.
+        if (source is null) throw new ArgumentNullException(nameof(source));
+
+        var configuration = source.Clone();
         configuration.AuthenticationMode =
             (configuration.AuthenticationMode ?? ServiceConfiguration.AnonymousAuthentication).Trim();
         configuration.CertificateStoreLocation = (configuration.CertificateStoreLocation ?? "LocalMachine").Trim();
-        configuration.CertificateStoreName = (configuration.CertificateStoreName ?? "My").Trim();
         configuration.CertificateThumbprint = NormalizeThumbprint(configuration.CertificateThumbprint);
         configuration.CertificateSelectionMode = (configuration.CertificateSelectionMode ??
             ServiceConfiguration.ManualCertificateSelection).Trim();
@@ -291,16 +340,17 @@ public sealed class ConfigurationStore
         configuration.LogRolloverInterval = (configuration.LogRolloverInterval ??
             ServiceConfiguration.DailyLogRollover).Trim();
         configuration.AdminAllowedWindowsGroups = NormalizeList(configuration.AdminAllowedWindowsGroups, false);
+        return configuration;
     }
 
-    public static string NormalizeThumbprint(string value) =>
+    public static string? NormalizeThumbprint(string? value) =>
         string.IsNullOrWhiteSpace(value)
             ? null
-            : value.Replace(" ", string.Empty).Replace("\u200e", string.Empty).ToUpperInvariant();
+            : value!.Replace(" ", string.Empty).Replace("\u200e", string.Empty).ToUpperInvariant();
 
-    private static string NormalizeOptional(string value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    private static string? NormalizeOptional(string? value) => string.IsNullOrWhiteSpace(value) ? null : value!.Trim();
 
-    private static List<string> NormalizeList(IEnumerable<string> values, bool normalizeHashes)
+    private static List<string> NormalizeList(IEnumerable<string>? values, bool normalizeHashes)
     {
         List<string> result = new();
         if (values is null) return result;
@@ -310,7 +360,7 @@ public sealed class ConfigurationStore
             var normalized = normalizeHashes ? HashAlgorithmCatalog.NormalizeName(value) : NormalizeOptional(value);
             if (!string.IsNullOrWhiteSpace(normalized) && !result.Contains(normalized, StringComparer.OrdinalIgnoreCase))
             {
-                result.Add(normalized);
+                result.Add(normalized!);
             }
         }
 
@@ -318,7 +368,7 @@ public sealed class ConfigurationStore
     }
 }
 
-public class ConfigurationErrorsException(string message, Exception innerException = null)
+public class ConfigurationErrorsException(string message, Exception? innerException = null)
     : Exception(message, innerException);
 
 public sealed class ConfigurationConflictException(string message) : ConfigurationErrorsException(message);

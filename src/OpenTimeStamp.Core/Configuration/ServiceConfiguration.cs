@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Runtime.Serialization;
 using System.Security.Cryptography.X509Certificates;
@@ -41,6 +42,10 @@ public sealed class ServiceConfiguration
         CertificateSelectionMode = null;
     }
 
+    [MemberNotNull(
+        nameof(AuthenticationMode), nameof(CertificateStoreLocation), nameof(AcceptedPolicyOids),
+        nameof(AllowedHashAlgorithms), nameof(SigningDigestAlgorithm), nameof(AdminAllowedWindowsGroups),
+        nameof(LogRolloverInterval))]
     private void ApplyDefaults()
     {
         // Start disabled with modern digest defaults so setup must explicitly select a certificate and policy.
@@ -49,8 +54,8 @@ public sealed class ServiceConfiguration
         AuthenticodeEnabled = false;
         AuthenticationMode = AnonymousAuthentication;
         CertificateStoreLocation = StoreLocation.LocalMachine.ToString();
-        CertificateStoreName = StoreName.My.ToString();
         CertificateSelectionMode = AutomaticCertificateSelection;
+        AcceptedPolicyOids = [];
         AllowedHashAlgorithms = ["SHA256", "SHA384", "SHA512"];
         SigningDigestAlgorithm = "SHA256";
         IncludeCertificateChain = true;
@@ -84,14 +89,14 @@ public sealed class ServiceConfiguration
     [DataMember(Order = 5)]
     public string CertificateStoreLocation { get; set; }
 
-    [DataMember(Order = 6)]
-    public string CertificateStoreName { get; set; }
+    // Order 6 was CertificateStoreName. Only the Personal store was ever supported, so the element
+    // is no longer read; the serializer skips it in files that still carry it.
 
     [DataMember(Order = 7)]
-    public string CertificateThumbprint { get; set; }
+    public string? CertificateThumbprint { get; set; }
 
     [DataMember(Order = 8)]
-    public string DefaultPolicyOid { get; set; }
+    public string? DefaultPolicyOid { get; set; }
 
     [DataMember(Order = 9)]
     public List<string> AcceptedPolicyOids { get; set; }
@@ -135,8 +140,9 @@ public sealed class ServiceConfiguration
     [DataMember(Order = 22)]
     public bool AllowUntrustedDevelopmentCertificate { get; set; }
 
+    // Null only while a settings file that predates selection modes is being loaded.
     [DataMember(Order = 23)]
-    public string CertificateSelectionMode { get; set; }
+    public string? CertificateSelectionMode { get; set; }
 
     [DataMember(Order = 24)]
     public string LogRolloverInterval { get; set; }
@@ -152,15 +158,15 @@ public sealed class ServiceConfiguration
 
     public bool RequiresWindowsAuthentication => IsWindowsAuthentication(AuthenticationMode);
 
-    public static bool IsWindowsAuthentication(string mode) =>
+    public static bool IsWindowsAuthentication(string? mode) =>
         string.Equals(mode, WindowsAuthentication, StringComparison.OrdinalIgnoreCase);
 
-    public static bool IsAuthenticationMode(string mode) =>
+    public static bool IsAuthenticationMode(string? mode) =>
         IsWindowsAuthentication(mode) ||
         string.Equals(mode, AnonymousAuthentication, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Maps a saved rotation name to its schedule, or null when the name is not recognized.</summary>
-    public static LogRollover? ParseLogRollover(string interval) =>
+    public static LogRollover? ParseLogRollover(string? interval) =>
         string.Equals(interval, DailyLogRollover, StringComparison.OrdinalIgnoreCase) ? LogRollover.Daily :
         string.Equals(interval, HourlyLogRollover, StringComparison.OrdinalIgnoreCase) ? LogRollover.Hourly :
         string.Equals(interval, WeeklyLogRollover, StringComparison.OrdinalIgnoreCase) ? LogRollover.Weekly :
@@ -191,11 +197,6 @@ public sealed class ServiceConfiguration
             location is not (StoreLocation.LocalMachine or StoreLocation.CurrentUser))
         {
             errors.Add("The certificate store must be Local Computer or Current User.");
-        }
-
-        if (!Enum.TryParse(CertificateStoreName, true, out StoreName storeName) || storeName != StoreName.My)
-        {
-            errors.Add("Only the Personal (My) certificate store is supported.");
         }
 
         if (!string.Equals(CertificateSelectionMode, ManualCertificateSelection, StringComparison.OrdinalIgnoreCase) &&
@@ -285,7 +286,7 @@ public sealed class ServiceConfiguration
         return errors;
     }
 
-    private static bool IsValidOid(string value)
+    private static bool IsValidOid(string? value)
     {
         try
         {

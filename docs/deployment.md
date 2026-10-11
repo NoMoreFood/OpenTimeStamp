@@ -129,15 +129,19 @@ sibling, invalid marker, or other ambiguous non-empty directory is rejected and
 cannot be adopted.
 
 As its final durable commit, the installer calls the selected release's
-`IssuanceStateStore.Initialize()`. This creates authenticated OTS2 state for a
-new installation, validates/repairs an existing authenticated store, or migrates
-a valid legacy OTS1 state. A marked data directory with no remaining issuance
-artifacts is rejected rather than silently starting a new serial sequence. Once
-an OTS1-to-OTS2 transition has committed, the old binary cannot read the new
-state, so binary rollback is deliberately suppressed and the new release remains
-selected. Never restore `issuance.state.bak` over active state: it can lag a
-serial allocation. Recover the complete state set according to your controlled
-backup procedure without moving its high-water mark backward.
+`IssuanceStateStore.Initialize()`. This creates the issuance state for a new
+installation, leaves an existing current state unchanged, or migrates a verified
+OTS1 or OTS2 state written by an earlier release, carrying its last issuance time
+forward. A marked data directory with no remaining issuance artifacts is rejected
+rather than silently recreated. Once a migration to the current format has
+committed, an earlier binary cannot read the state, so binary rollback is
+deliberately suppressed and the new release remains selected.
+
+Serial numbers are random and do not depend on this state, so a restored or
+copied `issuance.state` cannot cause a serial to repeat. The state records only
+the last issuance time. If it is lost, restore `issuance.state` from any backup;
+an older copy only makes the clock-rollback and ordering checks start from that
+earlier time.
 
 For stronger separation in production, place mutable data outside the web root:
 

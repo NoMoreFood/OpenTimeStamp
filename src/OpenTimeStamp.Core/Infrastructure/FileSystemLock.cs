@@ -10,11 +10,11 @@ internal static class FileSystemLock
     public static FileStream Acquire(
         string path,
         TimeSpan wait,
-        Func<IOException, Exception> createTimeoutException,
+        Func<IOException?, Exception> createTimeoutException,
         CancellationToken cancellationToken)
     {
         var timer = Stopwatch.StartNew();
-        IOException lastContention = null;
+        IOException? lastContention = null;
         Directory.CreateDirectory(Path.GetDirectoryName(path));
         while (true)
         {

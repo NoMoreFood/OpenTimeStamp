@@ -5,7 +5,7 @@ namespace OpenTimeStamp.Cryptography;
 
 public static class WindowsHash
 {
-    public static bool FixedTimeEquals(byte[] left, byte[] right)
+    public static bool FixedTimeEquals(byte[]? left, byte[]? right)
     {
         if (left is null || right is null || left.Length != right.Length) return false;
 

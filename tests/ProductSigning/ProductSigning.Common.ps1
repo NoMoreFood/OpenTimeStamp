@@ -183,7 +183,7 @@ function Stop-NativeProcessTree {
 function Invoke-NativeProcess {
     param(
         [Parameter(Mandatory)][string]$FilePath,
-        [Parameter(Mandatory)][AllowEmptyString()][string[]]$ArgumentList,
+        [Parameter(Mandatory)][AllowEmptyString()][AllowEmptyCollection()][string[]]$ArgumentList,
         [Parameter(Mandatory)][string]$Description,
         [ValidateRange(1, 3600)][int]$TimeoutSeconds = 120
     )
@@ -233,6 +233,13 @@ function Invoke-SignToolSign {
         [Parameter(Mandatory)][uri]$TimestampUrl
     )
 
+    if ($TimestampUrl.Scheme -eq 'https') {
+        $repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+        $applicationUrl = $TimestampUrl.AbsoluteUri -replace '/timestamp/rfc3161/?$', ''
+        return & (Join-Path $repositoryRoot 'deploy\Invoke-TimestampSigning.ps1') -LiteralPath $Path `
+            -ServerUrl $applicationUrl -CertificateThumbprint $CertificateThumbprint `
+            -SignToolPath $SignToolPath -Tool SignTool
+    }
     Invoke-NativeProcess -FilePath $SignToolPath -Description "SignTool signing '$Path'" -ArgumentList @(
         'sign', '/s', 'My', '/sha1', $CertificateThumbprint, '/fd', 'SHA256', '/tr', $TimestampUrl.AbsoluteUri,
         '/td', 'SHA256', $Path

@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using Microsoft.Win32;
 using OpenTimeStamp.Infrastructure;
@@ -12,7 +13,7 @@ public static class PlatformSecurityPolicy
 
     public static bool IsFipsEnabled => fipsEnabled.Value;
 
-    internal static bool InterpretFipsRegistryValue(object value)
+    internal static bool InterpretFipsRegistryValue(object? value)
     {
         if (value is null) return false;
 
@@ -46,14 +47,14 @@ public static class PlatformSecurityPolicy
         }
     }
 
-    public static bool IsRequestHashAllowed(TimestampHashAlgorithm algorithm)
+    public static bool IsRequestHashAllowed([NotNullWhen(true)] TimestampHashAlgorithm? algorithm)
     {
         if (algorithm is null) return false;
 
         return !IsFipsEnabled || !algorithm.IsLegacy;
     }
 
-    public static bool IsSigningHashAllowed(TimestampHashAlgorithm algorithm) =>
+    public static bool IsSigningHashAllowed([NotNullWhen(true)] TimestampHashAlgorithm? algorithm) =>
         algorithm is not null && algorithm.CmsSigningSupported && (!IsFipsEnabled || !algorithm.IsLegacy);
 
     public static bool IsMldsaSupported => MLDsa.IsSupported;

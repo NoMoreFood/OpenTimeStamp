@@ -96,7 +96,9 @@ internal sealed class AdminHandler : IHttpHandler
 
     public bool IsReusable => false;
 
-    public void ProcessRequest(HttpContext context)
+    public void ProcessRequest(HttpContext context) => Process(new HttpContextWrapper(context));
+
+    internal void Process(HttpContextBase context)
     {
         // Enforce the local-network boundary before loading or disclosing configuration.
         if (!HttpSupport.IsLocalAdminRequest(context.Request))
@@ -175,7 +177,9 @@ internal sealed class AdminHandler : IHttpHandler
             // Parse and validate the complete candidate configuration before any durable write.
             submittedForm = form;
             var fipsEnabled = PlatformSecurityPolicy.IsFipsEnabled;
-            var updated = ReadConfiguration(form, configuration, fipsEnabled);
+            // Normalize first so validation, the audit description, the saved file, and the
+            // settings published to the running service all describe the same values.
+            var updated = ConfigurationStore.Normalized(ReadConfiguration(form, configuration, fipsEnabled));
             var errors = updated.Validate();
             var signingHash = HashAlgorithmCatalog.FindByName(updated.SigningDigestAlgorithm);
             if (!PlatformSecurityPolicy.IsSigningHashAllowed(signingHash))
@@ -302,7 +306,7 @@ internal sealed class AdminHandler : IHttpHandler
     }
 
     private static void WriteConfigurationAudit(
-        HttpContext context,
+        HttpContextBase context,
         RequestIdentity identity,
         ServiceConfiguration retentionConfiguration,
         ServiceConfiguration targetConfiguration,
@@ -329,7 +333,7 @@ internal sealed class AdminHandler : IHttpHandler
     }
 
     private static void TryWriteConfigurationFailureAudit(
-        HttpContext context,
+        HttpContextBase context,
         RequestIdentity identity,
         ServiceConfiguration retentionConfiguration,
         ServiceConfiguration targetConfiguration,
@@ -395,7 +399,7 @@ internal sealed class AdminHandler : IHttpHandler
     private static string Comparable(string value) =>
         (value ?? string.Empty).Trim().ToUpperInvariant();
 
-    private static bool IsAuthorized(ServiceConfiguration configuration, HttpContext context, RequestIdentity identity)
+    private static bool IsAuthorized(ServiceConfiguration configuration, HttpContextBase context, RequestIdentity identity)
     {
         // Use the IIS logon token for group checks rather than trusting supplied identity text.
         WindowsIdentity windowsIdentity = null;
@@ -455,7 +459,7 @@ internal sealed class AdminHandler : IHttpHandler
         }
     }
 
-    private static bool ValidateOrigin(HttpRequest request)
+    private static bool ValidateOrigin(HttpRequestBase request)
     {
         var source = request.Headers["Origin"];
         if (string.IsNullOrWhiteSpace(source)) source = request.UrlReferrer?.GetLeftPart(UriPartial.Authority);
@@ -529,7 +533,6 @@ internal sealed class AdminHandler : IHttpHandler
             }
 
             updated.CertificateStoreLocation = certificate.Substring(0, separator);
-            updated.CertificateStoreName = "My";
             updated.CertificateThumbprint = certificate.Substring(separator + 1);
         }
 
@@ -567,7 +570,7 @@ internal sealed class AdminHandler : IHttpHandler
     }
 
     private void Render(
-        HttpContext context,
+        HttpContextBase context,
         ServiceConfiguration configuration,
         string generation,
         string notice,
@@ -777,7 +780,7 @@ internal sealed class AdminHandler : IHttpHandler
 
     private static void AppendDashboard(
         StringBuilder builder,
-        HttpContext context,
+        HttpContextBase context,
         ServiceConfiguration configuration,
         string generation)
     {
@@ -807,7 +810,7 @@ internal sealed class AdminHandler : IHttpHandler
         string certificateSha256Thumbprint = null;
         try
         {
-            using var certificate = ServiceRuntime.Certificates.GetSelectedCertificate(configuration);
+            using var certificate = ServiceRuntime.GetSelectedCertificate(configuration);
             certificateExpirationUtc = certificate.NotAfter.ToUniversalTime();
             certificateSha256Thumbprint = FormatCertificateSha256Thumbprint(certificate.RawData);
         }

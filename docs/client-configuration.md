@@ -91,8 +91,10 @@ its included `readme.txt` and use a SignTool process of the same architecture.
 Then use the RFC 3161 endpoint:
 
 ```powershell
-signtool sign /s My /sha1 <SIGNING-CERTIFICATE-THUMBPRINT> /fd SHA256 `
-    /tr https://tsa.example.com/OpenTimeStamp/timestamp/rfc3161 /td SHA256 file.xlsm
+.\deploy\Invoke-TimestampSigning.ps1 -LiteralPath file.xlsm `
+    -ServerUrl https://tsa.example.com/OpenTimeStamp `
+    -CertificateThumbprint '<SIGNING-CERTIFICATE-THUMBPRINT>' -Tool SignTool `
+    -SignToolPath '<PATH-TO-MATCHING-ARCHITECTURE-SIGNTOOL>'
 ```
 
 The repository's automated Excel VBA test currently covers the x86 SIP and x86
@@ -116,8 +118,8 @@ clock. It removes Acrobat's alternative hash-OID selector when selecting
 SHA-256 so the two settings cannot conflict. It writes only beneath
 `HKCU\Software\Adobe\Adobe Acrobat\DC\Security`; the shared HKCU path works for
 both Acrobat architectures. For an HTTP-only development endpoint, add
-`-AllowInsecureHttp`; the helper limits that exception to loopback URLs. Do not
-use it for production.
+`-AllowInsecureHttp`; it also permits an HTTP timestamp server on another computer.
+Prefer HTTPS when the network connection needs transport protection.
 
 The equivalent manual setup is:
 
@@ -146,10 +148,16 @@ suppressing URL-navigation dialogs in specific webview and authentication
 workflows, not timestamp requests. Do not enable `bUseWhitelistConfigFile` or
 create a Protected Mode broker-policy file for this purpose: that mechanism
 allows otherwise blocked operating-system actions and is not a URL allowlist.
-Likewise, do not add the TSA to `cTrustedSites` or Trust Manager `tHostPerms`;
-those settings trust PDF content origins or permit PDF-authored Internet access,
-respectively, and would broaden the document trust boundary without enabling the
-built-in timestamp provider. For centrally managed clients, deploy the same
+Do not add the TSA to `cTrustedSites`, which grants privileges to hosted PDF content.
+Some signing workflows also require the separate Trust Manager Internet-access
+permission. If Adobe prompts for the timestamp connection, close the application
+and run `deploy\Configure-AdobeTimestampNetworkAccess.ps1 -TimestampUrl <RFC3161 URL>`.
+This explicit helper merges the TSA hostname into `tHostPerms`. Adobe matches
+this permission across schemes and ports; use a dedicated TSA hostname when
+that scope matters. It preserves other
+rules and leaves sandboxing, AppContainer, Enhanced Security, and Protected View
+enabled. A block-all preference becomes a custom list with unknown sites blocked.
+For centrally managed clients, deploy the same
 per-user `Security` timestamp values with Adobe Customization Wizard or another
 user-targeted configuration mechanism rather than running the IIS installer
 under a server administrator account. See Adobe's

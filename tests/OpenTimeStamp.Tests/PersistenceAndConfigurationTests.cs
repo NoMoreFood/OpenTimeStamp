@@ -11,53 +11,18 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 using OpenTimeStamp.Audit;
 using OpenTimeStamp.Configuration;
 using OpenTimeStamp.Issuance;
 
 namespace OpenTimeStamp.Tests;
 
-internal static class PersistenceAndConfigurationTests
+[TestClass]
+public sealed class PersistenceAndConfigurationTests
 {
-    public static void Register(ICollection<TestCase> tests)
-    {
-        // Keep persistence, concurrency, and configuration coverage grouped by subsystem.
-        tests.Add(new TestCase("Issuance first allocation accepts rollback tolerance", FirstAllocationWithTolerance));
-        tests.Add(new TestCase("Issuance state is durable and serials are unique", DurableUniqueSerialAllocation));
-        tests.Add(new TestCase("Issuance ordering and rollback protection", OrderingAndClockRollback));
-        tests.Add(new TestCase("Issuance allocation is concurrency-safe", ConcurrentAllocation));
-        tests.Add(new TestCase("Issuance clock is sampled after the filesystem lock", AllocationSamplesClockAfterLock));
-        tests.Add(new TestCase("Issuance filesystem lock coordinates external handles", IssuanceFilesystemLock));
-        tests.Add(new TestCase("Issuance cancellation stops lock waits without allocation", IssuanceCancellation));
-        tests.Add(new TestCase("Issuance fast path honors staged recovery state", StagedStateRecovery));
-        tests.Add(new TestCase("Issuance missing and corrupt state recovers or fails closed", MissingAndCorruptStateRecovery));
-        tests.Add(new TestCase("Issuance partial state rollback is rejected", PartialStateRollbackRejected));
-        tests.Add(new TestCase("Issuance coherent snapshot rollback requires an external anchor", CoherentSnapshotRollbackBoundary));
-        tests.Add(new TestCase("Issuance legacy state migrates without resetting", LegacyStateMigration));
-        tests.Add(new TestCase("Issuance health validation requires write access", HealthValidationRequiresWriteAccess));
-        tests.Add(new TestCase("Configuration defaults fail safe until provisioned", ConfigurationDefaultsFailSafe));
-        tests.Add(new TestCase(
-            "Configuration clone copies values and isolates lists",
-            ConfigurationCloneIsIndependent));
-        tests.Add(new TestCase("Configuration XML round-trip and normalization", ConfigurationRoundTrip));
-        tests.Add(new TestCase("Configuration compare-and-swap rejects stale writers", ConfigurationCompareAndSwap));
-        tests.Add(new TestCase("Configuration concurrent writers have one CAS winner", ConcurrentConfigurationCompareAndSwap));
-        tests.Add(new TestCase("Configuration filesystem lock coordinates external handles", ConfigurationFilesystemLock));
-        tests.Add(new TestCase("Configuration load detects same-metadata replacement", ConfigurationLoadDetectsSameMetadataReplacement));
-        tests.Add(new TestCase("Configuration null root is rejected safely", NullConfigurationRootRejected));
-        tests.Add(new TestCase(
-            "Configuration elements absent from the file keep their defaults",
-            ConfigurationMissingElementsKeepDefaults));
-        tests.Add(new TestCase("Audit health probe exercises the active append target", AuditProbeUsesActiveLog));
-        tests.Add(new TestCase("Audit filesystem lock coordinates external handles", AuditFilesystemLock));
-        tests.Add(new TestCase("Audit retention continues and retries at a bounded cadence", AuditRetentionRetryIsBounded));
-        tests.Add(new TestCase("Audit rollover and pruning follow configuration", AuditRolloverAndPruning));
-        tests.Add(new TestCase("Audit observers cannot change durable commit outcomes", AuditObserversAreNonBlocking));
-        tests.Add(new TestCase("Diagnostic files and optional Event Viewer delivery fail independently",
-            DiagnosticDeliveryIsIndependent));
-    }
-
-    private static void FirstAllocationWithTolerance()
+    [TestMethod(DisplayName = "Issuance first allocation accepts rollback tolerance")]
+    public void FirstAllocationWithTolerance()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -73,7 +38,8 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void DurableUniqueSerialAllocation()
+    [TestMethod(DisplayName = "Issuance serials are random and independent of stored state")]
+    public void RandomSerialAllocation()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -82,20 +48,36 @@ internal static class PersistenceAndConfigurationTests
             var first = TestFixtures.CreateInitializedStateStore(path).Allocate(now, TimeSpan.Zero, false);
             AssertEx.True(File.Exists(path));
             AssertEx.True(File.Exists(path + ".lock"));
+            var snapshot = File.ReadAllBytes(path);
             var second = new IssuanceStateStore(path).Allocate(now, TimeSpan.Zero, false);
-            AssertEx.NotEqual(TestFixtures.Hex(first.SerialNumber), TestFixtures.Hex(second.SerialNumber));
-            AssertEx.SequenceEqual(TestFixtures.Incremented(first.SerialNumber), second.SerialNumber);
             AssertEx.Equal(first.GenerationTimeUtc, second.GenerationTimeUtc);
 
+            // The issuance time is durable across store instances.
             var third = new IssuanceStateStore(path).Allocate(now.AddSeconds(1), TimeSpan.Zero, false);
-            AssertEx.SequenceEqual(TestFixtures.Incremented(second.SerialNumber), third.SerialNumber);
             AssertEx.Equal(now.AddSeconds(1), third.GenerationTimeUtc);
-            AssertEx.SequenceEqual(File.ReadAllBytes(path), File.ReadAllBytes(path + ".bak"),
-                "The recovery copy must mirror the committed generation, not the previous issued serial.");
+            AssertEx.Throws<ClockRollbackException>(() =>
+                new IssuanceStateStore(path).Allocate(now, TimeSpan.Zero, false));
+
+            // Restoring an older copy of the state, as a backup restore or a cloned data
+            // directory would, must not make the service repeat a serial number.
+            File.WriteAllBytes(path, snapshot);
+            File.Delete(path + ".bak");
+            var afterRestore = new IssuanceStateStore(path).Allocate(now, TimeSpan.Zero, false);
+
+            var serials = new[] { first, second, third, afterRestore }.Select(item => item.SerialNumber).ToList();
+            foreach (var serial in serials)
+            {
+                AssertEx.Equal(16, serial.Length);
+                AssertEx.Equal(0, serial[0] & 0x80, "Serial numbers must be positive integers.");
+                AssertEx.True(serial.Any(value => value != 0));
+            }
+
+            AssertEx.Equal(serials.Count, serials.Select(TestFixtures.Hex).Distinct(StringComparer.Ordinal).Count());
         }
     }
 
-    private static void OrderingAndClockRollback()
+    [TestMethod(DisplayName = "Issuance ordering and rollback protection")]
+    public void OrderingAndClockRollback()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -105,7 +87,6 @@ internal static class PersistenceAndConfigurationTests
             var first = store.Allocate(now, TimeSpan.Zero, true);
             var ordered = store.Allocate(now.AddMilliseconds(-500), TimeSpan.FromSeconds(1), true);
             AssertEx.Equal(first.GenerationTimeUtc.AddTicks(1), ordered.GenerationTimeUtc);
-            AssertEx.SequenceEqual(TestFixtures.Incremented(first.SerialNumber), ordered.SerialNumber);
 
             AssertEx.Throws<ClockRollbackException>(() =>
                 store.Allocate(now.AddSeconds(-5), TimeSpan.FromSeconds(1), true));
@@ -124,14 +105,13 @@ internal static class PersistenceAndConfigurationTests
                 store.ValidateAndGetNextGenerationTime(ordered.GenerationTimeUtc, TimeSpan.Zero, false));
 
             var afterFailure = new IssuanceStateStore(path).Allocate(ordered.GenerationTimeUtc, TimeSpan.Zero, true);
-            AssertEx.SequenceEqual(TestFixtures.Incremented(ordered.SerialNumber), afterFailure.SerialNumber,
-                "A rejected rollback must not consume a serial number.");
             AssertEx.Equal(nextOrderedTime, afterFailure.GenerationTimeUtc,
-                "Preview validation must not consume or otherwise change the next allocation.");
+                "A rejected rollback and a preview must not move the issuance clock.");
         }
     }
 
-    private static void ConcurrentAllocation()
+    [TestMethod(DisplayName = "Issuance allocation is concurrency-safe")]
+    public void ConcurrentAllocation()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -149,7 +129,8 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void AllocationSamplesClockAfterLock()
+    [TestMethod(DisplayName = "Issuance clock is sampled after the filesystem lock")]
+    public void AllocationSamplesClockAfterLock()
     {
         using var directory = new TemporaryDirectory();
         var path = directory.File("issuance-clock.bin");
@@ -196,7 +177,8 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void IssuanceFilesystemLock()
+    [TestMethod(DisplayName = "Issuance filesystem lock coordinates external handles")]
+    public void IssuanceFilesystemLock()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -210,13 +192,16 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void IssuanceCancellation()
+    [TestMethod(DisplayName = "Issuance cancellation stops lock waits without allocation")]
+    public void IssuanceCancellation()
     {
         using (var directory = new TemporaryDirectory())
         {
             var path = directory.File("issuance-cancellation.bin");
             var store = TestFixtures.CreateInitializedStateStore(path);
-            var artifactPaths = new[] { path, path + ".bak", path + ".meta", path + ".meta.bak" };
+            store.Allocate(new DateTime(2026, 7, 16, 19, 59, 0, DateTimeKind.Utc), TimeSpan.Zero, false);
+            store.Allocate(new DateTime(2026, 7, 16, 19, 59, 30, DateTimeKind.Utc), TimeSpan.Zero, false);
+            var artifactPaths = new[] { path, path + ".bak" };
             var before = artifactPaths.ToDictionary(item => item, File.ReadAllBytes, StringComparer.OrdinalIgnoreCase);
             var now = new DateTime(2026, 7, 16, 20, 0, 0, DateTimeKind.Utc);
 
@@ -249,245 +234,241 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void StagedStateRecovery()
+    [TestMethod(DisplayName = "Issuance state recovers from its newest valid copy")]
+    public void StateRecoversFromNewestValidCopy()
     {
         using (var directory = new TemporaryDirectory())
         {
-            const int generationOffset = 20;
-            const int serialOffset = 28;
-            const int statePayloadLength = 52;
-            const int markerIntegrityKeyOffset = 20;
-            const int integrityKeyLength = 32;
-            var path = directory.File("issuance-staged.bin");
+            var path = directory.File("issuance.bin");
+            var earlier = new DateTime(2026, 7, 16, 20, 30, 0, DateTimeKind.Utc);
+            var later = earlier.AddMinutes(5);
             var store = TestFixtures.CreateInitializedStateStore(path);
-            var staged = File.ReadAllBytes(path);
-            var marker = File.ReadAllBytes(path + ".meta");
-            var nextGeneration = BitConverter.ToUInt64(staged, generationOffset) + 1;
-            Buffer.BlockCopy(BitConverter.GetBytes(nextGeneration), 0, staged, generationOffset, sizeof(ulong));
-            var currentSerial = new byte[16];
-            Buffer.BlockCopy(staged, serialOffset, currentSerial, 0, currentSerial.Length);
-            var stagedSerial = TestFixtures.Incremented(currentSerial);
-            Buffer.BlockCopy(stagedSerial, 0, staged, serialOffset, stagedSerial.Length);
-            var integrityKey = new byte[integrityKeyLength];
-            Buffer.BlockCopy(marker, markerIntegrityKeyOffset, integrityKey, 0, integrityKey.Length);
-            using (var hmac = new HMACSHA256(integrityKey))
+            store.Allocate(earlier, TimeSpan.Zero, false);
+            var earlierRecord = File.ReadAllBytes(path);
+            store.Allocate(later, TimeSpan.Zero, false);
+            var laterRecord = File.ReadAllBytes(path);
+            AssertEx.SequenceEqual(earlierRecord, File.ReadAllBytes(path + ".bak"),
+                "The replaced record must become the backup.");
+
+            // A crash after flushing the staged record but before publishing it leaves the newer
+            // mark only in the staging file. It must win over the older published record.
+            File.WriteAllBytes(path, earlierRecord);
+            File.WriteAllBytes(path + ".new", laterRecord);
+            AssertEx.Throws<ClockRollbackException>(() => store.Validate(later.AddSeconds(-1), TimeSpan.Zero));
+            AssertEx.Equal(later.AddTicks(1), store.Allocate(later, TimeSpan.Zero, true).GenerationTimeUtc);
+
+            // A truncated staging file and a corrupted published record are both ignored in
+            // favor of the backup, which still holds the previous mark.
+            var newest = later.AddTicks(1);
+            store.Allocate(newest.AddSeconds(1), TimeSpan.Zero, false);
+            var corrupted = File.ReadAllBytes(path);
+            corrupted[6] ^= 0x01;
+            File.WriteAllBytes(path, corrupted);
+            File.WriteAllBytes(path + ".new", new byte[] { 0x4f, 0x54, 0x53 });
+            AssertEx.Throws<ClockRollbackException>(() => store.Validate(newest.AddSeconds(-1), TimeSpan.Zero));
+            AssertEx.Equal(newest.AddSeconds(2), store.Allocate(newest.AddSeconds(2), TimeSpan.Zero, false).GenerationTimeUtc);
+
+            // The published record alone is sufficient.
+            File.Delete(path + ".bak");
+            File.Delete(path + ".new");
+            store.Validate();
+
+            // So is the backup alone.
+            store.Allocate(newest.AddSeconds(3), TimeSpan.Zero, false);
+            File.Delete(path);
+            AssertEx.Equal(newest.AddSeconds(2).AddTicks(1),
+                store.Allocate(newest.AddSeconds(2), TimeSpan.Zero, true).GenerationTimeUtc);
+        }
+    }
+
+    [TestMethod(DisplayName = "Issuance missing or unrecognized state fails closed")]
+    public void MissingOrUnrecognizedStateFailsClosed()
+    {
+        using (var directory = new TemporaryDirectory())
+        {
+            var now = new DateTime(2026, 7, 16, 20, 45, 0, DateTimeKind.Utc);
+
+            // Issuance never creates state, so losing every copy stops issuance until an
+            // operator explicitly reinitializes or restores it.
+            var lostPath = directory.File("lost.bin");
+            var lost = TestFixtures.CreateInitializedStateStore(lostPath);
+            lost.Allocate(now, TimeSpan.Zero, false);
+            lost.Allocate(now.AddSeconds(1), TimeSpan.Zero, false);
+            File.Delete(lostPath);
+            File.Delete(lostPath + ".bak");
+            AssertEx.Throws<IssuanceStateException>(() => lost.Validate());
+            AssertEx.Throws<IssuanceStateException>(() => lost.Allocate(now.AddSeconds(2), TimeSpan.Zero, false));
+            lost.Initialize();
+            lost.Allocate(now.AddSeconds(2), TimeSpan.Zero, false);
+
+            // Repeated initialization never resets an existing clock.
+            lost.Initialize();
+            AssertEx.Throws<ClockRollbackException>(() => lost.Allocate(now, TimeSpan.Zero, false));
+
+            // Files that are neither current nor a recognized earlier format block an automatic
+            // reset: they may be damaged state that still needs to be restored.
+            var unknownPath = directory.File("unknown.bin");
+            File.WriteAllBytes(unknownPath, new byte[] { 0x4f, 0x54, 0x53, 0x39, 0x00 });
+            var unknown = new IssuanceStateStore(unknownPath);
+            AssertEx.Throws<IssuanceStateException>(() => unknown.Initialize());
+            AssertEx.Throws<IssuanceStateException>(() => unknown.Allocate(now, TimeSpan.Zero, false));
+
+            var tamperedPath = directory.File("tampered.bin");
+            var tampered = TestFixtures.CreateInitializedStateStore(tamperedPath);
+            tampered.Allocate(now, TimeSpan.Zero, false);
+            tampered.Allocate(now.AddSeconds(1), TimeSpan.Zero, false);
+            foreach (var copy in new[] { tamperedPath, tamperedPath + ".bak" })
             {
-                var integrity = hmac.ComputeHash(staged, 0, statePayloadLength);
-                Buffer.BlockCopy(integrity, 0, staged, statePayloadLength, integrity.Length);
+                var record = File.ReadAllBytes(copy);
+                record[record.Length - 1] ^= 0x80;
+                File.WriteAllBytes(copy, record);
             }
 
-            File.WriteAllBytes(path + ".new", staged);
-            var allocation = store.Allocate(
-                new DateTime(2026, 7, 16, 20, 15, 0, DateTimeKind.Utc),
-                TimeSpan.Zero,
-                false);
-            AssertEx.SequenceEqual(TestFixtures.Incremented(stagedSerial), allocation.SerialNumber,
-                "A valid staged generation must enter the full recovery candidate selection.");
+            AssertEx.Throws<IssuanceStateException>(() => tampered.Validate());
+            AssertEx.Throws<IssuanceStateException>(() => tampered.Initialize());
         }
     }
 
-    private static void MissingAndCorruptStateRecovery()
-    {
-        using (var directory = new TemporaryDirectory())
-        {
-            var path = directory.File("issuance.bin");
-            var now = new DateTime(2026, 7, 16, 20, 30, 0, DateTimeKind.Utc);
-            var store = TestFixtures.CreateInitializedStateStore(path);
-            AssertEx.True(File.Exists(path + ".meta.bak"));
-
-            // The very first initialization commits a distinct same-generation marker mirror.
-            // Repeated repair must refresh that mirror after replacing the active marker, so
-            // later active-marker loss still does not lose the integrity key.
-            store.Initialize();
-            AssertEx.Equal("OTSB", Encoding.ASCII.GetString(File.ReadAllBytes(path + ".meta.bak"), 0, 4));
-            File.Delete(path + ".meta");
-            store.Initialize();
-            AssertEx.True(File.Exists(path + ".meta"));
-            AssertEx.True(File.Exists(path + ".meta.bak"));
-            var first = store.Allocate(now, TimeSpan.Zero, true);
-            AssertEx.True(File.Exists(path + ".bak"));
-            AssertEx.True(File.Exists(path + ".meta"));
-
-            // A missing active copy is recoverable because the backup mirrors the exact
-            // committed generation rather than the previous (possibly issued) serial.
-            File.Delete(path);
-            var recovered = new IssuanceStateStore(path);
-            recovered.Initialize();
-            var second = recovered.Allocate(now, TimeSpan.Zero, true);
-            AssertEx.SequenceEqual(TestFixtures.Incremented(first.SerialNumber), second.SerialNumber);
-            AssertEx.Equal(first.GenerationTimeUtc.AddTicks(1), second.GenerationTimeUtc);
-
-            // Independently corrupting the active record must recover from the authenticated
-            // same-generation backup without rolling the serial or issuance time backward.
-            var active = File.ReadAllBytes(path);
-            active[28] ^= 0x01;
-            File.WriteAllBytes(path, active);
-            recovered.Initialize();
-            var third = recovered.Allocate(second.GenerationTimeUtc, TimeSpan.Zero, true);
-            AssertEx.SequenceEqual(TestFixtures.Incremented(second.SerialNumber), third.SerialNumber);
-            AssertEx.Equal(second.GenerationTimeUtc.AddTicks(1), third.GenerationTimeUtc);
-
-            // An independently missing active marker is recovered from its explicitly
-            // committed same-generation mirror without changing serial or time state.
-            File.Delete(path + ".meta");
-            recovered.Initialize();
-            var fourth = recovered.Allocate(third.GenerationTimeUtc, TimeSpan.Zero, true);
-            AssertEx.SequenceEqual(TestFixtures.Incremented(third.SerialNumber), fourth.SerialNumber);
-            AssertEx.Equal(third.GenerationTimeUtc.AddTicks(1), fourth.GenerationTimeUtc);
-
-            // Once issuance has occurred, loss of every state copy must fail closed even
-            // though the persistent initialization/high-water marker remains.
-            File.Delete(path);
-            File.Delete(path + ".bak");
-            var missing = new IssuanceStateStore(path);
-            AssertEx.Throws<IssuanceStateException>(() => missing.Initialize());
-            AssertEx.Throws<IssuanceStateException>(() =>
-                missing.Allocate(now.AddSeconds(1), TimeSpan.Zero, true));
-
-            // A post-issuance marker mirror cannot reconstruct missing issued state. If both
-            // state copies and the active marker disappear, recovery must still fail closed.
-            var staleSeedPath = directory.File("stale-seed.bin");
-            var staleSeedStore = TestFixtures.CreateInitializedStateStore(staleSeedPath);
-            staleSeedStore.Allocate(now, TimeSpan.Zero, false);
-            File.Delete(staleSeedPath);
-            File.Delete(staleSeedPath + ".bak");
-            File.Delete(staleSeedPath + ".meta");
-            AssertEx.True(File.Exists(staleSeedPath + ".meta.bak"));
-            var staleSeedRecovery = new IssuanceStateStore(staleSeedPath);
-            AssertEx.Throws<IssuanceStateException>(() => staleSeedRecovery.Initialize());
-            AssertEx.Throws<IssuanceStateException>(() => staleSeedRecovery.Validate());
-            AssertEx.Throws<IssuanceStateException>(() =>
-                staleSeedRecovery.Allocate(now.AddSeconds(1), TimeSpan.Zero, false));
-
-            // A crash after flushing the first marker temporary but before its atomic move
-            // is safe to resume: no published marker or backup means issuance was impossible.
-            var stagedInitializationPath = directory.File("staged-initialization.bin");
-            var stagedInitialization = TestFixtures.CreateInitializedStateStore(stagedInitializationPath);
-            File.Delete(stagedInitializationPath);
-            File.Delete(stagedInitializationPath + ".bak");
-            File.Delete(stagedInitializationPath + ".meta.bak");
-            File.Move(stagedInitializationPath + ".meta", stagedInitializationPath + ".meta.new");
-            stagedInitialization.Initialize();
-            stagedInitialization.Allocate(now, TimeSpan.Zero, false);
-
-            // A torn sole first marker staging file contains no committed identity. With no
-            // other state evidence it is safe to discard and restart initialization.
-            var tornInitializationPath = directory.File("torn-initialization.bin");
-            File.WriteAllBytes(tornInitializationPath + ".meta.new", new byte[] { 0x4f, 0x54, 0x53 });
-            var tornInitialization = new IssuanceStateStore(tornInitializationPath);
-            tornInitialization.Initialize();
-            AssertEx.True(File.Exists(tornInitializationPath));
-            AssertEx.True(File.Exists(tornInitializationPath + ".bak"));
-            AssertEx.True(File.Exists(tornInitializationPath + ".meta"));
-            AssertEx.True(File.Exists(tornInitializationPath + ".meta.bak"));
-            tornInitialization.Allocate(now, TimeSpan.Zero, false);
-
-            // Unknown state evidence cannot use the same recovery exception: it may represent
-            // a committed OTS2 store whose only integrity key was lost.
-            var unsafeTornPath = directory.File("unsafe-torn-initialization.bin");
-            File.WriteAllBytes(unsafeTornPath, new byte[] { 0x4f, 0x54, 0x53, 0x32 });
-            File.WriteAllBytes(unsafeTornPath + ".meta.new", new byte[] { 0x4f, 0x54, 0x53 });
-            AssertEx.Throws<IssuanceStateException>(() => new IssuanceStateStore(unsafeTornPath).Initialize());
-        }
-    }
-
-    private static void PartialStateRollbackRejected()
-    {
-        using (var directory = new TemporaryDirectory())
-        {
-            var path = directory.File("issuance.bin");
-            var now = new DateTime(2026, 7, 16, 20, 45, 0, DateTimeKind.Utc);
-            var store = TestFixtures.CreateInitializedStateStore(path);
-            store.Allocate(now, TimeSpan.Zero, false);
-            var priorAuthenticatedState = File.ReadAllBytes(path);
-            store.Allocate(now.AddSeconds(1), TimeSpan.Zero, false);
-
-            // Replaying a structurally valid, correctly authenticated old state into both
-            // copies is still rejected by the separately committed generation high-water.
-            File.WriteAllBytes(path, priorAuthenticatedState);
-            File.WriteAllBytes(path + ".bak", priorAuthenticatedState);
-            AssertEx.Throws<IssuanceStateException>(() => store.Validate());
-
-            // Losing the active marker still leaves the explicitly committed, same-generation
-            // marker mirror, so replaying only the state files remains detectable.
-            File.Delete(path + ".meta");
-            AssertEx.Throws<IssuanceStateException>(() => store.Validate());
-
-            // Independent byte tampering in every redundant state is detected as corruption.
-            var tampered = (byte[])priorAuthenticatedState.Clone();
-            tampered[28] ^= 0x80;
-            File.WriteAllBytes(path, tampered);
-            File.WriteAllBytes(path + ".bak", tampered);
-            AssertEx.Throws<IssuanceStateException>(() => store.Validate());
-        }
-    }
-
-    private static void CoherentSnapshotRollbackBoundary()
-    {
-        using (var directory = new TemporaryDirectory())
-        {
-            var path = directory.File("issuance.bin");
-            var now = new DateTime(2026, 7, 16, 20, 47, 0, DateTimeKind.Utc);
-            var store = TestFixtures.CreateInitializedStateStore(path);
-            store.Allocate(now, TimeSpan.Zero, false);
-            var snapshotState = File.ReadAllBytes(path);
-            var snapshotBackup = File.ReadAllBytes(path + ".bak");
-            var snapshotMarker = File.ReadAllBytes(path + ".meta");
-            var snapshotMarkerBackup = File.ReadAllBytes(path + ".meta.bak");
-            var second = store.Allocate(now.AddSeconds(1), TimeSpan.Zero, false);
-
-            // State authentication detects partial replay only. A coherent old copy includes
-            // its matching key and high-water marker, so local files cannot distinguish it
-            // from the point in time when it was current. Backup/restore procedures therefore
-            // need an external monotonic or append-only generation anchor.
-            File.WriteAllBytes(path, snapshotState);
-            File.WriteAllBytes(path + ".bak", snapshotBackup);
-            File.WriteAllBytes(path + ".meta", snapshotMarker);
-            File.WriteAllBytes(path + ".meta.bak", snapshotMarkerBackup);
-            store.Validate();
-            var replayed = store.Allocate(now.AddSeconds(1), TimeSpan.Zero, false);
-            AssertEx.SequenceEqual(second.SerialNumber, replayed.SerialNumber,
-                "This documents the whole-snapshot rollback boundary; " +
-                "do not claim local anti-rollback protection for it.");
-        }
-    }
-
-    private static void LegacyStateMigration()
+    [TestMethod(DisplayName = "Issuance legacy OTS1 state migrates without resetting its clock")]
+    public void LegacyOts1StateMigration()
     {
         using (var directory = new TemporaryDirectory())
         {
             var path = directory.File("issuance.bin");
             var issuedAt = new DateTime(2026, 7, 16, 20, 50, 0, DateTimeKind.Utc);
-            var legacySerial = Enumerable.Range(1, 16).Select(value => (byte)value).ToArray();
             using (FileStream stream = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             using (BinaryWriter writer = new(stream, Encoding.UTF8, false))
             {
                 writer.Write(Encoding.ASCII.GetBytes("OTS1"));
-                writer.Write(legacySerial);
+                writer.Write(Enumerable.Range(1, 16).Select(value => (byte)value).ToArray());
                 writer.Write(issuedAt.Ticks);
             }
 
-            // A crash may leave the first marker staging file truncated before the OTS1
-            // active record is replaced. The intact legacy record proves migration can retry.
+            // A migration to the intermediate format may have been interrupted while staging.
             File.WriteAllBytes(path + ".meta.new", new byte[] { 0x4f, 0x54, 0x53 });
 
             var store = new IssuanceStateStore(path);
+            AssertEx.Throws<IssuanceStateException>(
+                () => store.Allocate(issuedAt, TimeSpan.Zero, true),
+                "Issuance must not use or migrate earlier state implicitly.");
             store.Initialize();
-            AssertEx.True(File.Exists(path + ".meta"));
-            AssertEx.True(File.Exists(path + ".meta.bak"));
-
-            // The first completed migration also has an independently usable marker mirror.
-            File.Delete(path + ".meta");
-            store.Initialize();
-            var allocation = store.Allocate(issuedAt, TimeSpan.Zero, true);
-            AssertEx.SequenceEqual(TestFixtures.Incremented(legacySerial), allocation.SerialNumber);
-            AssertEx.Equal(issuedAt.AddTicks(1), allocation.GenerationTimeUtc);
-            AssertEx.Equal("OTS2", Encoding.ASCII.GetString(File.ReadAllBytes(path), 0, 4));
-            AssertEx.True(File.Exists(path + ".meta"));
+            AssertEx.Equal("OTS3", Encoding.ASCII.GetString(File.ReadAllBytes(path), 0, 4));
+            AssertEx.False(File.Exists(path + ".meta.new"));
+            AssertEx.Throws<ClockRollbackException>(() => store.Validate(issuedAt.AddSeconds(-1), TimeSpan.Zero));
+            AssertEx.Equal(issuedAt.AddTicks(1), store.Allocate(issuedAt, TimeSpan.Zero, true).GenerationTimeUtc);
         }
     }
 
-    private static void HealthValidationRequiresWriteAccess()
+    [TestMethod(DisplayName = "Issuance legacy OTS2 state migrates only when authentic")]
+    public void LegacyOts2StateMigration()
+    {
+        using (var directory = new TemporaryDirectory())
+        {
+            var issuedAt = new DateTime(2026, 7, 16, 20, 55, 0, DateTimeKind.Utc);
+
+            // A complete store: both state copies and both markers, as steady-state OTS2 left them.
+            var path = directory.File("issuance.bin");
+            WriteLegacyOts2Store(path, issuedAt, issuedAt);
+            var store = new IssuanceStateStore(path);
+            AssertEx.Throws<IssuanceStateException>(() => store.Allocate(issuedAt.AddSeconds(1), TimeSpan.Zero, false));
+            store.Initialize();
+            AssertEx.Equal("OTS3", Encoding.ASCII.GetString(File.ReadAllBytes(path), 0, 4));
+            foreach (var suffix in new[] { ".bak", ".meta", ".meta.bak" })
+            {
+                AssertEx.False(File.Exists(path + suffix), suffix + " from the earlier format was left behind.");
+            }
+
+            AssertEx.Throws<ClockRollbackException>(() => store.Validate(issuedAt.AddSeconds(-1), TimeSpan.Zero));
+            AssertEx.Equal(issuedAt.AddTicks(1), store.Allocate(issuedAt, TimeSpan.Zero, true).GenerationTimeUtc);
+
+            // An interrupted commit left the newer generation only in the active copy.
+            var aheadPath = directory.File("ahead.bin");
+            WriteLegacyOts2Store(aheadPath, issuedAt.AddSeconds(30), issuedAt);
+            var ahead = new IssuanceStateStore(aheadPath);
+            ahead.Initialize();
+            AssertEx.Throws<ClockRollbackException>(() => ahead.Validate(issuedAt.AddSeconds(29), TimeSpan.Zero));
+
+            // A damaged active copy is ignored in favor of its authentic mirror.
+            var damagedPath = directory.File("damaged.bin");
+            WriteLegacyOts2Store(damagedPath, issuedAt, issuedAt);
+            var damaged = File.ReadAllBytes(damagedPath);
+            damaged[44] ^= 0x01;
+            File.WriteAllBytes(damagedPath, damaged);
+            new IssuanceStateStore(damagedPath).Initialize();
+            AssertEx.Equal("OTS3", Encoding.ASCII.GetString(File.ReadAllBytes(damagedPath), 0, 4));
+
+            // State that no surviving marker authenticates must not seed the new clock.
+            var forgedPath = directory.File("forged.bin");
+            WriteLegacyOts2Store(forgedPath, issuedAt, issuedAt);
+            foreach (var copy in new[] { forgedPath, forgedPath + ".bak" })
+            {
+                var forged = File.ReadAllBytes(copy);
+                forged[44] ^= 0x01;
+                File.WriteAllBytes(copy, forged);
+            }
+
+            AssertEx.Throws<IssuanceStateException>(() => new IssuanceStateStore(forgedPath).Initialize());
+            AssertEx.Equal("OTS2", Encoding.ASCII.GetString(File.ReadAllBytes(forgedPath), 0, 4),
+                "A failed migration must leave the earlier state untouched.");
+
+            var keylessPath = directory.File("keyless.bin");
+            WriteLegacyOts2Store(keylessPath, issuedAt, issuedAt);
+            File.Delete(keylessPath + ".meta");
+            File.Delete(keylessPath + ".meta.bak");
+            AssertEx.Throws<IssuanceStateException>(() => new IssuanceStateStore(keylessPath).Initialize());
+        }
+    }
+
+    // Lays out the files an OTS2 store kept: an HMAC-authenticated state record with its mirror,
+    // and the key-bearing marker with its distinct mirror header.
+    private static void WriteLegacyOts2Store(string path, DateTime activeLastIssuedUtc, DateTime mirrorLastIssuedUtc)
+    {
+        var stateIdentifier = Enumerable.Range(1, 16).Select(value => (byte)value).ToArray();
+        var integrityKey = Enumerable.Range(101, 32).Select(value => (byte)value).ToArray();
+        var serial = Enumerable.Range(201, 16).Select(value => (byte)value).ToArray();
+
+        byte[] State(DateTime lastIssuedUtc)
+        {
+            using MemoryStream stream = new();
+            using (BinaryWriter writer = new(stream, Encoding.UTF8, true))
+            {
+                writer.Write(Encoding.ASCII.GetBytes("OTS2"));
+                writer.Write(stateIdentifier);
+                writer.Write(7UL);
+                writer.Write(serial);
+                writer.Write(lastIssuedUtc.Ticks);
+            }
+
+            var payload = stream.ToArray();
+            using HMACSHA256 hmac = new(integrityKey);
+            return payload.Concat(hmac.ComputeHash(payload)).ToArray();
+        }
+
+        byte[] Marker(string magic)
+        {
+            using MemoryStream stream = new();
+            using (BinaryWriter writer = new(stream, Encoding.UTF8, true))
+            {
+                writer.Write(Encoding.ASCII.GetBytes(magic));
+                writer.Write(stateIdentifier);
+                writer.Write(integrityKey);
+                writer.Write(7UL);
+                writer.Write(serial);
+            }
+
+            var payload = stream.ToArray();
+            using SHA256 sha256 = SHA256.Create();
+            return payload.Concat(sha256.ComputeHash(payload)).ToArray();
+        }
+
+        File.WriteAllBytes(path, State(activeLastIssuedUtc));
+        File.WriteAllBytes(path + ".bak", State(mirrorLastIssuedUtc));
+        File.WriteAllBytes(path + ".meta", Marker("OTSM"));
+        File.WriteAllBytes(path + ".meta.bak", Marker("OTSB"));
+    }
+
+    [TestMethod(DisplayName = "Issuance health validation requires write access")]
+    public void HealthValidationRequiresWriteAccess()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -549,7 +530,8 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void ConfigurationDefaultsFailSafe()
+    [TestMethod(DisplayName = "Configuration defaults fail safe until provisioned")]
+    public void ConfigurationDefaultsFailSafe()
     {
         var configuration = new ServiceConfiguration();
         AssertEx.False(configuration.Rfc3161Enabled);
@@ -596,7 +578,8 @@ internal static class PersistenceAndConfigurationTests
             item.IndexOf("Windows group or SID", StringComparison.OrdinalIgnoreCase) >= 0));
     }
 
-    private static void ConfigurationCloneIsIndependent()
+    [TestMethod(DisplayName = "Configuration clone copies values and isolates lists")]
+    public void ConfigurationCloneIsIndependent()
     {
         var source = new ServiceConfiguration
         {
@@ -605,7 +588,6 @@ internal static class PersistenceAndConfigurationTests
             AuthenticodeEnabled = true,
             AuthenticationMode = "Windows",
             CertificateStoreLocation = "CurrentUser",
-            CertificateStoreName = "My",
             CertificateThumbprint = "AABBCC",
             CertificateSelectionMode = ServiceConfiguration.AutomaticCertificateSelection,
             DefaultPolicyOid = TestFixtures.DefaultPolicyOid,
@@ -660,7 +642,8 @@ internal static class PersistenceAndConfigurationTests
         AssertEx.Equal(0, nullLists.AdminAllowedWindowsGroups.Count);
     }
 
-    private static void ConfigurationRoundTrip()
+    [TestMethod(DisplayName = "Configuration XML round-trip and normalization")]
+    public void ConfigurationRoundTrip()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -671,7 +654,6 @@ internal static class PersistenceAndConfigurationTests
             configuration.AuthenticodeEnabled = true;
             configuration.AuthenticationMode = " Windows ";
             configuration.CertificateStoreLocation = " CurrentUser ";
-            configuration.CertificateStoreName = " My ";
             configuration.CertificateThumbprint = "aa bb\u200ecc";
             configuration.AllowedHashAlgorithms = ["sha-256", " SHA384 ", "SHA-256"];
             configuration.AcceptedPolicyOids =
@@ -706,7 +688,6 @@ internal static class PersistenceAndConfigurationTests
             AssertEx.True(loaded.AuthenticodeEnabled);
             AssertEx.Equal("Windows", loaded.AuthenticationMode);
             AssertEx.Equal("CurrentUser", loaded.CertificateStoreLocation);
-            AssertEx.Equal("My", loaded.CertificateStoreName);
             AssertEx.Equal("AABBCC", loaded.CertificateThumbprint);
             AssertEx.Equal(TestFixtures.DefaultPolicyOid, loaded.DefaultPolicyOid);
             AssertEx.Equal(2, loaded.AcceptedPolicyOids.Count);
@@ -742,7 +723,8 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void ConfigurationCompareAndSwap()
+    [TestMethod(DisplayName = "Configuration compare-and-swap rejects stale writers")]
+    public void ConfigurationCompareAndSwap()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -764,7 +746,8 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void ConcurrentConfigurationCompareAndSwap()
+    [TestMethod(DisplayName = "Configuration concurrent writers have one CAS winner")]
+    public void ConcurrentConfigurationCompareAndSwap()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -808,7 +791,8 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void ConfigurationFilesystemLock()
+    [TestMethod(DisplayName = "Configuration filesystem lock coordinates external handles")]
+    public void ConfigurationFilesystemLock()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -836,7 +820,8 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void ConfigurationMissingElementsKeepDefaults()
+    [TestMethod(DisplayName = "Configuration elements absent from the file keep their defaults")]
+    public void ConfigurationMissingElementsKeepDefaults()
     {
         using var directory = new TemporaryDirectory();
         var path = directory.File("tsa.config");
@@ -889,15 +874,22 @@ internal static class PersistenceAndConfigurationTests
         AssertEx.True(defaults.AllowedHashAlgorithms.SequenceEqual(loaded.AllowedHashAlgorithms));
         AssertEx.True(defaults.AdminAllowedWindowsGroups.SequenceEqual(loaded.AdminAllowedWindowsGroups));
 
-        // The serializer skips an element that appears after a later-ordered one. That element
-        // must also resolve to its default instead of silently turning the safeguard off.
+        // The serializer skips an element that appears after a later-ordered one, or a second
+        // time. Such a file is refused, because the edit it contains would otherwise be ignored.
         var failClosed = "<FailClosedOnAuditError>true</FailClosedOnAuditError>";
         var imprints = "<LogMessageImprints>true</LogMessageImprints>";
         AssertEx.True(complete.Contains(failClosed) && complete.Contains(imprints));
         var reordered = complete.Replace(failClosed, "<swap/>").Replace(imprints, failClosed).Replace("<swap/>", imprints);
-        loaded = LoadEdited(reordered);
+        var misordered = AssertEx.Throws<ConfigurationErrorsException>(() => LoadEdited(reordered));
+        AssertEx.Contains("FailClosedOnAuditError", misordered.Message);
+        AssertEx.Throws<ConfigurationErrorsException>(() => LoadEdited(complete.Replace(
+            failClosed, failClosed + "<FailClosedOnAuditError>false</FailClosedOnAuditError>")));
+
+        // An element this release does not know, such as one written by another release, is skipped.
+        loaded = LoadEdited(complete.Replace(
+            "<CertificateThumbprint", "<CertificateStoreName>My</CertificateStoreName><CertificateThumbprint"));
         AssertEx.True(loaded.FailClosedOnAuditError);
-        AssertEx.True(loaded.LogMessageImprints);
+        AssertEx.Equal(defaults.MaxRequestBytes, loaded.MaxRequestBytes);
 
         // Explicit values still win over the defaults.
         loaded = LoadEdited(complete.Replace(failClosed, "<FailClosedOnAuditError>false</FailClosedOnAuditError>"));
@@ -912,7 +904,8 @@ internal static class PersistenceAndConfigurationTests
         AssertEx.Throws<ConfigurationErrorsException>(() => LoadEdited(unversioned));
     }
 
-    private static void NullConfigurationRootRejected()
+    [TestMethod(DisplayName = "Configuration null root is rejected safely")]
+    public void NullConfigurationRootRejected()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -928,7 +921,8 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void ConfigurationLoadDetectsSameMetadataReplacement()
+    [TestMethod(DisplayName = "Configuration load detects same-metadata replacement")]
+    public void ConfigurationLoadDetectsSameMetadataReplacement()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -959,7 +953,8 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void AuditProbeUsesActiveLog()
+    [TestMethod(DisplayName = "Audit health probe exercises the active append target")]
+    public void AuditProbeUsesActiveLog()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -981,7 +976,8 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void AuditFilesystemLock()
+    [TestMethod(DisplayName = "Audit filesystem lock coordinates external handles")]
+    public void AuditFilesystemLock()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -1037,7 +1033,8 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void AuditRetentionRetryIsBounded()
+    [TestMethod(DisplayName = "Audit retention continues and retries at a bounded cadence")]
+    public void AuditRetentionRetryIsBounded()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -1093,7 +1090,8 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void AuditRolloverAndPruning()
+    [TestMethod(DisplayName = "Audit rollover and pruning follow configuration")]
+    public void AuditRolloverAndPruning()
     {
         using (var directory = new TemporaryDirectory())
         {
@@ -1164,7 +1162,8 @@ internal static class PersistenceAndConfigurationTests
         }
     }
 
-    private static void AuditObserversAreNonBlocking()
+    [TestMethod(DisplayName = "Audit observers cannot change durable commit outcomes")]
+    public void AuditObserversAreNonBlocking()
     {
         using var directory = new TemporaryDirectory();
         var logDirectory = directory.File("Logs");
@@ -1197,7 +1196,8 @@ internal static class PersistenceAndConfigurationTests
         AssertEx.Equal("granted", observed[1].Result);
     }
 
-    private static void DiagnosticDeliveryIsIndependent()
+    [TestMethod(DisplayName = "Diagnostic files and optional Event Viewer delivery fail independently")]
+    public void DiagnosticDeliveryIsIndependent()
     {
         using var directory = new TemporaryDirectory();
         var diagnosticDirectory = directory.File("Diagnostics");
