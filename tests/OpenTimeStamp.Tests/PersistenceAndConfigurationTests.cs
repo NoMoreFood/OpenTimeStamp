@@ -95,14 +95,14 @@ public sealed class PersistenceAndConfigurationTests
                 store.Validate(ordered.GenerationTimeUtc.AddSeconds(-2), TimeSpan.FromSeconds(1)));
 
             var nextOrderedTime = store.ValidateAndGetNextGenerationTime(
-                ordered.GenerationTimeUtc,
+                () => ordered.GenerationTimeUtc,
                 TimeSpan.Zero,
                 true);
             AssertEx.Equal(ordered.GenerationTimeUtc.AddTicks(1), nextOrderedTime,
                 "Strict ordering must preview the same one-tick advance used by allocation.");
             AssertEx.Equal(
                 ordered.GenerationTimeUtc,
-                store.ValidateAndGetNextGenerationTime(ordered.GenerationTimeUtc, TimeSpan.Zero, false));
+                store.ValidateAndGetNextGenerationTime(() => ordered.GenerationTimeUtc, TimeSpan.Zero, false));
 
             var afterFailure = new IssuanceStateStore(path).Allocate(ordered.GenerationTimeUtc, TimeSpan.Zero, true);
             AssertEx.Equal(nextOrderedTime, afterFailure.GenerationTimeUtc,
@@ -129,8 +129,10 @@ public sealed class PersistenceAndConfigurationTests
         }
     }
 
-    [TestMethod(DisplayName = "Issuance clock is sampled after the filesystem lock")]
-    public void AllocationSamplesClockAfterLock()
+    [TestMethod(DisplayName = "Issuance and health sample the clock after the filesystem lock")]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void StateAccessSamplesClockAfterLock(bool healthCheck)
     {
         using var directory = new TemporaryDirectory();
         var path = directory.File("issuance-clock.bin");
@@ -144,8 +146,11 @@ public sealed class PersistenceAndConfigurationTests
             Interlocked.Increment(ref clockSamples);
             return new DateTime(Interlocked.Read(ref currentTicks), DateTimeKind.Utc);
         };
+        Func<DateTime> operation = healthCheck
+            ? () => store.ValidateAndGetNextGenerationTime(clock, TimeSpan.FromSeconds(2), false)
+            : () => store.Allocate(clock, TimeSpan.FromSeconds(2), false, CancellationToken.None).GenerationTimeUtc;
         using var started = new ManualResetEventSlim();
-        Task<IssuanceAllocation> waiting = null;
+        Task<DateTime> waiting = null;
         try
         {
             using (new FileStream(path + ".lock", FileMode.Open, FileAccess.ReadWrite, FileShare.None))
@@ -153,7 +158,7 @@ public sealed class PersistenceAndConfigurationTests
                 waiting = Task.Run(() =>
                 {
                     started.Set();
-                    return store.Allocate(clock, TimeSpan.FromSeconds(2), false, CancellationToken.None);
+                    return operation();
                 });
                 AssertEx.True(started.Wait(2000), "The issuance contender did not start.");
                 AssertEx.False(waiting.Wait(150), "Issuance unexpectedly bypassed the external lock.");
@@ -162,10 +167,9 @@ public sealed class PersistenceAndConfigurationTests
             }
 
             AssertEx.True(SpinWait.SpinUntil(() => waiting.IsCompleted, 5000), "Issuance did not resume.");
-            AssertEx.Equal(now.AddSeconds(4), waiting.GetAwaiter().GetResult().GenerationTimeUtc);
+            AssertEx.Equal(now.AddSeconds(4), waiting.GetAwaiter().GetResult());
             Interlocked.Exchange(ref currentTicks, now.Ticks);
-            AssertEx.Throws<ClockRollbackException>(() =>
-                store.Allocate(clock, TimeSpan.FromSeconds(2), false, CancellationToken.None));
+            AssertEx.Throws<ClockRollbackException>(() => operation());
         }
         finally
         {

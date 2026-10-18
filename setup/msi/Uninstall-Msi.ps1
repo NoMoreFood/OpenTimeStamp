@@ -33,8 +33,10 @@ if (-not (Test-Path -LiteralPath $administrationAssembly -PathType Leaf)) {
 }
 Add-Type -Path $administrationAssembly
 
-$manager = New-Object Microsoft.Web.Administration.ServerManager
+$deploymentLock = Enter-OpenTimeStampDeploymentLock -Scope 'OpenTimeStamp-MachineDeployment'
+$manager = $null
 try {
+    $manager = New-Object Microsoft.Web.Administration.ServerManager
     $site = $manager.Sites[$siteName]
     $application = if ($null -eq $site) { $null } else { $site.Applications[$applicationPath] }
     if ($null -eq $application) {
@@ -91,7 +93,10 @@ try {
     $manager.CommitChanges()
 }
 finally {
-    $manager.Dispose()
+    try {
+        if ($null -ne $manager) { $manager.Dispose() }
+    }
+    finally { Exit-OpenTimeStampDeploymentLock -Lock $deploymentLock }
 }
 
 Write-Host "Removed IIS application '$siteName$applicationPath' and its dedicated application pool."

@@ -83,19 +83,20 @@ if (-not $SkipTests) {
         throw "The managed regression suite failed with exit code $LASTEXITCODE."
     }
 
-    $deploymentTests = Join-Path $repositoryRoot 'tests\Deployment.Tests.ps1'
     $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     if (-not (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
         throw 'Windows PowerShell 5.1 is required to run deployment regression tests.'
     }
-    if (-not (Test-Path -LiteralPath $deploymentTests -PathType Leaf)) {
-        throw "Deployment regression tests were not found at '$deploymentTests'."
-    }
-
-    Write-Host 'Running deployment and packaging regression suite under Windows PowerShell 5.1'
-    & $windowsPowerShell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $deploymentTests
-    if ($LASTEXITCODE -ne 0) {
-        throw "The deployment regression suite failed with exit code $LASTEXITCODE."
+    foreach ($suite in @('Deployment.Tests.ps1', 'ClientConfiguration.Tests.ps1')) {
+        $testScript = Join-Path $repositoryRoot "tests\$suite"
+        if (-not (Test-Path -LiteralPath $testScript -PathType Leaf)) {
+            throw "Regression tests were not found at '$testScript'."
+        }
+        Write-Host "Running $suite under Windows PowerShell 5.1"
+        & $windowsPowerShell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $testScript
+        if ($LASTEXITCODE -ne 0) {
+            throw "$suite failed with exit code $LASTEXITCODE."
+        }
     }
 }
 

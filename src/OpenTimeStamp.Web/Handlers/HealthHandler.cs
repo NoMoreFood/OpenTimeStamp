@@ -177,6 +177,9 @@ internal sealed class HealthHandler : IHttpHandler
             cancellationToken.ThrowIfCancellationRequested();
             var snapshot = ServiceRuntime.LoadSnapshot();
             cancellationToken.ThrowIfCancellationRequested();
+
+            // Probe duration consumes the validity window checked for the certificate.
+            var evaluationTimestamp = Stopwatch.GetTimestamp();
             var evaluation = EvaluateHealth(snapshot, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             CompleteRefresh(refresh, new HealthSnapshot(
@@ -184,7 +187,7 @@ internal sealed class HealthHandler : IHttpHandler
                 snapshot.FipsEnabled,
                 snapshot.ConfigurationVersion,
                 refresh.InvalidationVersion,
-                Stopwatch.GetTimestamp(),
+                evaluationTimestamp,
                 evaluation.Detail));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -244,11 +247,8 @@ internal sealed class HealthHandler : IHttpHandler
             var policyFailure = HealthPolicy.GetConfigurationPolicyFailure(configuration, snapshot.FipsEnabled);
             if (policyFailure is not null) return new HealthEvaluation(false, policyFailure);
 
-            var utcNow = DateTime.UtcNow;
             cancellationToken.ThrowIfCancellationRequested();
-            var certificateValidationTimeUtc = HealthPolicy.GetRuntimeCertificateValidationTimeUtc(
-                configuration,
-                utcNow);
+            var certificateValidationTimeUtc = HealthPolicy.GetRuntimeCertificateValidationTimeUtc(configuration);
             cancellationToken.ThrowIfCancellationRequested();
             if (!ServiceRuntime.Certificates.ValidateSelection(
                     configuration,
@@ -336,18 +336,16 @@ internal sealed class HealthHandler : IHttpHandler
 
 internal static class HealthPolicy
 {
-    internal static DateTime GetRuntimeCertificateValidationTimeUtc(
-        ServiceConfiguration configuration,
-        DateTime utcNow)
+    internal static DateTime GetRuntimeCertificateValidationTimeUtc(ServiceConfiguration configuration)
     {
         if (configuration is null) throw new ArgumentNullException(nameof(configuration));
 
         var nextGenerationTimeUtc = ServiceRuntime.IssuanceState.ValidateAndGetNextGenerationTime(
-            utcNow,
+            () => DateTime.UtcNow,
             TimeSpan.FromSeconds(configuration.ClockRollbackToleranceSeconds),
             configuration.Ordering);
         return GetCertificateValidationTimeUtc(
-            utcNow,
+            DateTime.UtcNow,
             nextGenerationTimeUtc,
             TimeSpan.FromSeconds(HealthHandler.CacheDurationSeconds + HealthHandler.StaleGraceSeconds));
     }

@@ -368,10 +368,10 @@ internal static class TestOverloads
     // Checks integrity and write access only: the latest representable instant can never be a rollback.
     public static void Validate(this IssuanceStateStore store) =>
         store.ValidateAndGetNextGenerationTime(
-            DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc), TimeSpan.Zero, false);
+            () => DateTime.SpecifyKind(DateTime.MaxValue, DateTimeKind.Utc), TimeSpan.Zero, false);
 
     public static void Validate(this IssuanceStateStore store, DateTime utcNow, TimeSpan rollbackTolerance) =>
-        store.ValidateAndGetNextGenerationTime(utcNow, rollbackTolerance, false);
+        store.ValidateAndGetNextGenerationTime(() => utcNow, rollbackTolerance, false);
 
     public static bool Write(this AuditLogger logger, AuditRecord record, int retentionDays, bool failClosed) =>
         logger.Write(record, ServiceConfiguration.DailyLogRollover, true, retentionDays, failClosed);

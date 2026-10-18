@@ -6,6 +6,7 @@
     <Deterministic>true</Deterministic>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <NuGetAuditMode>all</NuGetAuditMode>
     <WarningLevel>4</WarningLevel>
     <CodeAnalysisTreatWarningsAsErrors
       Condition="'$(CodeAnalysisTreatWarningsAsErrors)' == ''">false</CodeAnalysisTreatWarningsAsErrors>

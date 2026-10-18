@@ -47,6 +47,22 @@ $pdfScript = Join-Path $deployPath 'Configure-PdfXChangeTimestamping.ps1'
 $acrobatRoot = 'Registry::HKEY_CURRENT_USER\Software\OpenTimeStamp-AcrobatSetupTests-' +
     [Guid]::NewGuid().ToString('N')
 try {
+    Invoke-Test 'Signing transport aborts stalled responses and closes active connections on disposal' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $deployPath 'Invoke-TimestampSigning.ps1'), [ref]$tokens, [ref]$parseErrors)
+        $source = $ast.Find({
+            param($node)
+            $node -is [Management.Automation.Language.StringConstantExpressionAst] -and
+                $node.Value.Contains('public sealed class TimestampTransport')
+        }, $true).Value
+        $checks = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'SigningTransportChecks.cs'))
+        Add-Type -TypeDefinition ($source + "`r`n" + $checks) `
+            -ReferencedAssemblies System.dll,System.Core.dll,System.Net.Http.dll
+        [OpenTimeStamp.Clients.SigningTransportChecks]::Run()
+    }
+
     Invoke-Test 'Visual Studio preserves signing choices and both platform conditions' {
         foreach ($namespace in @('', ' xmlns="http://schemas.microsoft.com/developer/msbuild/2003"')) {
             $path = Join-Path $testRoot ('publish-' + [guid]::NewGuid().ToString('N') + '.pubxml')
@@ -292,6 +308,38 @@ try {
         Assert-True ($key.GetValue('Existing') -eq 'before' -and $key.GetValue('Unrelated') -eq 'preserve') `
             'Rollback did not preserve the original preferences.'
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $path 'New'))) 'Rollback left a newly created empty key.'
+    }
+
+    Invoke-Test 'Registry rollback preserves another writer while restoring uncontested settings' {
+        $path = Join-Path $registryRoot 'ConcurrentRollback'
+        New-Item -Path $path -Force | Out-Null
+        foreach ($name in @('Uncontested', 'Concurrent')) {
+            New-ItemProperty -LiteralPath $path -Name $name -Value before -PropertyType String | Out-Null
+        }
+        function New-ItemProperty {
+            [CmdletBinding()]
+            param($LiteralPath, $Name, $Value, $PropertyType, [switch]$Force)
+
+            if ($Name -eq 'Failure') {
+                Microsoft.PowerShell.Management\New-ItemProperty -LiteralPath $LiteralPath -Name Concurrent `
+                    -Value 'other writer' -PropertyType String -Force | Out-Null
+                throw 'Simulated registry write failure.'
+            }
+            Microsoft.PowerShell.Management\New-ItemProperty @PSBoundParameters
+        }
+        try {
+            Assert-Throws {
+                Set-ClientRegistryValues -Values @(
+                    [pscustomobject]@{ Path = $path; Name = 'Uncontested'; Kind = 'String'; Value = 'after' },
+                    [pscustomobject]@{ Path = $path; Name = 'Concurrent'; Kind = 'String'; Value = 'after' },
+                    [pscustomobject]@{ Path = $path; Name = 'Failure'; Kind = 'String'; Value = 'after' })
+            }
+        }
+        finally { Remove-Item Function:\New-ItemProperty }
+        $key = Get-Item -LiteralPath $path
+        Assert-True ($key.GetValue('Concurrent') -ceq 'other writer') 'Rollback overwrote a concurrent change.'
+        Assert-True ($key.GetValue('Uncontested') -ceq 'before') 'Rollback abandoned an uncontested setting.'
+        Assert-True ($key.GetValueNames() -notcontains 'Failure') 'Rollback left the failed setting.'
     }
 
     Invoke-Test 'WhatIf does not create registry keys or profile files' {

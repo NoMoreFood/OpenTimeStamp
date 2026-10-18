@@ -134,17 +134,20 @@ public sealed class IssuanceStateStore
     /// and returns the generation time the next allocation would use.
     /// </summary>
     public DateTime ValidateAndGetNextGenerationTime(
-        DateTime utcNow,
+        Func<DateTime> utcNowProvider,
         TimeSpan rollbackTolerance,
         bool ordering)
     {
+        if (utcNowProvider is null) throw new ArgumentNullException(nameof(utcNowProvider));
         ValidateRollbackTolerance(rollbackTolerance);
-        utcNow = utcNow.ToUniversalTime();
 
         using var storeLock = AcquireLock(TimeSpan.FromSeconds(5), CancellationToken.None);
         try
         {
             var lastIssuedUtc = ReadHighWaterMark();
+
+            // Compare against the clock after locking, just as issuance does.
+            var utcNow = utcNowProvider().ToUniversalTime();
             EnsureClockNotRolledBack(lastIssuedUtc, utcNow, rollbackTolerance);
             var nextGenerationTimeUtc = CalculateGenerationTime(lastIssuedUtc, utcNow, ordering);
 

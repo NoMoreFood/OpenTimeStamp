@@ -203,7 +203,7 @@ internal sealed class AdminHandler : IHttpHandler
             {
                 if (!ServiceRuntime.Certificates.ValidateSelection(
                         updated,
-                        HealthPolicy.GetRuntimeCertificateValidationTimeUtc(updated, DateTime.UtcNow),
+                        HealthPolicy.GetRuntimeCertificateValidationTimeUtc(updated),
                         out var reason))
                 {
                     throw new ConfigurationErrorsException(reason);

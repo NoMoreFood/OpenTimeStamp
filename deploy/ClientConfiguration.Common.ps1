@@ -192,13 +192,26 @@ function Set-ClientRegistryValues {
         for ($index = $journal.Count - 1; $index -ge 0; $index--) {
             $record = $journal[$index]
             try {
+                $key = Get-Item -LiteralPath $record.Entry.Path -ErrorAction SilentlyContinue
+                $exists = $key -and $key.GetValueNames() -contains $record.Entry.Name
+                $current = if ($exists) {
+                    $key.GetValue($record.Entry.Name, $null,
+                        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                }
+                else { $null }
+                $kind = if ($exists) { $key.GetValueKind($record.Entry.Name) } else { $null }
+                if ($exists -eq $record.Existed -and
+                    (-not $exists -or ($current -eq $record.Before -and $kind -eq $record.Kind))) { continue }
+                if (-not $exists -or $current -ne $record.Entry.Value -or [string]$kind -ne $record.Entry.Kind) {
+                    throw "'$($record.Entry.Path)\$($record.Entry.Name)' changed after setup wrote it."
+                }
                 if ($record.Existed) {
                     New-ItemProperty -LiteralPath $record.Entry.Path -Name $record.Entry.Name -Value $record.Before `
                         -PropertyType ([string]$record.Kind) -Force | Out-Null
                 }
-                elseif (Test-Path -LiteralPath $record.Entry.Path) {
+                else {
                     Remove-ItemProperty -LiteralPath $record.Entry.Path -Name $record.Entry.Name `
-                        -ErrorAction SilentlyContinue
+                        -ErrorAction Stop
                 }
             }
             catch { $rollbackErrors += $_.Exception.Message }

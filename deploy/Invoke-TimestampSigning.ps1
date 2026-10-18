@@ -68,7 +68,8 @@ namespace OpenTimeStamp.Clients
         private readonly Uri upstream;
         private readonly string path;
         private readonly Task worker;
-        private volatile bool stopping;
+        private readonly CancellationTokenSource shutdown = new CancellationTokenSource();
+        private int disposed;
         public string Url { get; private set; }
         public string Error { get; private set; }
 
@@ -86,28 +87,44 @@ namespace OpenTimeStamp.Clients
 
         private void Run()
         {
-            while (!stopping)
+            try
             {
-                if (!listener.Pending()) { Thread.Sleep(20); continue; }
-                using (var client = listener.AcceptTcpClient())
+                while (!shutdown.IsCancellationRequested)
                 {
-                    client.ReceiveTimeout = 10000;
-                    client.SendTimeout = 10000;
-                    using (var stream = client.GetStream())
+                    if (!listener.Pending()) { shutdown.Token.WaitHandle.WaitOne(20); continue; }
+                    using (var client = listener.AcceptTcpClient())
+                    using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token))
+                    using (deadline.Token.Register(client.Close))
                     {
-                        try { Forward(stream); }
-                        catch (Exception exception)
+                        // Bound the whole exchange as well as individual socket operations.
+                        deadline.CancelAfter(TimeSpan.FromSeconds(45));
+                        client.ReceiveTimeout = 10000;
+                        client.SendTimeout = 10000;
+                        using (var stream = client.GetStream())
                         {
-                            Error = exception.GetBaseException().Message;
-                            try { Reply(stream, 502, "text/plain", Encoding.UTF8.GetBytes("Timestamp retrieval failed.")); }
-                            catch (IOException) { }
+                            try { Forward(stream, deadline.Token); }
+                            catch (Exception exception)
+                            {
+                                if (shutdown.IsCancellationRequested) return;
+                                Error = exception.GetBaseException().Message;
+                                try
+                                {
+                                    Reply(stream, 502, "text/plain", Encoding.UTF8.GetBytes("Timestamp retrieval failed."));
+                                }
+                                catch (IOException) { }
+                                catch (ObjectDisposedException) { }
+                            }
                         }
                     }
                 }
             }
+            catch (Exception exception)
+            {
+                if (!shutdown.IsCancellationRequested) Error = exception.GetBaseException().Message;
+            }
         }
 
-        private void Forward(NetworkStream stream)
+        private void Forward(NetworkStream stream, CancellationToken cancellationToken)
         {
             // Bound the local request and accept only the private endpoint for this signing operation.
             var header = new StringBuilder();
@@ -168,11 +185,14 @@ namespace OpenTimeStamp.Clients
                 request.Content = new ByteArrayContent(body);
                 request.Content.Headers.TryAddWithoutValidation("Content-Type", contentType);
                 using (var http = new HttpClient(handler))
-                using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+                using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
                 {
+                    timeout.CancelAfter(TimeSpan.FromSeconds(30));
                     http.Timeout = TimeSpan.FromSeconds(30);
                     using (var response = http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
                         .GetAwaiter().GetResult())
+                    // Closing the response also interrupts streams that ignore read cancellation.
+                    using (timeout.Token.Register(response.Dispose))
                     {
                         if (response.StatusCode != HttpStatusCode.OK)
                             throw new IOException("The timestamp server did not return HTTP 200.");
@@ -206,9 +226,10 @@ namespace OpenTimeStamp.Clients
 
         public void Dispose()
         {
-            stopping = true;
-            worker.Wait(TimeSpan.FromSeconds(45));
+            if (Interlocked.Exchange(ref disposed, 1) != 0) return;
+            shutdown.Cancel();
             listener.Stop();
+            if (worker.Wait(TimeSpan.FromSeconds(5))) shutdown.Dispose();
         }
     }
 }
