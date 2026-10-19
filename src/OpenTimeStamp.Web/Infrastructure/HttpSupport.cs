@@ -185,8 +185,7 @@ internal static class HttpSupport
                     // bound. A continuation observes any later fault after release.
                     await ObserveAbortedReadAsync(readTask, abandonedReadObserved).ConfigureAwait(false);
 
-                    if (cancellationToken.IsCancellationRequested)
-                        throw new OperationCanceledException(cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
                     throw TimedOutBody();
                 }
 

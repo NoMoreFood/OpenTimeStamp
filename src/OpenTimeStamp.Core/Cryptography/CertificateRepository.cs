@@ -81,6 +81,8 @@ public sealed class CertificateRepository : IDisposable
         return horizon.Ticks >= remainingTicks ? maximumUtc : utcNow.AddTicks(horizon.Ticks);
     }
 
+    [SuppressMessage("Performance", "CA1822:Mark members as static",
+        Justification = "Certificate enumeration and selection are exposed through the same repository instance.")]
     public IReadOnlyList<CertificateDescriptor> ListCertificates(
         bool includeIneligible,
         string signingDigestAlgorithm,
@@ -444,7 +446,7 @@ public sealed class CertificateRepository : IDisposable
     }
 
     private static void AddStore(
-        ICollection<CertificateDescriptor> output,
+        List<CertificateDescriptor> output,
         StoreLocation location,
         bool includeIneligible,
         string signingDigestAlgorithm,

@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Specialized;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -116,6 +117,8 @@ internal sealed class FakeHttpRequest : HttpRequestBase
     }
 }
 
+[SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable",
+    Justification = "The response buffer is a MemoryStream with no unmanaged resources.")]
 internal sealed class FakeHttpResponse : HttpResponseBase
 {
     private readonly MemoryStream output = new();
@@ -191,6 +194,8 @@ internal sealed class HandlerTestHost : IDisposable
 
     public string DataDirectory => directory.Path;
 
+    [SuppressMessage("Performance", "CA1822:Mark members as static",
+        Justification = "Configuration belongs to the service runtime scoped by this test host's lifetime.")]
     public void Configure(Action<ServiceConfiguration> edit)
     {
         var configuration = ServiceRuntime.LoadConfiguration(out var generation);

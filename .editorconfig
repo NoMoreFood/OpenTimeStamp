@@ -13,3 +13,15 @@ csharp_style_expression_bodied_properties = true:suggestion
 csharp_prefer_braces = when_multiline:suggestion
 csharp_preserve_single_line_statements = true
 dotnet_style_readonly_field = true:suggestion
+
+# Application assemblies do not promise a cross-language CLS-compliant API.
+dotnet_diagnostic.CA1014.severity = none
+
+[src/OpenTimeStamp.Web/Global.asax.cs]
+# ASP.NET discovers application events by their conventional names.
+dotnet_diagnostic.CA1707.severity = none
+dotnet_diagnostic.CA1716.severity = none
+
+[src/tests/**/*.cs]
+# Keep test inputs local to their assertions instead of sharing mutable arrays.
+dotnet_diagnostic.CA1861.severity = none

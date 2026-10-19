@@ -365,7 +365,7 @@ public sealed class Asn1AndRequestTests
         AssertEx.Throws<AuthenticodeProtocolException>(() => AuthenticodeTimestampProcessor.ParseRequest(
             TestFixtures.BuildAuthenticodeRequest(signature, contentTypeOid: "1.2.840.113549.1.7.2")));
         AssertEx.Throws<AuthenticodeProtocolException>(() => AuthenticodeTimestampProcessor.ParseRequest(
-            TestFixtures.BuildAuthenticodeRequest(new byte[0])));
+            TestFixtures.BuildAuthenticodeRequest([])));
         AssertEx.Throws<AuthenticodeProtocolException>(() => AuthenticodeTimestampProcessor.ParseRequest(
             new byte[] { 0x30, 0x80 }));
         var oversized = AssertEx.Throws<AuthenticodeProtocolException>(() =>

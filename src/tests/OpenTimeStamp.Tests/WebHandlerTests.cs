@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.Serialization;
@@ -809,7 +810,8 @@ public sealed class WebHandlerTests
         using var directory = new TemporaryDirectory();
         var logDirectory = directory.File("Logs");
         Directory.CreateDirectory(logDirectory);
-        var path = Path.Combine(logDirectory, "timestamp-" + DateTime.UtcNow.ToString("yyyyMMdd") + ".jsonl");
+        var path = Path.Combine(logDirectory,
+            "timestamp-" + DateTime.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture) + ".jsonl");
         const string torn = "{\"timestampUtc\":\"interrupted";
         File.WriteAllText(path, torn, new UTF8Encoding(false));
         var logger = new AuditLogger(logDirectory);

@@ -640,11 +640,11 @@ internal sealed class AdminHandler : IHttpHandler
         builder.Append("<label>Timestamp Signing Hash Algorithm<select name=\"signingHash\">");
         foreach (var algorithm in HashAlgorithmCatalog.All.Where(item => item.CmsSigningSupported && (!PlatformSecurityPolicy.IsFipsEnabled || !item.IsLegacy)))
         {
-            builder.Append("<option value=\"").Append(H(algorithm.Name)).Append("\"")
+            builder.Append("<option value=\"").Append(H(algorithm.Name)).Append('"')
                 .Append(string.Equals(algorithm.Name,
                     HashAlgorithmCatalog.NormalizeName(FormValue("signingHash", configuration.SigningDigestAlgorithm)),
                     StringComparison.Ordinal) ? " selected" : string.Empty)
-                .Append(">").Append(H(FormatHashName(algorithm.Name))).Append("</option>");
+                .Append('>').Append(H(FormatHashName(algorithm.Name))).Append("</option>");
         }
 
         builder.Append("</select></label>").Append(Check("includeChain",
@@ -753,10 +753,10 @@ internal sealed class AdminHandler : IHttpHandler
             if (certificate.IsEligible)
             {
                 builder.Append("<input type=\"radio\" name=\"certificate\" value=\"")
-                    .Append(H(certificate.StoreLocation + "|" + certificate.Thumbprint)).Append("\"")
+                    .Append(H(certificate.StoreLocation + "|" + certificate.Thumbprint)).Append('"')
                     .Append(" aria-label=\"").Append(H(certificate.Subject + ", " +
-                        FormatCertificateStore(certificate.StoreLocation) + ", " + certificate.Thumbprint)).Append("\"")
-                    .Append(selected ? " checked" : string.Empty).Append(">");
+                        FormatCertificateStore(certificate.StoreLocation) + ", " + certificate.Thumbprint)).Append('"')
+                    .Append(selected ? " checked" : string.Empty).Append('>');
             }
             builder.Append("</td><td>").Append(H(FormatCertificateStore(certificate.StoreLocation)))
                 .Append("</td><td>").Append(H(certificate.Subject))

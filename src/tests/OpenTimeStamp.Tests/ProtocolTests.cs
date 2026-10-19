@@ -861,7 +861,9 @@ public sealed class ProtocolTests
                 AssertEx.Equal(1, ess.Values.Count);
                 using HashAlgorithm certificateHashAlgorithm = algorithm.Name switch
                 {
+#pragma warning disable CA5350 // Verify interoperability with legacy SHA-1 timestamp algorithms.
                     "SHA1" => new SHA1Cng(),
+#pragma warning restore CA5350
                     "SHA256" => new SHA256Cng(),
                     "SHA384" => new SHA384Cng(),
                     "SHA512" => new SHA512Cng(),
@@ -1059,7 +1061,7 @@ public sealed class ProtocolTests
             StringComparer.OrdinalIgnoreCase);
 
     private static void AssertSnapshotUnchanged(
-        IReadOnlyDictionary<string, byte[]> expected,
+        Dictionary<string, byte[]> expected,
         string directory)
     {
         var actual = SnapshotFiles(directory);

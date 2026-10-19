@@ -26,7 +26,9 @@ public static class WindowsHash
 
         using HashAlgorithm algorithm = algorithmName switch
         {
+#pragma warning disable CA5350 // SHA-1 is required for explicitly enabled legacy timestamp algorithms.
             "SHA1" => new SHA1Cng(),
+#pragma warning restore CA5350
             "SHA256" => new SHA256Cng(),
             "SHA384" => new SHA384Cng(),
             "SHA512" => new SHA512Cng(),

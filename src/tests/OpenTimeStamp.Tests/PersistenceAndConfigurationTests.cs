@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security.AccessControl;
@@ -1047,10 +1048,10 @@ public sealed class PersistenceAndConfigurationTests
             var today = DateTime.UtcNow.Date;
             var blocked = Path.Combine(
                 logDirectory,
-                "timestamp-" + today.AddDays(-3).ToString("yyyyMMdd") + ".jsonl");
+                "timestamp-" + today.AddDays(-3).ToString("yyyyMMdd", CultureInfo.InvariantCulture) + ".jsonl");
             var removable = Path.Combine(
                 logDirectory,
-                "timestamp-" + today.AddDays(-2).ToString("yyyyMMdd") + ".jsonl");
+                "timestamp-" + today.AddDays(-2).ToString("yyyyMMdd", CultureInfo.InvariantCulture) + ".jsonl");
             File.WriteAllText(blocked, "{}" + Environment.NewLine, new UTF8Encoding(false));
             File.WriteAllText(removable, "{}" + Environment.NewLine, new UTF8Encoding(false));
             File.SetAttributes(blocked, File.GetAttributes(blocked) | FileAttributes.ReadOnly);
