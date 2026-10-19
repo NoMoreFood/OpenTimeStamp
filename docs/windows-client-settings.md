@@ -55,7 +55,7 @@ Visual Studio's [system requirements](https://learn.microsoft.com/en-us/visualst
 Close the applications being configured. Run as the signing user; an elevated session started with a different administrator account has that administrator's HKCU. Preview and then apply the settings:
 
 ```powershell
-$setup = '.\deploy\Configure-SigningClients.ps1'
+$setup = '.\tools\deploy\Configure-SigningClients.ps1'
 $server = 'https://tsa.example.com/OpenTimeStamp'
 & $setup -ServerUrl $server -WhatIf
 & $setup -ServerUrl $server
@@ -136,7 +136,7 @@ Protected View is read-only in Adobe and Office. A document must become trusted 
 Visual Studio timestamping belongs to the selected ClickOnce project or publish profile. Assembly strong-name signing has no timestamp-server setting. Configure the profile used to publish the application:
 
 ```powershell
-.\deploy\Configure-SigningClients.ps1 -ServerUrl https://tsa.example.com/OpenTimeStamp `
+.\tools\deploy\Configure-SigningClients.ps1 -ServerUrl https://tsa.example.com/OpenTimeStamp `
     -Applications VisualStudio -VisualStudioProjectPath C:\src\App\Properties\PublishProfiles\Production.pubxml
 ```
 
@@ -145,7 +145,7 @@ The helper preserves signing enablement, certificate selection, platform conditi
 For VS Code, add a manual workspace task:
 
 ```powershell
-.\deploy\Configure-SigningClients.ps1 -ServerUrl https://tsa.example.com/OpenTimeStamp `
+.\tools\deploy\Configure-SigningClients.ps1 -ServerUrl https://tsa.example.com/OpenTimeStamp `
     -Applications VisualStudioCode -VSCodeWorkspacePath C:\src\App -VSCodePowerShellArchitecture x64
 ```
 
@@ -160,10 +160,10 @@ VS Code [Restricted Mode](https://code.visualstudio.com/docs/editing/workspaces/
 Use the signing wrapper for SignTool or native PowerShell with either transport:
 
 ```powershell
-.\deploy\Invoke-TimestampSigning.ps1 -ServerUrl $server -LiteralPath '.\Application.exe' `
+.\tools\deploy\Invoke-TimestampSigning.ps1 -ServerUrl $server -LiteralPath '.\Application.exe' `
     -CertificateThumbprint '<SIGNING-CERTIFICATE-THUMBPRINT>' -Tool SignTool `
     -SignToolPath 'C:\Path\To\signtool.exe'
-.\deploy\Invoke-TimestampSigning.ps1 -ServerUrl $server -LiteralPath '.\Script.ps1' `
+.\tools\deploy\Invoke-TimestampSigning.ps1 -ServerUrl $server -LiteralPath '.\Script.ps1' `
     -CertificateThumbprint '<SIGNING-CERTIFICATE-THUMBPRINT>' -Tool PowerShell
 ```
 
@@ -176,15 +176,15 @@ For a native SignTool command using HTTP, the argument helper returns `/tr`, `/t
 The same helper supplies `NuGet`, `DotNetNuGet`, `JarSigner`, and `Mage` arguments. `PowerShell` returns a splattable hashtable and `MSBuild` returns a project-property hashtable:
 
 ```powershell
-$timestampArgs = @(.\deploy\Get-TimestampSigningParameters.ps1 -ServerUrl $server -Tool DotNetNuGet)
+$timestampArgs = @(.\tools\deploy\Get-TimestampSigningParameters.ps1 -ServerUrl $server -Tool DotNetNuGet)
 & dotnet nuget sign '.\Package.nupkg' @timestampArgs --certificate-fingerprint '<THUMBPRINT>'
 if ($LASTEXITCODE -ne 0) { throw 'NuGet package signing failed.' }
 
-$timestampArgs = @(.\deploy\Get-TimestampSigningParameters.ps1 -ServerUrl $server -Tool JarSigner)
+$timestampArgs = @(.\tools\deploy\Get-TimestampSigningParameters.ps1 -ServerUrl $server -Tool JarSigner)
 & jarsigner @timestampArgs -keystore '.\signing.p12' '.\Application.jar' 'signing-key'
 
 # Native PowerShell parameters use an explicitly permitted HTTP endpoint:
-$signingParameters = .\deploy\Get-TimestampSigningParameters.ps1 `
+$signingParameters = .\tools\deploy\Get-TimestampSigningParameters.ps1 `
     -ServerUrl http://tsa.example.com/OpenTimeStamp -Tool PowerShell -AllowInsecureHttp
 $signature = Set-AuthenticodeSignature -LiteralPath '.\Script.ps1' -Certificate $certificate @signingParameters
 if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate) {
@@ -219,10 +219,10 @@ After setup, create one representative signature in each application and check b
 Run the isolated configuration tests in both hosts:
 
 ```powershell
-powershell.exe -NoProfile -File .\tests\ClientConfiguration.Tests.ps1
-pwsh.exe -NoProfile -File .\tests\ClientConfiguration.Tests.ps1
+powershell.exe -NoProfile -File .\src\tests\ClientConfiguration.Tests.ps1
+pwsh.exe -NoProfile -File .\src\tests\ClientConfiguration.Tests.ps1
 ```
 
 These tests use temporary profile files and dedicated test registry branches. They cover preserving preferences, policy conflicts, rollback after partial registry writes, file backups, concurrent-change rejection, repeated setup, and `-WhatIf`. They do not prove end-to-end signing in every application or remote transport in a particular environment.
 
-Use `tests\Invoke-TimestampSigningChecks.ps1` for real PowerShell and executable signing against explicitly selected HTTP and HTTPS application URLs. Supply an existing signing key, SignTool, an output directory, and the expected TSA thumbprint. `-UntrustedHttpsServerUrl` optionally verifies that TLS rejection preserves the unsigned input. The test creates disposable fixtures and independently verifies each result with SignTool.
+Use `src\tests\Invoke-TimestampSigningChecks.ps1` for real PowerShell and executable signing against explicitly selected HTTP and HTTPS application URLs. Supply an existing signing key, SignTool, an output directory, and the expected TSA thumbprint. `-UntrustedHttpsServerUrl` optionally verifies that TLS rejection preserves the unsigned input. The test creates disposable fixtures and independently verifies each result with SignTool.

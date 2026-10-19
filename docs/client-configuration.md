@@ -91,7 +91,7 @@ its included `readme.txt` and use a SignTool process of the same architecture.
 Then use the RFC 3161 endpoint:
 
 ```powershell
-.\deploy\Invoke-TimestampSigning.ps1 -LiteralPath file.xlsm `
+.\tools\deploy\Invoke-TimestampSigning.ps1 -LiteralPath file.xlsm `
     -ServerUrl https://tsa.example.com/OpenTimeStamp `
     -CertificateThumbprint '<SIGNING-CERTIFICATE-THUMBPRINT>' -Tool SignTool `
     -SignToolPath '<PATH-TO-MATCHING-ARCHITECTURE-SIGNTOOL>'
@@ -108,7 +108,7 @@ and per-user registry paths for 32-bit and 64-bit Acrobat. Close Acrobat and
 Reader, then configure the current signing user with the supplied helper:
 
 ```powershell
-.\deploy\Configure-AcrobatTimestamping.ps1 -TimestampUrl $rfc3161Url
+.\tools\deploy\Configure-AcrobatTimestamping.ps1 -TimestampUrl $rfc3161Url
 ```
 
 The helper preserves other timestamp servers, adds or reuses the exact
@@ -151,7 +151,7 @@ allows otherwise blocked operating-system actions and is not a URL allowlist.
 Do not add the TSA to `cTrustedSites`, which grants privileges to hosted PDF content.
 Some signing workflows also require the separate Trust Manager Internet-access
 permission. If Adobe prompts for the timestamp connection, close the application
-and run `deploy\Configure-AdobeTimestampNetworkAccess.ps1 -TimestampUrl <RFC3161 URL>`.
+and run `tools\deploy\Configure-AdobeTimestampNetworkAccess.ps1 -TimestampUrl <RFC3161 URL>`.
 This explicit helper merges the TSA hostname into `tHostPerms`. Adobe matches
 this permission across schemes and ports; use a dedicated TSA hostname when
 that scope matters. It preserves other

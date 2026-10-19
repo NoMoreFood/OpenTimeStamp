@@ -7,8 +7,7 @@ param(
 
     [uri]$AuthenticodeUrl = 'http://localhost/OpenTimeStamp/timestamp/authenticode',
 
-    [string]$OutputDirectory = (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) `
-        'artifacts\ProductSigningTests'),
+    [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\..\..\tools\artifacts\ProductSigningTests'),
 
     [string]$CertificateThumbprint,
 
@@ -36,9 +35,9 @@ if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne [Threading.Apartme
 Assert-Condition $Rfc3161Url.IsAbsoluteUri 'Rfc3161Url must be an absolute URI.'
 Assert-Condition $AuthenticodeUrl.IsAbsoluteUri 'AuthenticodeUrl must be an absolute URI.'
 
-$repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$repositoryRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 if ([string]::IsNullOrWhiteSpace($TsaCertificatePath)) {
-    $developmentTsaCertificate = Join-Path $repositoryRoot 'artifacts\OpenTimeStamp-development.cer'
+    $developmentTsaCertificate = Join-Path $repositoryRoot 'tools\artifacts\OpenTimeStamp-development.cer'
     if (Test-Path -LiteralPath $developmentTsaCertificate -PathType Leaf) {
         $TsaCertificatePath = $developmentTsaCertificate
     }

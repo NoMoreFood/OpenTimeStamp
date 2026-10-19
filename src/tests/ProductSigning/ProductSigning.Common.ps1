@@ -234,9 +234,9 @@ function Invoke-SignToolSign {
     )
 
     if ($TimestampUrl.Scheme -eq 'https') {
-        $repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+        $repositoryRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
         $applicationUrl = $TimestampUrl.AbsoluteUri -replace '/timestamp/rfc3161/?$', ''
-        return & (Join-Path $repositoryRoot 'deploy\Invoke-TimestampSigning.ps1') -LiteralPath $Path `
+        return & (Join-Path $repositoryRoot 'tools\deploy\Invoke-TimestampSigning.ps1') -LiteralPath $Path `
             -ServerUrl $applicationUrl -CertificateThumbprint $CertificateThumbprint `
             -SignToolPath $SignToolPath -Tool SignTool
     }

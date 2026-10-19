@@ -114,8 +114,8 @@ if ($SkipSigning -and $RequireSignedInstaller) {
 }
 
 $repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$buildCommon = Join-Path $repositoryRoot 'build\Build.Common.ps1'
-$deploymentCommon = Join-Path $repositoryRoot 'deploy\Deployment.Common.ps1'
+$buildCommon = Join-Path $repositoryRoot 'tools\build\Build.Common.ps1'
+$deploymentCommon = Join-Path $repositoryRoot 'tools\deploy\Deployment.Common.ps1'
 $webProject = Join-Path $repositoryRoot 'src\OpenTimeStamp.Web\OpenTimeStamp.Web.csproj'
 $assemblyInfo = Join-Path $repositoryRoot 'src\OpenTimeStamp.Web\Properties\AssemblyInfo.cs'
 $wixProject = Join-Path $PSScriptRoot 'OpenTimeStamp.Setup.wixproj'
@@ -135,13 +135,13 @@ $productVersion = '{0}.{1}.{2}' -f $assemblyVersion.Major, $assemblyVersion.Mino
 
 $usingDefaultOutput = [string]::IsNullOrWhiteSpace($OutputPath)
 if ($usingDefaultOutput) {
-    $OutputPath = Join-Path $repositoryRoot "artifacts\OpenTimeStamp-$productVersion-x64.msi"
+    $OutputPath = Join-Path $repositoryRoot "tools\artifacts\OpenTimeStamp-$productVersion-x64.msi"
 }
 $OutputPath = [System.IO.Path]::GetFullPath($OutputPath)
 if ([System.IO.Path]::GetExtension($OutputPath) -ne '.msi') { throw 'OutputPath must end in .msi.' }
 $outputParent = Split-Path -Parent $OutputPath
 if (-not (Test-Path -LiteralPath $outputParent -PathType Container)) {
-    $defaultArtifacts = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot 'artifacts'))
+    $defaultArtifacts = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot 'tools\artifacts'))
     if (-not $usingDefaultOutput -or
         -not $outputParent.Equals($defaultArtifacts, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "The custom MSI output parent '$outputParent' must already exist."
@@ -182,7 +182,7 @@ try {
         '--nologo',
         '--property:RestoreLockedMode=true',
         "--property:PayloadPath=$payloadPath",
-        "--property:DeployPath=$(Join-Path $repositoryRoot 'deploy')",
+        "--property:DeployPath=$(Join-Path $repositoryRoot 'tools\deploy')",
         "--property:SetupPath=$PSScriptRoot",
         "--property:ProductVersion=$productVersion",
         # End these directories with a forward slash: a trailing backslash would escape the closing

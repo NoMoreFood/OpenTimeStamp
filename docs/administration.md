@@ -111,4 +111,4 @@ for the audit logs on disk.
   repeat serial numbers, but two servers sharing one would contend for its state,
   settings, and audit log.
 
-See [Security Guidance](../.github/SECURITY.md) before exposing the service.
+See [Security Guidance](../SECURITY.md) before exposing the service.

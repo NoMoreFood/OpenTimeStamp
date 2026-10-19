@@ -29,9 +29,9 @@ Set-StrictMode -Version Latest
 [IO.File]::WriteAllText($artifactPath, $scriptText, [Text.UTF8Encoding]::new($true))
 $certificate = Get-TestSigningCertificate -Thumbprint $CertificateThumbprint
 if ($AuthenticodeUrl.Scheme -eq 'https') {
-    $repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    $repositoryRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
     $applicationUrl = $AuthenticodeUrl.AbsoluteUri -replace '/timestamp/authenticode/?$', ''
-    & (Join-Path $repositoryRoot 'deploy\Invoke-TimestampSigning.ps1') -LiteralPath $artifactPath `
+    & (Join-Path $repositoryRoot 'tools\deploy\Invoke-TimestampSigning.ps1') -LiteralPath $artifactPath `
         -ServerUrl $applicationUrl -CertificateThumbprint $CertificateThumbprint -Tool PowerShell | Out-Null
 }
 else {

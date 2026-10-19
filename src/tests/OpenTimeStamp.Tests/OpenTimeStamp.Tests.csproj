@@ -53,11 +53,11 @@
     </EmbeddedResource>
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\OpenTimeStamp.Core\OpenTimeStamp.Core.csproj">
+    <ProjectReference Include="..\..\OpenTimeStamp.Core\OpenTimeStamp.Core.csproj">
       <Project>{8E2C923F-C17B-4B0C-89E9-B50ED17B3144}</Project>
       <Name>OpenTimeStamp.Core</Name>
     </ProjectReference>
-    <ProjectReference Include="..\..\src\OpenTimeStamp.Web\OpenTimeStamp.Web.csproj">
+    <ProjectReference Include="..\..\OpenTimeStamp.Web\OpenTimeStamp.Web.csproj">
       <Project>{D2AA9228-235B-45DD-9909-D4540152088B}</Project>
       <Name>OpenTimeStamp.Web</Name>
     </ProjectReference>

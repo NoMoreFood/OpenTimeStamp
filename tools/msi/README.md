@@ -41,12 +41,12 @@ application was removed.
 Build the application and MSI from the repository root:
 
 ```powershell
-.\build\Build.ps1 -Configuration Release
+.\tools\build\Build.ps1 -Configuration Release
 ```
 
 The build uses [WiX Toolset 7.0.0](https://github.com/wixtoolset/wix/releases/tag/v7.0.0)
 through the pinned SDK project and writes
-`artifacts\OpenTimeStamp-1.0.0-x64.msi`. WiX 7 use is subject to its Open Source
+`tools\artifacts\OpenTimeStamp-1.0.0-x64.msi`. WiX 7 use is subject to its Open Source
 Maintenance Fee terms and requires acceptance of the applicable WiX EULA.
 
 Signing follows the WinDirStat build pattern: SignTool selects a suitable code-

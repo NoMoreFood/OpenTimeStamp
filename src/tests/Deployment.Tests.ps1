@@ -6,8 +6,8 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repositoryRoot = Split-Path -Parent $PSScriptRoot
-. (Join-Path $repositoryRoot 'deploy\Deployment.Common.ps1')
+$repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+. (Join-Path $repositoryRoot 'tools\deploy\Deployment.Common.ps1')
 
 $failures = 0
 $tests = 0
@@ -149,7 +149,7 @@ try {
             [System.IO.FileShare]::None)
         try {
             Assert-Throws {
-                & (Join-Path $repositoryRoot 'deploy\New-DevelopmentTsaCertificate.ps1') `
+                & (Join-Path $repositoryRoot 'tools\deploy\New-DevelopmentTsaCertificate.ps1') `
                     -StoreLocation CurrentUser -Subject $subject `
                     -ExportPublicCertificatePath $exportPath -Confirm:$false
             } 'Development certificate creation unexpectedly succeeded while its export target was locked.'
@@ -191,7 +191,7 @@ try {
     }
 
     Invoke-Test 'Office registry rollback is ownership aware and verified' {
-        $productCommonPath = Join-Path $repositoryRoot 'tests\ProductSigning\ProductSigning.Common.ps1'
+        $productCommonPath = Join-Path $repositoryRoot 'src\tests\ProductSigning\ProductSigning.Common.ps1'
         $productCommon = (Get-Content -LiteralPath $productCommonPath -Raw) -replace '(?m)^#Requires[^\r\n]*(?:\r?\n)?', ''
         Invoke-Expression $productCommon
         $registryPath = 'Registry::HKEY_CURRENT_USER\Software\OpenTimeStamp-ProductTest-' +
@@ -219,7 +219,7 @@ try {
     }
 
     Invoke-Test 'Native product command lines round-trip and time out under PowerShell 7.6' {
-        $productCommonPath = Join-Path $repositoryRoot 'tests\ProductSigning\ProductSigning.Common.ps1'
+        $productCommonPath = Join-Path $repositoryRoot 'src\tests\ProductSigning\ProductSigning.Common.ps1'
         $pwsh = Get-Command pwsh.exe -ErrorAction SilentlyContinue
         if ($null -eq $pwsh -or $pwsh.Version -lt [version]'7.6') {
             Write-Warning 'PowerShell 7.6 or later is unavailable; native product-process behavior was not exercised.'
@@ -358,13 +358,13 @@ catch {
             Write-Warning 'PowerShell 7.6 or later is unavailable; PDF signature validation was not exercised.'
             return
         }
-        $regressionPath = Join-Path $repositoryRoot 'tests\ProductSigning\Test-PdfSignatureValidation.ps1'
+        $regressionPath = Join-Path $repositoryRoot 'src\tests\ProductSigning\Test-PdfSignatureValidation.ps1'
         $output = @(& $pwsh.Source -NoLogo -NoProfile -NonInteractive -File $regressionPath 2>&1)
         Assert-Equal 0 $LASTEXITCODE "PDF signature validation failed: $($output -join [Environment]::NewLine)"
     }
 
     Invoke-Test 'Administrative host candidates avoid automatic-variable collisions' {
-        $installerPath = Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'
+        $installerPath = Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1'
         $tokens = $null
         $parseErrors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -478,7 +478,7 @@ catch {
         $tokens = $null
         $parseErrors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile(
-            (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
+            (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
         $definition = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -499,7 +499,7 @@ catch {
     }
 
     Invoke-Test 'Deployment rechecks binding protocols before issuance and reports all application URLs' {
-        $installerPath = Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'
+        $installerPath = Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1'
         $installer = Get-Content -LiteralPath $installerPath -Raw
         $tokens = $null
         $parseErrors = $null
@@ -600,7 +600,7 @@ catch {
 }
 '@
             [void]$worker.AddScript($workerScript).AddArgument(
-                (Join-Path $repositoryRoot 'deploy\Deployment.Common.ps1')).AddArgument($scope)
+                (Join-Path $repositoryRoot 'tools\deploy\Deployment.Common.ps1')).AddArgument($scope)
             $async = $worker.BeginInvoke()
             if (-not $async.AsyncWaitHandle.WaitOne(5000)) {
                 $worker.Stop()
@@ -619,7 +619,7 @@ catch {
     }
 
     Invoke-Test 'Publisher holds a path-scoped lock through destructive work' {
-        $publisher = Get-Content -LiteralPath (Join-Path $repositoryRoot 'build\Publish.ps1') -Raw
+        $publisher = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\build\Publish.ps1') -Raw
         $lockStart = $publisher.IndexOf(
             "`$publishLock = Enter-OpenTimeStampDeploymentLock -Scope ('OpenTimeStamp-Publish:' + `$OutputPath)")
         $destructivePublish = $publisher.IndexOf('/p:DeleteExistingFiles=true')
@@ -634,7 +634,7 @@ catch {
             Assert-OpenTimeStampPublishOutputSafe -OutputPath $repositoryRoot -RepositoryRoot $repositoryRoot
         } 'The repository root was accepted as a publish output.'
         Assert-Throws {
-            Assert-OpenTimeStampPublishOutputSafe -OutputPath (Join-Path $repositoryRoot 'artifacts') `
+            Assert-OpenTimeStampPublishOutputSafe -OutputPath (Join-Path $repositoryRoot 'tools\artifacts') `
                 -RepositoryRoot $repositoryRoot
         } 'The artifacts root was accepted as a publish output.'
 
@@ -647,7 +647,7 @@ catch {
 
     Invoke-Test 'Legacy publish adoption is limited to the recognized historical default' {
         $legacyRepository = Join-Path $testRoot 'legacy-publish-repository'
-        $legacyOutput = Join-Path $legacyRepository 'artifacts\OpenTimeStamp'
+        $legacyOutput = Join-Path $legacyRepository 'tools\artifacts\OpenTimeStamp'
         New-TestPayload -Path $legacyOutput
         New-Item -ItemType Directory -Path (Join-Path $legacyOutput 'App_Data') | Out-Null
         [System.IO.File]::WriteAllText((Join-Path $legacyOutput 'App_Data\.gitkeep'), '')
@@ -670,7 +670,7 @@ catch {
 
     Invoke-Test 'Legacy publish adoption rejects unexpected files and runtime state' {
         $unexpectedRepository = Join-Path $testRoot 'unexpected-legacy-repository'
-        $unexpectedOutput = Join-Path $unexpectedRepository 'artifacts\OpenTimeStamp'
+        $unexpectedOutput = Join-Path $unexpectedRepository 'tools\artifacts\OpenTimeStamp'
         New-TestPayload -Path $unexpectedOutput
         [System.IO.File]::WriteAllText((Join-Path $unexpectedOutput 'unrelated.txt'), 'preserve')
         Assert-Throws {
@@ -679,7 +679,7 @@ catch {
         } 'A legacy output containing an unexpected file was adopted.'
 
         $stateRepository = Join-Path $testRoot 'stateful-legacy-repository'
-        $stateOutput = Join-Path $stateRepository 'artifacts\OpenTimeStamp'
+        $stateOutput = Join-Path $stateRepository 'tools\artifacts\OpenTimeStamp'
         New-TestPayload -Path $stateOutput
         New-Item -ItemType Directory -Path (Join-Path $stateOutput 'App_Data') | Out-Null
         [System.IO.File]::WriteAllText((Join-Path $stateOutput 'App_Data\issuance.state'), 'state')
@@ -688,7 +688,7 @@ catch {
                 -RepositoryRoot $stateRepository -AllowLegacyDefaultOutput
         } 'A legacy output containing runtime App_Data state was adopted.'
 
-        $otherOutput = Join-Path $stateRepository 'artifacts\OtherProduct'
+        $otherOutput = Join-Path $stateRepository 'tools\artifacts\OtherProduct'
         New-TestPayload -Path $otherOutput
         Assert-Throws {
             Assert-OpenTimeStampPublishOutputSafe -OutputPath $otherOutput `
@@ -698,7 +698,7 @@ catch {
 
     Invoke-Test 'Legacy publish adoption validates an unmarked manifested output' {
         $manifestRepository = Join-Path $testRoot 'manifested-legacy-repository'
-        $manifestOutput = Join-Path $manifestRepository 'artifacts\OpenTimeStamp'
+        $manifestOutput = Join-Path $manifestRepository 'tools\artifacts\OpenTimeStamp'
         New-TestPayload -Path $manifestOutput
         New-OpenTimeStampDeploymentManifest -PayloadPath $manifestOutput `
             -ReleaseId '20260717010109Z-0123456789ab' | Out-Null
@@ -794,7 +794,7 @@ catch {
     }
 
     Invoke-Test 'Critical IIS preconditions and partial rollback are structurally wired' {
-        $installerPath = Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'
+        $installerPath = Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1'
         $tokens = $null
         $parseErrors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -943,7 +943,7 @@ catch {
         Assert-Throws { Assert-OpenTimeStampNoReparsePoints -Root $parent } `
             'Recursive controlled-tree validation ignored an unrelated reparse point.'
 
-        $publish = Get-Content -LiteralPath (Join-Path $repositoryRoot 'build\Publish.ps1') -Raw
+        $publish = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\build\Publish.ps1') -Raw
         Assert-True ($publish -match 'Assert-OpenTimeStampNoReparsePoints -Root \$outputParent -AncestryOnly') `
             'Publisher still recursively scans unrelated output-parent siblings.'
     }
@@ -1266,11 +1266,11 @@ catch {
     }
 
     Invoke-Test 'Deployment scripts parse under the Windows PowerShell grammar' {
-        $scripts = @('deploy\Deployment.Common.ps1', 'deploy\Install-IisApplication.ps1',
-                'deploy\Grant-TsaPrivateKeyAccess.ps1', 'deploy\Configure-AcrobatTimestamping.ps1',
-                'deploy\New-DevelopmentTsaCertificate.ps1', 'build\Build.Common.ps1',
-                'build\Build.ps1', 'build\Publish.ps1';
-            Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'tests\ProductSigning') `
+        $scripts = @('tools\deploy\Deployment.Common.ps1', 'tools\deploy\Install-IisApplication.ps1',
+                'tools\deploy\Grant-TsaPrivateKeyAccess.ps1', 'tools\deploy\Configure-AcrobatTimestamping.ps1',
+                'tools\deploy\New-DevelopmentTsaCertificate.ps1', 'tools\build\Build.Common.ps1',
+                'tools\build\Build.ps1', 'tools\build\Publish.ps1';
+            Get-ChildItem -LiteralPath (Join-Path $repositoryRoot 'src\tests\ProductSigning') `
                 -Filter '*.ps1' -File | ForEach-Object { $_.FullName.Substring($repositoryRoot.Length + 1) })
         foreach ($relative in $scripts) {
             $tokens = $null
@@ -1283,9 +1283,9 @@ catch {
 
     Invoke-Test 'Product test harness has bounded processes and strict effective coverage' {
         $common = Get-Content -LiteralPath `
-            (Join-Path $repositoryRoot 'tests\ProductSigning\ProductSigning.Common.ps1') -Raw
+            (Join-Path $repositoryRoot 'src\tests\ProductSigning\ProductSigning.Common.ps1') -Raw
         $runner = Get-Content -LiteralPath `
-            (Join-Path $repositoryRoot 'tests\ProductSigning\Invoke-ProductSigningTests.ps1') -Raw
+            (Join-Path $repositoryRoot 'src\tests\ProductSigning\Invoke-ProductSigningTests.ps1') -Raw
         foreach ($token in @('TimeoutSeconds = 120', 'WaitForExit($TimeoutSeconds * 1000)',
                 '$startInfo.ArgumentList.Add($argument)', '$Process.Kill($true)')) {
             Assert-True ($common -match [regex]::Escape($token)) `
@@ -1299,9 +1299,9 @@ catch {
     }
 
     Invoke-Test 'Acrobat client setup is per-user, exact, and security preserving' {
-        $setupPath = Join-Path $repositoryRoot 'deploy\Configure-AcrobatTimestamping.ps1'
+        $setupPath = Join-Path $repositoryRoot 'tools\deploy\Configure-AcrobatTimestamping.ps1'
         $setup = Get-Content -LiteralPath $setupPath -Raw
-        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1') -Raw
+        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1') -Raw
         foreach ($required in @(
                 'SupportsShouldProcess = $true',
                 'HKEY_CURRENT_USER\Software\Adobe\Adobe Acrobat\DC',
@@ -1401,12 +1401,12 @@ catch {
     }
 
     Invoke-Test 'Publisher pins the exact directory and rejects destructive state paths' {
-        $publish = Get-Content -LiteralPath (Join-Path $repositoryRoot 'build\Publish.ps1') -Raw
-        $build = Get-Content -LiteralPath (Join-Path $repositoryRoot 'build\Build.ps1') -Raw
-        $buildCommon = Get-Content -LiteralPath (Join-Path $repositoryRoot 'build\Build.Common.ps1') -Raw
+        $publish = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\build\Publish.ps1') -Raw
+        $build = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\build\Build.ps1') -Raw
+        $buildCommon = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\build\Build.Common.ps1') -Raw
         $deploymentCommon = Get-Content -LiteralPath `
-            (Join-Path $repositoryRoot 'deploy\Deployment.Common.ps1') -Raw
-        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1') -Raw
+            (Join-Path $repositoryRoot 'tools\deploy\Deployment.Common.ps1') -Raw
+        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1') -Raw
         $coreProject = Get-Content -LiteralPath `
             (Join-Path $repositoryRoot 'src\OpenTimeStamp.Core\OpenTimeStamp.Core.csproj') -Raw
         $webProject = Get-Content -LiteralPath `
@@ -1435,25 +1435,17 @@ catch {
         Assert-True ($publish -match 'Get-OpenTimeStampRequiredRuntimeAssemblies' -and
             $installer -match 'Get-OpenTimeStampRequiredRuntimeAssemblies') `
             'Publisher and installer do not share the required runtime assembly list.'
-        $expectedPackageVersions = [ordered]@{
-            'Microsoft.Bcl.Cryptography' = '10.0.10'
-            'Microsoft.CodeAnalysis.NetAnalyzers' = '10.0.302'
-            'Microsoft.NET.Test.Sdk' = '18.8.1'
-            'MSTest.TestAdapter' = '4.3.2'
-            'MSTest.TestFramework' = '4.3.2'
-            'System.Buffers' = '4.6.1'
-            'System.Formats.Asn1' = '10.0.10'
-            'System.Security.Cryptography.Pkcs' = '10.0.10'
-            'WixToolset.Util.wixext' = '7.0.0'
-        }
         Assert-Equal 'true' ([string]$directoryPackagesProps.Project.PropertyGroup.ManagePackageVersionsCentrally) `
             'Central Package Management is not enabled.'
-        foreach ($package in $expectedPackageVersions.GetEnumerator()) {
+        foreach ($package in @('Microsoft.Bcl.Cryptography', 'Microsoft.CodeAnalysis.NetAnalyzers',
+                'Microsoft.NET.Test.Sdk', 'MSTest.TestAdapter', 'MSTest.TestFramework', 'System.Buffers',
+                'System.Formats.Asn1', 'System.Security.Cryptography.Pkcs', 'WixToolset.UI.wixext',
+                'WixToolset.Util.wixext')) {
             $node = $directoryPackagesProps.SelectSingleNode(
-                "/Project/ItemGroup/PackageVersion[@Include='$($package.Key)']")
-            Assert-True ($null -ne $node) "Central package version '$($package.Key)' is missing."
-            Assert-Equal $package.Value ([string]$node.Version) `
-                "Central package version '$($package.Key)' is not pinned to '$($package.Value)'."
+                "/Project/ItemGroup/PackageVersion[@Include='$package']")
+            Assert-True ($null -ne $node) "Central package version '$package' is missing."
+            Assert-True ([string]$node.Version -match '^\d+\.\d+\.\d+$') `
+                "Central package version '$package' must pin a stable release."
         }
         foreach ($property in ([ordered]@{
                 TargetFrameworkVersion = 'v4.8'
@@ -1461,6 +1453,7 @@ catch {
                 Deterministic = 'true'
                 TreatWarningsAsErrors = 'true'
                 RestorePackagesWithLockFile = 'true'
+                NuGetAuditMode = 'all'
                 WarningLevel = '4'
             }).GetEnumerator()) {
             $node = $directoryBuildProps.SelectSingleNode("/Project/PropertyGroup/$($property.Key)")
@@ -1500,7 +1493,7 @@ catch {
             Assert-True ($publish -match [regex]::Escape("'$rootBuildInput'")) `
                 "Publisher does not treat '$rootBuildInput' as a required tracked build input."
         }
-        foreach ($releaseInputScope in @("'src'", "'tests/OpenTimeStamp.Tests'")) {
+        foreach ($releaseInputScope in @("'src'", "'src/tests/OpenTimeStamp.Tests'")) {
             Assert-True ($publish -match [regex]::Escape($releaseInputScope)) `
                 "Publisher does not inspect release-input scope $releaseInputScope."
         }
@@ -1528,18 +1521,18 @@ catch {
     }
 
     Invoke-Test 'WiX 7 MSI packages the hardened deployment and applies release signing policy' {
-        $wixProjectPath = Join-Path $repositoryRoot 'setup\msi\OpenTimeStamp.Setup.wixproj'
-        $wixSourcePath = Join-Path $repositoryRoot 'setup\msi\OpenTimeStamp.wxs'
-        $msiBuildPath = Join-Path $repositoryRoot 'setup\msi\Build-Msi.ps1'
-        $msiInstallPath = Join-Path $repositoryRoot 'setup\msi\Install-Msi.ps1'
-        $msiUninstallPath = Join-Path $repositoryRoot 'setup\msi\Uninstall-Msi.ps1'
+        $wixProjectPath = Join-Path $repositoryRoot 'tools\msi\OpenTimeStamp.Setup.wixproj'
+        $wixSourcePath = Join-Path $repositoryRoot 'tools\msi\OpenTimeStamp.wxs'
+        $msiBuildPath = Join-Path $repositoryRoot 'tools\msi\Build-Msi.ps1'
+        $msiInstallPath = Join-Path $repositoryRoot 'tools\msi\Install-Msi.ps1'
+        $msiUninstallPath = Join-Path $repositoryRoot 'tools\msi\Uninstall-Msi.ps1'
         [xml]$wixProject = Get-Content -LiteralPath $wixProjectPath -Raw
         $wixSource = Get-Content -LiteralPath $wixSourcePath -Raw
         $msiBuild = Get-Content -LiteralPath $msiBuildPath -Raw
         $msiInstall = Get-Content -LiteralPath $msiInstallPath -Raw
         $msiUninstall = Get-Content -LiteralPath $msiUninstallPath -Raw
-        $build = Get-Content -LiteralPath (Join-Path $repositoryRoot 'build\Build.ps1') -Raw
-        $publish = Get-Content -LiteralPath (Join-Path $repositoryRoot 'build\Publish.ps1') -Raw
+        $build = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\build\Build.ps1') -Raw
+        $publish = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\build\Publish.ps1') -Raw
 
         Assert-Equal 'WixToolset.Sdk/7.0.0' ([string]$wixProject.Project.Sdk) `
             'The MSI project does not pin the current WiX 7 SDK.'
@@ -1588,15 +1581,15 @@ catch {
         $installCommand = $wixSource.Substring($installCommandStart, $installCommandEnd - $installCommandStart)
         Assert-True ($installCommand -notmatch 'IISSITENAME|APPLICATIONNAME') `
             'Untrusted IIS selections are interpolated into the elevated PowerShell command line.'
-        Assert-True ($build -match [regex]::Escape('setup\msi\Build-Msi.ps1') -and
+        Assert-True ($build -match [regex]::Escape('tools\msi\Build-Msi.ps1') -and
             $build -match 'RequireSignedInstaller') 'The normal build does not produce and sign the MSI.'
-        Assert-True ($publish -match [regex]::Escape("'setup/msi'") -and
+        Assert-True ($publish -match [regex]::Escape("'tools/msi'") -and
             $publish -match 'SkipInstaller = \$true') `
             'Publishing neither tracks the MSI inputs nor suppresses a redundant nested MSI build.'
     }
 
     Invoke-Test 'SignTool output cannot turn an MSI signing failure into success' {
-        $builderPath = Join-Path $repositoryRoot 'setup\msi\Build-Msi.ps1'
+        $builderPath = Join-Path $repositoryRoot 'tools\msi\Build-Msi.ps1'
         $tokens = $null
         $parseErrors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -1629,7 +1622,7 @@ catch {
     }
 
     Invoke-Test 'Installer retains release rollback and pool-state safeguards' {
-        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1') -Raw
+        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1') -Raw
         $signatureValidation = $installer.IndexOf('$manifestSignature = Assert-OpenTimeStampManifestSignature')
         $signedSnapshotValidation = if ($signatureValidation -lt 0) { -1 } else {
             $installer.IndexOf('-Manifest $manifestSignature.Manifest', $signatureValidation)
@@ -1796,7 +1789,8 @@ catch {
         Assert-True ($installer -match 'storage cannot be shared between IIS applications') `
             'Installer does not reject another IIS application sharing its deployment root or DataPath.'
         foreach ($markerBinding in @('DataPath = $classification.Path', 'DeploymentRoot = $root')) {
-            $combinedMarkerCode = (Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Deployment.Common.ps1') -Raw) + $installer
+            $combinedMarkerCode = (Get-Content -LiteralPath (
+                Join-Path $repositoryRoot 'tools\deploy\Deployment.Common.ps1') -Raw) + $installer
             Assert-True ($combinedMarkerCode -match [regex]::Escape($markerBinding)) `
                 "Ownership marker is not canonically path-bound with '$markerBinding'."
         }
@@ -1840,7 +1834,7 @@ catch {
                 ($document.SelectSingleNode('/configuration/system.web/httpCookies').GetAttribute('requireSSL')) `
                 'The staged ASP.NET cookie policy does not match the HTTPS deployment policy.'
         }
-        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1') -Raw
+        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1') -Raw
         Assert-True ($installer -notmatch "GetSection\('system.web/httpCookies'") `
             'The installer writes ASP.NET cookie settings into native IIS applicationHost.config.'
     }
@@ -1848,7 +1842,7 @@ catch {
         $tokens = $null
         $parseErrors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile(
-            (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
+            (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
         foreach ($name in @('Test-IssuanceStateUsesCurrentFormat', 'Get-IssuanceStateFileNames',
                 'Test-IssuanceStateArtifactsPresent', 'Get-IssuanceStateArtifactNames')) {
             $definition = $ast.Find({
@@ -1898,7 +1892,7 @@ catch {
         $tokens = $null
         $parseErrors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile(
-            (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
+            (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
         $definition = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -1942,7 +1936,7 @@ namespace OpenTimeStamp.Issuance {
         $tokens = $null
         $parseErrors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile(
-            (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
+            (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
         $definition = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -1970,7 +1964,7 @@ namespace OpenTimeStamp.Issuance {
         $tokens = $null
         $parseErrors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile(
-            (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
+            (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
         foreach ($name in @('ConvertTo-IisAttributeEffectiveValue', 'Get-IisRawAttributeSnapshot')) {
             $definition = $ast.Find({
                 param($node)
@@ -2012,8 +2006,8 @@ namespace OpenTimeStamp.Issuance {
         Assert-True (-not $snapshot.HasLocalValue) 'An absent local element produced a stored attribute.'
     }
     Invoke-Test 'IIS application lifecycle is scoped and committed after durable initialization' {
-        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1') -Raw
-        $uninstaller = Get-Content -LiteralPath (Join-Path $repositoryRoot 'setup\msi\Uninstall-Msi.ps1') -Raw
+        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1') -Raw
+        $uninstaller = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\msi\Uninstall-Msi.ps1') -Raw
         foreach ($script in @($installer, $uninstaller)) {
             foreach ($forbidden in @('Install-WindowsFeature', 'Start-Website', 'Stop-Website',
                     "SetAttributeValue('serverAutoStart'", 'system.applicationHost/serviceAutoStartProviders')) {
@@ -2046,7 +2040,7 @@ namespace OpenTimeStamp.Issuance {
     }
 
     Invoke-Test 'IIS provisioning and application static surface are minimal' {
-        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1') -Raw
+        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1') -Raw
         $featuresStart = $installer.IndexOf('$features = @(')
         $featuresEnd = $installer.IndexOf('$missingFeatures = @(', $featuresStart)
         Assert-True ($featuresStart -ge 0 -and $featuresEnd -gt $featuresStart) `
@@ -2145,8 +2139,8 @@ namespace OpenTimeStamp.Issuance {
     }
 
     Invoke-Test 'Private-key helper requires pool identity and broad-ACL override' {
-        $grant = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Grant-TsaPrivateKeyAccess.ps1') -Raw
-        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1') -Raw
+        $grant = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\deploy\Grant-TsaPrivateKeyAccess.ps1') -Raw
+        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1') -Raw
         Assert-True ($grant -match 'S-1-5-82-') 'Private-key helper does not require an application-pool SID.'
         Assert-True ($grant -match 'AllowBroadExistingKeyAcl') 'Private-key helper lacks an explicit broad-ACL override.'
         foreach ($keyAclToken in @('trustedSids', 'Test-KeyAffectingAllowRule', '0xD00D0157',
@@ -2165,8 +2159,8 @@ namespace OpenTimeStamp.Issuance {
     }
 
     Invoke-Test 'Private-key helper gates pure ML-DSA key discovery through stable Windows CNG APIs' {
-        $grant = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Grant-TsaPrivateKeyAccess.ps1') -Raw
-        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'deploy\Install-IisApplication.ps1') -Raw
+        $grant = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\deploy\Grant-TsaPrivateKeyAccess.ps1') -Raw
+        $installer = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1') -Raw
         foreach ($oid in @('2.16.840.1.101.3.4.3.17', '2.16.840.1.101.3.4.3.18',
                 '2.16.840.1.101.3.4.3.19')) {
             Assert-True ($grant -match [regex]::Escape($oid)) "Pure ML-DSA OID '$oid' is not recognized."

@@ -58,7 +58,7 @@ Require exactly one EKU extension, marked critical, containing only **Time Stamp
 Create the dedicated IIS application pool through the [IIS installer](deployment.md), then grant its identity read access to the selected machine key:
 
 ```powershell
-.\deploy\Grant-TsaPrivateKeyAccess.ps1 `
+.\tools\deploy\Grant-TsaPrivateKeyAccess.ps1 `
     -Thumbprint $thumbprint `
     -Identity 'IIS AppPool\OpenTimeStamp'
 ```

@@ -7,7 +7,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenTimeStamp.Core", "src\O
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenTimeStamp.Web", "src\OpenTimeStamp.Web\OpenTimeStamp.Web.csproj", "{D2AA9228-235B-45DD-9909-D4540152088B}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenTimeStamp.Tests", "tests\OpenTimeStamp.Tests\OpenTimeStamp.Tests.csproj", "{300D7237-8AC7-4C60-ACB9-92F18199C725}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenTimeStamp.Tests", "src\tests\OpenTimeStamp.Tests\OpenTimeStamp.Tests.csproj", "{300D7237-8AC7-4C60-ACB9-92F18199C725}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

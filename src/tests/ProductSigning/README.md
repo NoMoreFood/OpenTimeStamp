@@ -1,6 +1,6 @@
 # Product signing interoperability tests
 
-`tests\ProductSigning\Run-Tests.cmd` creates representative files, signs each with a temporary
+`src\tests\ProductSigning\Run-Tests.cmd` creates representative files, signs each with a temporary
 Current User certificate, asks OpenTimeStamp to timestamp the signatures, and
 then verifies both the native signature and the embedded timestamp. PowerShell
 7.6 or later is required.
@@ -8,14 +8,14 @@ then verifies both the native signature and the embedded timestamp. PowerShell
 Run the defaults from the repository root:
 
 ```cmd
-tests\ProductSigning\Run-Tests.cmd
+src\tests\ProductSigning\Run-Tests.cmd
 ```
 
 A run fails if no selected product test passes. Release qualification should
 also reject missing prerequisites and already-running products:
 
 ```cmd
-tests\ProductSigning\Run-Tests.cmd -RequireAllSelectedTests
+src\tests\ProductSigning\Run-Tests.cmd -RequireAllSelectedTests
 ```
 
 `-Strict` is an alias. The summary reports passed, skipped, and failed counts.
@@ -23,7 +23,7 @@ tests\ProductSigning\Run-Tests.cmd -RequireAllSelectedTests
 Override the service URLs when IIS is not using the default application path:
 
 ```cmd
-tests\ProductSigning\Run-Tests.cmd ^
+src\tests\ProductSigning\Run-Tests.cmd ^
   -Rfc3161Url http://tsa.example.test/OpenTimeStamp/timestamp/rfc3161 ^
   -AuthenticodeUrl http://tsa.example.test/OpenTimeStamp/timestamp/authenticode ^
   -TsaCertificatePath C:\Certificates\OpenTimeStamp-TSA.cer
@@ -95,8 +95,8 @@ refuses to overwrite a concurrent user or policy change, verifies the restored
 state, and reports cleanup or Office shutdown failures as test failures.
 
 For a development OpenTimeStamp deployment, pass the public TSA certificate
-created by `deploy\New-DevelopmentTsaCertificate.ps1` with
-`-TsaCertificatePath`. If `artifacts\OpenTimeStamp-development.cer` exists, the
+created by `tools\deploy\New-DevelopmentTsaCertificate.ps1` with
+`-TsaCertificatePath`. If `tools\artifacts\OpenTimeStamp-development.cer` exists, the
 harness finds it automatically. The harness does not trust or install that
 certificate; it requires each inspectable timestamp token to be signed by that
 exact certificate. Production TSA chains should already be trusted according to
@@ -109,4 +109,4 @@ the temporary signing certificate or these relaxed test assumptions for
 production signing.
 
 Each run writes artifacts and `results.json` beneath
-`artifacts\ProductSigningTests\<UTC-run-id>`.
+`tools\artifacts\ProductSigningTests\<UTC-run-id>`.

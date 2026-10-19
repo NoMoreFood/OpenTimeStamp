@@ -45,17 +45,17 @@ prerequisites and release-payload guidance.
 From a Windows PowerShell 5.1 prompt on the build computer:
 
 ```powershell
-.\build\Build.ps1 -Configuration Release
-.\build\Publish.ps1 -Configuration Release
+.\tools\build\Build.ps1 -Configuration Release
+.\tools\build\Publish.ps1 -Configuration Release
 ```
 
-The deployable output is written to `artifacts\OpenTimeStamp`, and the MSI is
-written to `artifacts\OpenTimeStamp-1.0.0-x64.msi`. Install the
+The deployable output is written to `tools\artifacts\OpenTimeStamp`, and the MSI is
+written to `tools\artifacts\OpenTimeStamp-1.0.0-x64.msi`. Install the
 payload manually from an elevated Windows PowerShell 5.1 prompt:
 
 ```powershell
-.\deploy\Install-IisApplication.ps1 `
-    -SourcePath .\artifacts\OpenTimeStamp `
+.\tools\deploy\Install-IisApplication.ps1 `
+    -SourcePath .\tools\artifacts\OpenTimeStamp `
     -SiteName 'Default Web Site' `
     -ApplicationPath '/OpenTimeStamp' `
     -AuthenticationMode Anonymous `
@@ -73,25 +73,22 @@ before exposing the service.
 | --- | --- |
 | Protocol behavior and endpoint compatibility | [Protocols and Endpoints](docs/protocols.md) |
 | Build prerequisites and release publishing | [Build Requirements and Publishing](docs/build-and-publish.md) |
-| MSI installation and signing | [MSI Installer](setup/msi/README.md) |
+| MSI installation and signing | [MSI Installer](tools/msi/README.md) |
 | IIS installation, certificates, upgrades, and validation | [IIS Deployment](docs/deployment.md) |
 | AD CS timestamp signing template and enrollment | [Timestamp Signing Certificate Template](docs/timestamp-certificate-template.md) |
 | Separate signing profiles and request/signature hashes | [Signing Endpoints and Hash Policies](docs/signing-endpoints.md) |
 | Admin access, FIPS behavior, state, logs, and operations | [Administration and Operations](docs/administration.md) |
 | Microsoft Office, VBA, and Adobe Acrobat clients | [Client Configuration](docs/client-configuration.md) |
 | Product-signing interoperability tests | [Testing](docs/testing.md) |
-| Production hardening and incident guidance | [Security Guidance](.github/SECURITY.md) |
+| Production hardening and incident guidance | [Security Guidance](SECURITY.md) |
 
 ## Repository Layout
 
 | Path | Contents |
 | --- | --- |
-| `src` | Web application and core timestamping implementation |
-| `deploy` | IIS installation, certificate, and client-configuration scripts |
-| `build` | Build and publishing scripts |
-| `setup` | WiX MSI project and installer integration scripts |
-| `tests` | Automated, deployment, and product-interoperability tests |
+| `src` | Web application, core timestamping implementation, and tests under `src/tests` |
+| `tools` | Build and publishing scripts in `build`, deployment scripts in `deploy`, MSI tooling in `msi`, and generated output in `artifacts` |
 | `docs` | Focused operator and integration documentation |
 
 Before a production rollout, review both the
-[deployment guide](docs/deployment.md) and [security guidance](.github/SECURITY.md).
+[deployment guide](docs/deployment.md) and [security guidance](SECURITY.md).

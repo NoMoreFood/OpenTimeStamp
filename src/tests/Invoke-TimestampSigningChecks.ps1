@@ -15,7 +15,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$signingScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'deploy\Invoke-TimestampSigning.ps1'
+$repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$signingScript = Join-Path $repositoryRoot 'tools\deploy\Invoke-TimestampSigning.ps1'
 $runPath = Join-Path ([IO.Path]::GetFullPath($OutputDirectory)) ([guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $runPath -Force | Out-Null
 $sourcePath = Join-Path $runPath 'Fixture.cs'

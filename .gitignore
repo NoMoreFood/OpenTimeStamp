@@ -1,7 +1,8 @@
 **/bin/
 **/obj/
+**/TestResults/
 .vs/
-artifacts/
+/tools/artifacts/
 *.user
 *.suo
 src/OpenTimeStamp.Web/App_Data/*

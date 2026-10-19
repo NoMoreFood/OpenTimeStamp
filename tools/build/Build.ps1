@@ -25,7 +25,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repositoryRoot = Split-Path -Parent $PSScriptRoot
+$repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $solutionPath = Join-Path $repositoryRoot 'OpenTimeStamp.sln'
 $buildCommon = Join-Path $PSScriptRoot 'Build.Common.ps1'
 if (-not (Test-Path -LiteralPath $buildCommon -PathType Leaf)) {
@@ -70,7 +70,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 if (-not $SkipTests) {
-    $testProject = Join-Path $repositoryRoot 'tests\OpenTimeStamp.Tests\OpenTimeStamp.Tests.csproj'
+    $testProject = Join-Path $repositoryRoot 'src\tests\OpenTimeStamp.Tests\OpenTimeStamp.Tests.csproj'
     $dotnet = Get-Command dotnet.exe -ErrorAction SilentlyContinue
     if ($null -eq $dotnet) {
         throw 'The .NET SDK is required to run the managed regression tests.'
@@ -88,7 +88,7 @@ if (-not $SkipTests) {
         throw 'Windows PowerShell 5.1 is required to run deployment regression tests.'
     }
     foreach ($suite in @('Deployment.Tests.ps1', 'ClientConfiguration.Tests.ps1')) {
-        $testScript = Join-Path $repositoryRoot "tests\$suite"
+        $testScript = Join-Path $repositoryRoot "src\tests\$suite"
         if (-not (Test-Path -LiteralPath $testScript -PathType Leaf)) {
             throw "Regression tests were not found at '$testScript'."
         }
@@ -101,7 +101,7 @@ if (-not $SkipTests) {
 }
 
 if (-not $SkipInstaller) {
-    $installerBuild = Join-Path $repositoryRoot 'setup\msi\Build-Msi.ps1'
+    $installerBuild = Join-Path $repositoryRoot 'tools\msi\Build-Msi.ps1'
     if (-not (Test-Path -LiteralPath $installerBuild -PathType Leaf)) {
         throw "The MSI build script was not found at '$installerBuild'."
     }

@@ -17,11 +17,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repositoryRoot = Split-Path -Parent $PSScriptRoot
+$repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $webProject = Join-Path $repositoryRoot 'src\OpenTimeStamp.Web\OpenTimeStamp.Web.csproj'
 $buildScript = Join-Path $PSScriptRoot 'Build.ps1'
 $buildCommon = Join-Path $PSScriptRoot 'Build.Common.ps1'
-$deploymentCommon = Join-Path $repositoryRoot 'deploy\Deployment.Common.ps1'
+$deploymentCommon = Join-Path $repositoryRoot 'tools\deploy\Deployment.Common.ps1'
 
 if (-not (Test-Path -LiteralPath $deploymentCommon -PathType Leaf)) {
     throw "Deployment support functions were not found at '$deploymentCommon'."
@@ -60,14 +60,14 @@ function Assert-OpenTimeStampReleaseInputsTracked {
         'Directory.Build.props',
         'Directory.Packages.props',
         'OpenTimeStamp.sln',
-        'tests/Deployment.Tests.ps1')
+        'src/tests/Deployment.Tests.ps1')
     $releaseInputDirectories = @(
-        'build',
-        'deploy',
-        'setup/msi',
+        'tools/build',
+        'tools/deploy',
+        'tools/msi',
         'src',
-        'tests/OpenTimeStamp.Tests',
-        'tests/ProductSigning')
+        'src/tests/OpenTimeStamp.Tests',
+        'src/tests/ProductSigning')
     $releaseInputs = @($releaseInputFiles) + @($releaseInputDirectories)
     foreach ($relativePath in $releaseInputFiles) {
         $absolutePath = Join-Path $RepositoryRoot $relativePath
@@ -185,7 +185,7 @@ function Write-PinnedPublishMarker {
 
 $usingDefaultOutput = [string]::IsNullOrWhiteSpace($OutputPath)
 if ($usingDefaultOutput) {
-    $OutputPath = Join-Path $repositoryRoot 'artifacts\OpenTimeStamp'
+    $OutputPath = Join-Path $repositoryRoot 'tools\artifacts\OpenTimeStamp'
 }
 
 if (-not (Test-Path -LiteralPath $webProject -PathType Leaf)) {
@@ -247,7 +247,7 @@ try {
         $outputParent = Split-Path -Parent $OutputPath
         if (-not (Test-Path -LiteralPath $outputParent -PathType Container)) {
             $defaultArtifactsParent = Get-OpenTimeStampCanonicalDirectoryPath `
-                -Path (Join-Path $repositoryRoot 'artifacts')
+                -Path (Join-Path $repositoryRoot 'tools\artifacts')
             if (-not $usingDefaultOutput -or
                 -not $outputParent.Equals($defaultArtifactsParent, [System.StringComparison]::OrdinalIgnoreCase)) {
                 throw "The publish output parent '$outputParent' must already exist."

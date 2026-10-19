@@ -32,25 +32,25 @@ Unsupported hashes, disabled hashes, incorrect digest lengths, and unacceptable 
 The following example uses two existing IIS websites: **Timestamp Service** for Anonymous clients, with TLS and an optional HTTP compatibility binding at `tsa.example.com`, and **Restricted Timestamp Service** with only an HTTPS binding at `tsa-internal.example.com`. Publish and sign the release manifest according to [Build and Publishing](build-and-publish.md). Transfer the manifest and its listed release files to the server; keep the publish-only `.opentimestamp-publish.json` ownership marker in the original build staging directory. Install each profile from the same release payload with a distinct application path, pool, deployment root, and data directory:
 
 ```powershell
-$release = '.\artifacts\OpenTimeStamp'
+$release = '.\tools\artifacts\OpenTimeStamp'
 $releaseSignature = '.\OpenTimeStamp.DeploymentManifest.p7s'
 $releaseSigner = '<trusted-release-signing-thumbprint>'
 
-.\deploy\Install-IisApplication.ps1 -SourcePath $release `
+.\tools\deploy\Install-IisApplication.ps1 -SourcePath $release `
     -SiteName 'Timestamp Service' -ApplicationPath '/TsaModern' `
     -AppPoolName 'TsaModern' -PhysicalPath 'C:\inetpub\TsaModern' `
     -DataPath 'C:\ProgramData\TsaModern' -AuthenticationMode Anonymous `
     -AdminHostNames 'tsa.example.com' `
     -ManifestSignaturePath $releaseSignature -TrustedManifestSignerThumbprint $releaseSigner
 
-.\deploy\Install-IisApplication.ps1 -SourcePath $release `
+.\tools\deploy\Install-IisApplication.ps1 -SourcePath $release `
     -SiteName 'Timestamp Service' -ApplicationPath '/TsaLegacy' `
     -AppPoolName 'TsaLegacy' -PhysicalPath 'C:\inetpub\TsaLegacy' `
     -DataPath 'C:\ProgramData\TsaLegacy' -AuthenticationMode Anonymous `
     -AdminHostNames 'tsa.example.com' `
     -ManifestSignaturePath $releaseSignature -TrustedManifestSignerThumbprint $releaseSigner
 
-.\deploy\Install-IisApplication.ps1 -SourcePath $release `
+.\tools\deploy\Install-IisApplication.ps1 -SourcePath $release `
     -SiteName 'Restricted Timestamp Service' -ApplicationPath '/TsaRestricted' `
     -AppPoolName 'TsaRestricted' -PhysicalPath 'C:\inetpub\TsaRestricted' `
     -DataPath 'C:\ProgramData\TsaRestricted' -AuthenticationMode Windows `

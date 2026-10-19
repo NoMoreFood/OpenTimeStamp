@@ -43,12 +43,12 @@ Crypt32/NCrypt for deployment-time machine-key ACL discovery.
 From a PowerShell 5.1 prompt on the build computer:
 
 ```powershell
-.\build\Build.ps1 -Configuration Release
-.\build\Publish.ps1 -Configuration Release
+.\tools\build\Build.ps1 -Configuration Release
+.\tools\build\Publish.ps1 -Configuration Release
 ```
 
-The deployable output is `artifacts\OpenTimeStamp`, and the WiX 7 installer is
-`artifacts\OpenTimeStamp-1.0.0-x64.msi`. Use `-MSBuildPath` if MSBuild cannot be
+The deployable output is `tools\artifacts\OpenTimeStamp`, and the WiX 7 installer is
+`tools\artifacts\OpenTimeStamp-1.0.0-x64.msi`. Use `-MSBuildPath` if MSBuild cannot be
 discovered through `vswhere.exe` or `PATH`, and use `-OutputPath` to stage the
 manual payload elsewhere. `Build.ps1` runs both the discoverable MSTest
 regression suite and the deployment/packaging regression suite under Windows
@@ -76,13 +76,13 @@ continues with an unsigned development MSI if signing is unavailable. Use
 `-InstallerTimestampUrl` to change the timestamp service,
 `-RequireSignedInstaller` for a release build that must fail closed,
 `-SkipInstallerSigning` for an intentional unsigned package, or `-SkipInstaller`
-to omit MSI packaging. See the [MSI installer guide](../setup/msi/README.md).
+to omit MSI packaging. See the [MSI installer guide](../tools/msi/README.md).
 
-If this checkout already has `artifacts\OpenTimeStamp` from a publisher version
+If this checkout already has `tools\artifacts\OpenTimeStamp` from a publisher version
 that predates staging ownership markers, migrate it once with:
 
 ```powershell
-.\build\Publish.ps1 -Configuration Release -AdoptLegacyDefaultOutput
+.\tools\build\Publish.ps1 -Configuration Release -AdoptLegacyDefaultOutput
 ```
 
 Adoption is limited to the historical default path and only a recognized legacy

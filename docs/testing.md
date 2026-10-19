@@ -6,7 +6,7 @@ The standard build runs the discoverable MSTest suite and the deployment and
 packaging regression suite after compilation:
 
 ```powershell
-.\build\Build.ps1 -Configuration Debug
+.\tools\build\Build.ps1 -Configuration Debug
 ```
 
 Use `-SkipTests` only when a compile-only diagnostic is intentional.
@@ -16,7 +16,7 @@ Use `-SkipTests` only when a compile-only diagnostic is intentional.
 On a Windows client with PowerShell 7.6, run this from the repository root:
 
 ```cmd
-tests\ProductSigning\Run-Tests.cmd
+src\tests\ProductSigning\Run-Tests.cmd
 ```
 
 The harness creates, signs, timestamps, and verifies representative Word, Excel
@@ -26,7 +26,7 @@ test. A run fails when no selected test passes. Pass
 `-RequireAllSelectedTests` (alias `-Strict`) when any skipped selected test must
 also fail, as in release qualification.
 
-See the [detailed product-signing test guide](../tests/ProductSigning/README.md)
+See the [detailed product-signing test guide](../src/tests/ProductSigning/README.md)
 for prerequisites, URL overrides, certificate handling, and the exact
 verification performed for each format.
 
@@ -34,15 +34,15 @@ verification performed for each format.
 
 Use a disposable Windows Server VM with IIS and a checkpoint. Attach its network adapter only to a private virtual switch, without external connectivity; native timestamp clients can need a usable Windows network stack even for loopback requests. Install the current published payload as separate IIS applications using the deployment script; assign each its own pool, deployment root, data directory, TSA key, and policy OID. Configure RSA token signing with SHA-1, SHA-256, SHA-384, and SHA-512 in different applications, vary their request hash allowlists, enable Windows authentication on one profile, and disable Authenticode on one. SHA-1 and MD5 are compatibility fixtures, not production defaults. See [Signing Endpoints and Hash Policies](signing-endpoints.md).
 
-`tests/LiveIis/TimestampEndpointChecks.cs` exercises the real HTTP endpoints. Its PowerShell launcher only compiles and starts the C# verifier. The checks cover all six request hashes, NULL and absent algorithm parameters, nonce and imprint preservation, certificate inclusion, policy and signer isolation, DER rejections, HTTP limits, authentication, concurrent requests, native EXE signing, and PowerShell legacy signing. OpenSSL independently verifies granted RFC replies; Windows SDK SignTool verifies actual timestamped signatures. No server settings or certificate stores are modified by the verifier itself. Native signing creates disposable files and requires a test code-signing certificate with a private key.
+`src/tests/LiveIis/TimestampEndpointChecks.cs` exercises the real HTTP endpoints. Its PowerShell launcher only compiles and starts the C# verifier. The checks cover all six request hashes, NULL and absent algorithm parameters, nonce and imprint preservation, certificate inclusion, policy and signer isolation, DER rejections, HTTP limits, authentication, concurrent requests, native EXE signing, and PowerShell legacy signing. OpenSSL independently verifies granted RFC replies; Windows SDK SignTool verifies actual timestamped signatures. No server settings or certificate stores are modified by the verifier itself. Native signing creates disposable files and requires a test code-signing certificate with a private key.
 
 Build the server and compile the verifier on the build computer:
 
 ```powershell
-.\build\Publish.ps1 -Configuration Release
-.\tests\LiveIis\Invoke-TimestampEndpointChecks.ps1 `
-    -BinaryDirectory .\artifacts\OpenTimeStamp\bin `
-    -OutputDirectory .\artifacts\EndpointChecks -CompileOnly
+.\tools\build\Publish.ps1 -Configuration Release
+.\src\tests\LiveIis\Invoke-TimestampEndpointChecks.ps1 `
+    -BinaryDirectory .\tools\artifacts\OpenTimeStamp\bin `
+    -OutputDirectory .\tools\artifacts\EndpointChecks -CompileOnly
 ```
 
 Copy the complete `EndpointChecks` directory into the VM along with OpenSSL, its runtime dependencies, Windows SDK SignTool, and an explicit UTF-8 JSON manifest. Configure HTTPS and trust only the VM's fixture TLS, TSA, and code-signing certificates inside that VM. The verifier requires loopback URLs and does not override TLS validation. A profile manifest has this shape; replace every example path, thumbprint, and policy with the disposable deployment's actual values:

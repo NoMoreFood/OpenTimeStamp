@@ -5,8 +5,8 @@ param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$repositoryRoot = Split-Path -Parent $PSScriptRoot
-$deployPath = Join-Path $repositoryRoot 'deploy'
+$repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$deployPath = Join-Path $repositoryRoot 'tools\deploy'
 . (Join-Path $deployPath 'ClientConfiguration.Common.ps1')
 $tests = 0
 $failures = 0

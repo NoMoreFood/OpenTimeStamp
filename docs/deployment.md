@@ -4,7 +4,7 @@ The build produces a WiX MSI that uses this same hardened deployment routine.
 It prompts for an existing IIS website and the application name used as the URL
 root. IIS and its required role services must be installed before the MSI runs;
 the package does not add Windows features. See the
-[MSI installer guide](../setup/msi/README.md). Continue with the manual workflow
+[MSI installer guide](../tools/msi/README.md). Continue with the manual workflow
 below when the pool, authentication mode, deployment root, or other advanced
 settings must be customized.
 
@@ -15,8 +15,8 @@ Copy the entire repository `deploy` directory, including
 Windows PowerShell 5.1 prompt:
 
 ```powershell
-.\deploy\Install-IisApplication.ps1 `
-    -SourcePath .\artifacts\OpenTimeStamp `
+.\tools\deploy\Install-IisApplication.ps1 `
+    -SourcePath .\tools\artifacts\OpenTimeStamp `
     -SiteName 'Default Web Site' `
     -ApplicationPath '/OpenTimeStamp' `
     -AuthenticationMode Anonymous `
@@ -146,8 +146,8 @@ earlier time.
 For stronger separation in production, place mutable data outside the web root:
 
 ```powershell
-.\deploy\Install-IisApplication.ps1 `
-    -SourcePath .\artifacts\OpenTimeStamp `
+.\tools\deploy\Install-IisApplication.ps1 `
+    -SourcePath .\tools\artifacts\OpenTimeStamp `
     -DataPath "$env:ProgramData\OpenTimeStamp" `
     -AdminHostNames 'tsa.example.com' `
     -AuthenticationMode Windows `
@@ -207,10 +207,10 @@ files.
 Create the IIS pool first, then run this in an elevated prompt:
 
 ```powershell
-$tsa = .\deploy\New-DevelopmentTsaCertificate.ps1 `
+$tsa = .\tools\deploy\New-DevelopmentTsaCertificate.ps1 `
     -StoreLocation LocalMachine `
     -GrantToIdentity 'IIS AppPool\OpenTimeStamp' `
-    -ExportPublicCertificatePath .\artifacts\OpenTimeStamp-development.cer
+    -ExportPublicCertificatePath .\tools\artifacts\OpenTimeStamp-development.cer
 
 $tsa | Format-List
 ```
@@ -255,7 +255,7 @@ Install the certificate and chain into `LocalMachine\My` (recommended), then
 grant only the application-pool identity access to its private key:
 
 ```powershell
-.\deploy\Grant-TsaPrivateKeyAccess.ps1 `
+.\tools\deploy\Grant-TsaPrivateKeyAccess.ps1 `
     -Thumbprint '0123456789ABCDEF0123456789ABCDEF01234567' `
     -Identity 'IIS AppPool\OpenTimeStamp'
 ```

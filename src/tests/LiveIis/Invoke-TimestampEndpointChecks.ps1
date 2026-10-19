@@ -12,8 +12,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 # Compile the live verifier with the repository's compiler and the exact published dependency set.
-$repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-. (Join-Path $repositoryRoot 'build\Build.Common.ps1')
+$repositoryRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+. (Join-Path $repositoryRoot 'tools\build\Build.Common.ps1')
 $msbuild = Resolve-OpenTimeStampMSBuild
 $compiler = Join-Path (Split-Path -Parent $msbuild) 'Roslyn\csc.exe'
 $binaryPath = [IO.Path]::GetFullPath($BinaryDirectory)

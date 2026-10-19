@@ -927,11 +927,11 @@ function Assert-OpenTimeStampPublishOutputSafe {
         throw 'A drive root, the repository root, or an ancestor of the repository cannot be used as the publish output directory.'
     }
 
-    $artifactsRoot = (Join-Path $repository 'artifacts').TrimEnd('\')
+    $artifactsRoot = (Join-Path $repository 'tools\artifacts').TrimEnd('\')
     if (Test-OpenTimeStampPathContained -Parent $repository -Child $output) {
         if ($output.Equals($artifactsRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
             -not (Test-OpenTimeStampPathContained -Parent $artifactsRoot -Child $output)) {
-            throw 'A publish output inside the repository must be a child directory under artifacts, not the artifacts root itself.'
+            throw 'Repository publish output must be a child of tools\artifacts; the artifacts root is not an output.'
         }
     }
 
@@ -987,9 +987,9 @@ function Assert-OpenTimeStampLegacyDefaultPublishOutput {
 
     $output = (Get-OpenTimeStampCanonicalDirectoryPath -Path $OutputPath).TrimEnd('\')
     $repository = (Get-OpenTimeStampCanonicalDirectoryPath -Path $RepositoryRoot).TrimEnd('\')
-    $legacyDefault = (Join-Path $repository 'artifacts\OpenTimeStamp').TrimEnd('\')
+    $legacyDefault = (Join-Path $repository 'tools\artifacts\OpenTimeStamp').TrimEnd('\')
     if (-not $output.Equals($legacyDefault, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Only the historical artifacts\OpenTimeStamp default can be adopted as a legacy publish output.'
+        throw 'Only the tools\artifacts\OpenTimeStamp default can be adopted as a legacy publish output.'
     }
     if (-not (Test-Path -LiteralPath $output -PathType Container)) {
         throw "The legacy publish output '$output' is not an existing directory."
