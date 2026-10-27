@@ -1,6 +1,6 @@
 # Signing Endpoints and Hash Policies
 
-OpenTimeStamp exposes explicit RFC 3161 and legacy Authenticode routes under each IIS application. Each application has its own certificate selection, signing digest, allowed request hashes, RFC policy OIDs, authentication mode, issuance state, audit logs, and request limits. Deploy separate applications when signing needs require different settings. The routes within one application share that application's configuration.
+OpenTimeStamp exposes RFC 3161, legacy Authenticode, and automatic protocol-detecting routes under each IIS application. Each application has its own certificate selection, signing digest, allowed request hashes, RFC policy OIDs, authentication mode, issuance state, audit logs, and request limits. Deploy separate applications when signing needs require different settings. The routes within one application share that application's configuration.
 
 ## Select the Protocol and Hash
 
@@ -25,7 +25,9 @@ signtool.exe verify /pa /all /tw application.exe
 
 Use `/timestamp/authenticode` for SignTool `/t`, Windows PowerShell's `Set-AuthenticodeSignature`, and the built-in VBA project signer. A legacy request contains the client's signature bytes rather than an RFC hash selector; `/td` does not apply to `/t`. This endpoint requires RSA and is blocked by FIPS policy. Some SignTool builds reject HTTPS timestamp URLs before sending a request, and `Set-AuthenticodeSignature` requires HTTP for its legacy URL. Keep an explicitly configured HTTP binding for clients with that requirement and an HTTPS binding for clients that support it. Verify the installed client's transport rather than assuming its `/tr` or `/t` option implies HTTPS support. See [Client Configuration](client-configuration.md).
 
-Unsupported hashes, disabled hashes, incorrect digest lengths, and unacceptable RFC policy OIDs return DER protocol rejections with HTTP 200. Check the PKI status and verify the token; HTTP success alone is insufficient. There is no automatic protocol-detecting `/timestamp` route. Disabled protocol routes return HTTP 404.
+Use `/timestamp` as a shared URL for either client protocol. The server detects the request format and applies the corresponding protocol settings; it does not retry a rejected request using the other protocol. Disabled protocols return HTTP 404.
+
+Unsupported hashes, disabled hashes, incorrect digest lengths, and unacceptable RFC policy OIDs return DER protocol rejections with HTTP 200. Check the PKI status and verify the token; HTTP success alone is insufficient.
 
 ## Deploy Independent Signing Profiles
 

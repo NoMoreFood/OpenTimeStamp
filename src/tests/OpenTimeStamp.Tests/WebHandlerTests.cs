@@ -26,6 +26,8 @@ public sealed class WebHandlerTests
         AssertEx.Contains("Timestamp Endpoints", localHtml);
         AssertEx.Contains("RFC 3161", localHtml);
         AssertEx.Contains("Legacy Authenticode", localHtml);
+        AssertEx.Contains("Automatic Detection", localHtml);
+        AssertEx.Contains("<code class=\"path\">/OpenTimeStamp/timestamp</code>", localHtml);
         AssertEx.Contains("Service Health", localHtml);
         AssertEx.Contains("Local Administration", localHtml);
         AssertEx.Contains("/OpenTimeStamp/timestamp/rfc3161", localHtml);
@@ -203,6 +205,7 @@ public sealed class WebHandlerTests
 
         AssertEx.Equal("SHA-256", AdminHandler.FormatHashName("sha256"));
         AssertEx.Equal("RFC 3161", AdminHandler.FormatProtocol("rfc3161"));
+        AssertEx.Equal("Automatic", AdminHandler.FormatProtocol("automatic"));
         AssertEx.Equal("Successful", AdminHandler.FormatResult("granted"));
         AssertEx.Equal("Error", AdminHandler.FormatResult("error"));
         AssertEx.Equal("sha256:0123456789ab", AdminHandler.FormatConfigurationId("sha256:0123456789abcdef"));

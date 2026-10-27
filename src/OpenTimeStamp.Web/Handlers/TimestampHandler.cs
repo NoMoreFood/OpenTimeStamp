@@ -20,7 +20,8 @@ namespace OpenTimeStamp.Web.Handlers;
 internal enum TimestampProtocol
 {
     Rfc3161,
-    Authenticode
+    Authenticode,
+    Automatic
 }
 
 // Bounds concurrent work inside this worker process. The supported IIS deployment runs exactly
@@ -160,14 +161,24 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
                 return;
             }
 
-            var expectedMediaType = protocol == TimestampProtocol.Rfc3161
-                ? "application/timestamp-query"
-                : "application/octet-stream";
-            if (!HttpSupport.HasExactMediaType(context.Request, expectedMediaType))
+            var validMediaType = protocol switch
             {
-                var message = protocol == TimestampProtocol.Rfc3161
-                    ? "RFC 3161 requests require application/timestamp-query."
-                    : "Authenticode timestamp requests require application/octet-stream.";
+                TimestampProtocol.Rfc3161 =>
+                    HttpSupport.HasExactMediaType(context.Request, "application/timestamp-query"),
+                TimestampProtocol.Authenticode =>
+                    HttpSupport.HasExactMediaType(context.Request, "application/octet-stream"),
+                _ => HttpSupport.HasExactMediaType(context.Request, "application/timestamp-query") ||
+                    HttpSupport.HasExactMediaType(context.Request, "application/octet-stream")
+            };
+            if (!validMediaType)
+            {
+                var message = protocol switch
+                {
+                    TimestampProtocol.Rfc3161 => "RFC 3161 requests require application/timestamp-query.",
+                    TimestampProtocol.Authenticode =>
+                        "Authenticode timestamp requests require application/octet-stream.",
+                    _ => "Timestamp requests require application/timestamp-query or application/octet-stream."
+                };
                 HttpSupport.WritePlainError(context, 415, message);
                 return;
             }
@@ -187,24 +198,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
                 return;
             }
 
-            if (protocol == TimestampProtocol.Rfc3161 && !configuration.Rfc3161Enabled)
-            {
-                HttpSupport.WritePlainError(context, 404, "RFC 3161 timestamping is disabled.");
-                return;
-            }
-
-            if (protocol == TimestampProtocol.Authenticode && !configuration.AuthenticodeEnabled)
-            {
-                HttpSupport.WritePlainError(context, 404, "Legacy Authenticode timestamping is disabled.");
-                return;
-            }
-
-            if (protocol == TimestampProtocol.Authenticode && snapshot.FipsEnabled)
-            {
-                HttpSupport.WritePlainError(context, 503,
-                    "Legacy Authenticode timestamping is disabled while Windows FIPS mode is enabled.");
-                return;
-            }
+            if (!IsProtocolAvailable(context, snapshot)) return;
 
             // Bound slow body intake without consuming one of the scarcer signing
             // and durable-audit slots. Excess requests are rejected synchronously.
@@ -216,12 +210,29 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
                 return;
             }
 
-            // Dispatch a validated HTTP request to its protocol-specific processor.
+            // Read once under the intake limits before detecting a protocol or parsing untrusted input.
+            var request = await ReadBoundedBodyAsync(
+                context.Request,
+                configuration.MaxRequestBytes,
+                admissions,
+                requestCancellation.Token);
+            if (protocol == TimestampProtocol.Automatic)
+            {
+                // RFC 3161 starts with a DER SEQUENCE; legacy requests are ASCII base64 with optional MIME whitespace.
+                protocol = request.Length > 0 && request[0] == 0x30
+                    ? TimestampProtocol.Rfc3161
+                    : TimestampProtocol.Authenticode;
+                if (!IsProtocolAvailable(context, snapshot)) return;
+            }
+            if (!TryEnterProcessing(context, admissions)) return;
+            requestCancellation.Token.ThrowIfCancellationRequested();
+
+            // Dispatch once; a rejected request must never fall back to another protocol.
             if (protocol == TimestampProtocol.Rfc3161)
-                await ProcessRfc3161(context, snapshot, identity, correlationId, stopwatch, admissions,
+                ProcessRfc3161(context, request, snapshot, identity, correlationId, stopwatch,
                     requestCancellation.Token);
             else
-                await ProcessAuthenticode(context, snapshot, identity, correlationId, stopwatch, admissions,
+                ProcessAuthenticode(context, request, snapshot, identity, correlationId, stopwatch,
                     requestCancellation.Token);
         }
         catch (OperationCanceledException)
@@ -280,24 +291,41 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
         }
     }
 
-    private async Task ProcessRfc3161(
+    private bool IsProtocolAvailable(HttpContextBase context, ServiceRuntimeSnapshot snapshot)
+    {
+        // Enforce the same policy for explicit routes and detected protocols.
+        if (protocol == TimestampProtocol.Rfc3161 && !snapshot.Configuration.Rfc3161Enabled)
+        {
+            HttpSupport.WritePlainError(context, 404, "RFC 3161 timestamping is disabled.");
+            return false;
+        }
+
+        if (protocol == TimestampProtocol.Authenticode && !snapshot.Configuration.AuthenticodeEnabled)
+        {
+            HttpSupport.WritePlainError(context, 404, "Legacy Authenticode timestamping is disabled.");
+            return false;
+        }
+
+        if (protocol == TimestampProtocol.Authenticode && snapshot.FipsEnabled)
+        {
+            HttpSupport.WritePlainError(context, 503,
+                "Legacy Authenticode timestamping is disabled while Windows FIPS mode is enabled.");
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ProcessRfc3161(
         HttpContextBase context,
+        byte[] request,
         ServiceRuntimeSnapshot snapshot,
         RequestIdentity identity,
         string correlationId,
         Stopwatch stopwatch,
-        RequestAdmissions admissions,
         CancellationToken cancellationToken)
     {
         var configuration = snapshot.Configuration;
-        var request = await ReadBoundedBodyAsync(
-            context.Request,
-            configuration.MaxRequestBytes,
-            admissions,
-            cancellationToken);
-        if (!TryEnterProcessing(context, admissions)) return;
-        cancellationToken.ThrowIfCancellationRequested();
-
         Rfc3161Request parsedRequest;
         try
         {
@@ -345,23 +373,16 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
         }
     }
 
-    private async Task ProcessAuthenticode(
+    private void ProcessAuthenticode(
         HttpContextBase context,
+        byte[] encodedBody,
         ServiceRuntimeSnapshot snapshot,
         RequestIdentity identity,
         string correlationId,
         Stopwatch stopwatch,
-        RequestAdmissions admissions,
         CancellationToken cancellationToken)
     {
         var configuration = snapshot.Configuration;
-        var encodedBody = await ReadBoundedBodyAsync(
-            context.Request,
-            configuration.MaxRequestBytes,
-            admissions,
-            cancellationToken);
-        if (!TryEnterProcessing(context, admissions)) return;
-        cancellationToken.ThrowIfCancellationRequested();
         var request = LegacyAuthenticodeHttpCodec.DecodeRequestBody(encodedBody);
         var signature = AuthenticodeTimestampProcessor.ParseRequest(request);
 
@@ -536,7 +557,12 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
             EventType = "timestamp",
             Result = result,
             CorrelationId = correlationId,
-            Protocol = protocol == TimestampProtocol.Rfc3161 ? "rfc3161" : "authenticode",
+            Protocol = protocol switch
+            {
+                TimestampProtocol.Rfc3161 => "rfc3161",
+                TimestampProtocol.Authenticode => "authenticode",
+                _ => "automatic"
+            },
             Username = identity?.Name,
             UserSid = identity?.Sid,
             AuthenticationType = identity?.AuthenticationType,

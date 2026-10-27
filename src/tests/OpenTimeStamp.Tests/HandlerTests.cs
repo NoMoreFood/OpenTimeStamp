@@ -21,6 +21,7 @@ namespace OpenTimeStamp.Tests;
 [TestClass]
 public sealed class HandlerTests
 {
+    private const string AutomaticUrl = "http://tsa.example.test/timestamp";
     private const string Rfc3161Url = "http://tsa.example.test/timestamp/rfc3161";
     private const string AuthenticodeUrl = "http://tsa.example.test/timestamp/authenticode";
     private const string AdminUrl = "http://localhost/admin";
@@ -31,51 +32,75 @@ public sealed class HandlerTests
     private const string UnrelatedGroupSid = "S-1-5-21-1111111111-2222222222-3333333333-4444";
 
     [TestMethod(DisplayName = "Timestamp endpoint rejects a wrong method, media type, or query")]
-    public void TimestampRejectsMalformedHttp()
+    [DataRow(false)]
+    [DataRow(true)]
+    public void TimestampRejectsMalformedHttp(bool automatic)
     {
         using var host = new HandlerTestHost();
         host.Configure(EnableRfc3161);
         var body = TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32]);
+        var protocol = automatic ? TimestampProtocol.Automatic : TimestampProtocol.Rfc3161;
+        var url = automatic ? AutomaticUrl : Rfc3161Url;
 
-        var get = Timestamp(new FakeHttpRequest("GET", Rfc3161Url), TimestampProtocol.Rfc3161);
+        var get = Timestamp(new FakeHttpRequest("GET", url), protocol);
         AssertEx.Equal(405, get.StatusCode);
         AssertEx.Equal("POST", get.Headers["Allow"]);
 
-        var query = new FakeHttpRequest("POST", Rfc3161Url + "?debug=1", body)
+        var query = new FakeHttpRequest("POST", url + "?debug=1", body)
         {
             ContentType = "application/timestamp-query"
         };
-        AssertEx.Equal(400, Timestamp(query, TimestampProtocol.Rfc3161).StatusCode);
+        AssertEx.Equal(400, Timestamp(query, protocol).StatusCode);
 
-        var mediaType = new FakeHttpRequest("POST", Rfc3161Url, body) { ContentType = "application/octet-stream" };
-        AssertEx.Equal(415, Timestamp(mediaType, TimestampProtocol.Rfc3161).StatusCode);
+        var mediaType = new FakeHttpRequest("POST", url, body)
+        {
+            ContentType = automatic ? "text/plain" : "application/octet-stream"
+        };
+        AssertEx.Equal(415, Timestamp(mediaType, protocol).StatusCode);
+        mediaType.ContentType = "application/octet-stream; charset";
+        AssertEx.Equal(415, Timestamp(mediaType, protocol).StatusCode);
+        mediaType.ContentType = null;
+        AssertEx.Equal(415, Timestamp(mediaType, protocol).StatusCode);
 
-        var compressed = new FakeHttpRequest("POST", Rfc3161Url, body) { ContentType = "application/timestamp-query" };
+        var compressed = new FakeHttpRequest("POST", url, body) { ContentType = "application/timestamp-query" };
         compressed.Headers["Content-Encoding"] = "gzip";
-        AssertEx.Equal(415, Timestamp(compressed, TimestampProtocol.Rfc3161).StatusCode);
+        AssertEx.Equal(415, Timestamp(compressed, protocol).StatusCode);
 
         AssertEx.Equal(0, host.AuditLines().Length, "Requests refused before protocol handling must not be audited.");
     }
 
     [TestMethod(DisplayName = "Timestamp endpoint is absent while its protocol is disabled")]
-    public void TimestampProtocolDisabled()
+    [DataRow(false)]
+    [DataRow(true)]
+    public void TimestampProtocolDisabled(bool automatic)
     {
         using var host = new HandlerTestHost();
-        var response = Timestamp(Rfc3161Post(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32])),
-            TimestampProtocol.Rfc3161);
+        var protocol = automatic ? TimestampProtocol.Automatic : TimestampProtocol.Rfc3161;
+        var body = TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32]);
+        var response = Timestamp(Rfc3161Post(body, automatic), protocol);
         AssertEx.Equal(404, response.StatusCode);
 
         host.Configure(EnableRfc3161);
-        var authenticode = new FakeHttpRequest("POST", AuthenticodeUrl, [0x00])
+        var authenticode = new FakeHttpRequest("POST", automatic ? AutomaticUrl : AuthenticodeUrl, [0x00])
         {
             ContentType = "application/octet-stream"
         };
-        AssertEx.Equal(404, Timestamp(authenticode, TimestampProtocol.Authenticode).StatusCode,
+        AssertEx.Equal(404, Timestamp(authenticode,
+            automatic ? TimestampProtocol.Automatic : TimestampProtocol.Authenticode).StatusCode,
             "Enabling one protocol must not expose the other.");
+
+        host.Configure(configuration =>
+        {
+            configuration.Rfc3161Enabled = false;
+            configuration.AuthenticodeEnabled = true;
+        });
+        AssertEx.Equal(404, Timestamp(Rfc3161Post(body, automatic), protocol).StatusCode);
     }
 
     [TestMethod(DisplayName = "Timestamp endpoint requires Windows authentication in Windows mode")]
-    public void TimestampRequiresWindowsAuthentication()
+    [DataRow(false)]
+    [DataRow(true)]
+    public void TimestampRequiresWindowsAuthentication(bool automatic)
     {
         using var certificate = new TimestampCertificateFixture();
         using var host = new HandlerTestHost(
@@ -83,17 +108,19 @@ public sealed class HandlerTests
             _ => new X509Certificate2(certificate.Certificate));
         host.Configure(EnableRfc3161);
         var body = TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32]);
+        var protocol = automatic ? TimestampProtocol.Automatic : TimestampProtocol.Rfc3161;
 
-        var anonymous = Timestamp(Rfc3161Post(body), TimestampProtocol.Rfc3161);
+        var anonymous = Timestamp(Rfc3161Post(body, automatic), protocol);
         AssertEx.Equal(401, anonymous.StatusCode);
         AssertEx.Equal("Negotiate", anonymous.Headers["WWW-Authenticate"]);
         var rejected = host.AuditLines().Single();
         AssertEx.Contains("\"result\":\"rejected\"", rejected);
         AssertEx.Contains("Windows authentication is required.", rejected);
+        AssertEx.Contains("\"protocol\":\"" + (automatic ? "automatic" : "rfc3161") + "\"", rejected);
 
-        var authenticatedRequest = Rfc3161Post(body);
+        var authenticatedRequest = Rfc3161Post(body, automatic);
         authenticatedRequest.Identity = WindowsIdentity.GetCurrent();
-        var authenticated = Timestamp(authenticatedRequest, TimestampProtocol.Rfc3161);
+        var authenticated = Timestamp(authenticatedRequest, protocol);
         AssertEx.Equal(200, authenticated.StatusCode);
         AssertEx.Equal(0, TestFixtures.ExtractRfc3161Status(authenticated.Body));
         var granted = host.AuditLines().Last();
@@ -102,17 +129,22 @@ public sealed class HandlerTests
     }
 
     [TestMethod(DisplayName = "RFC 3161 endpoint issues an audited token")]
-    public void Rfc3161IssuesAuditedToken()
+    [DataRow(false, "application/timestamp-query")]
+    [DataRow(true, "application/timestamp-query")]
+    [DataRow(true, "Application/Octet-Stream; name=\"request\"")]
+    public void Rfc3161IssuesAuditedToken(bool automatic, string contentType)
     {
         using var certificate = new TimestampCertificateFixture();
         using var host = new HandlerTestHost(certificate: _ => new X509Certificate2(certificate.Certificate));
         host.Configure(EnableRfc3161);
         var digest = Enumerable.Range(1, 32).Select(value => (byte)value).ToArray();
         byte[] nonce = [0x80, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
+        var protocol = automatic ? TimestampProtocol.Automatic : TimestampProtocol.Rfc3161;
         var request = Rfc3161Post(TestFixtures.BuildRfc3161Request(
-            TestFixtures.Sha256Oid, digest, certificateRequested: true, signedNonce: nonce));
+            TestFixtures.Sha256Oid, digest, certificateRequested: true, signedNonce: nonce), automatic);
+        request.ContentType = contentType;
 
-        var response = Timestamp(request, TimestampProtocol.Rfc3161);
+        var response = Timestamp(request, protocol);
         AssertEx.Equal(200, response.StatusCode);
         AssertEx.Equal("application/timestamp-reply", response.ContentType);
         AssertEx.False(string.IsNullOrEmpty(response.Headers["X-Correlation-ID"]));
@@ -131,7 +163,7 @@ public sealed class HandlerTests
 
         // Two tokens never share a serial number.
         var second = Timestamp(
-            Rfc3161Post(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, digest)), TimestampProtocol.Rfc3161);
+            Rfc3161Post(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, digest), automatic), protocol);
         AssertEx.Equal(0, TestFixtures.ExtractRfc3161Status(second.Body));
         var serials = host.AuditLines()
             .Select(line => Regex.Match(line, "\"serial\":\"([0-9a-f]{32})\"").Groups[1].Value);
@@ -139,13 +171,16 @@ public sealed class HandlerTests
     }
 
     [TestMethod(DisplayName = "RFC 3161 endpoint answers a malformed request with an audited rejection")]
-    public void Rfc3161RejectsMalformedRequest()
+    [DataRow(false)]
+    [DataRow(true)]
+    public void Rfc3161RejectsMalformedRequest(bool automatic)
     {
         using var host = new HandlerTestHost(certificate: _ =>
             throw new InvalidOperationException("A malformed request must not reach certificate selection."));
         host.Configure(EnableRfc3161);
+        var protocol = automatic ? TimestampProtocol.Automatic : TimestampProtocol.Rfc3161;
 
-        var response = Timestamp(Rfc3161Post([0x30, 0x80]), TimestampProtocol.Rfc3161);
+        var response = Timestamp(Rfc3161Post([0x30, 0x80], automatic), protocol);
         AssertEx.Equal(200, response.StatusCode, "RFC 3161 reports protocol errors in the response body.");
         AssertEx.Equal("application/timestamp-reply", response.ContentType);
         AssertEx.Equal(2, TestFixtures.ExtractRfc3161Status(response.Body));
@@ -154,7 +189,7 @@ public sealed class HandlerTests
 
         // A hash the service does not allow is refused before any key is touched.
         var disallowed = Timestamp(
-            Rfc3161Post(TestFixtures.BuildRfc3161Request("1.3.14.3.2.26", new byte[20])), TimestampProtocol.Rfc3161);
+            Rfc3161Post(TestFixtures.BuildRfc3161Request("1.3.14.3.2.26", new byte[20]), automatic), protocol);
         AssertEx.Equal((int)Rfc3161FailureInfo.BadAlgorithm, TestFixtures.ExtractRfc3161FailureBit(disallowed.Body));
     }
 
@@ -179,17 +214,19 @@ public sealed class HandlerTests
     }
 
     [TestMethod(DisplayName = "Timestamp endpoint withholds a token whose audit record cannot be written")]
-    public void TimestampFailsClosedOnAuditFailure()
+    [DataRow(false)]
+    [DataRow(true)]
+    public void TimestampFailsClosedOnAuditFailure(bool automatic)
     {
         using var certificate = new TimestampCertificateFixture();
         using var host = new HandlerTestHost(certificate: _ => new X509Certificate2(certificate.Certificate));
         host.Configure(EnableRfc3161);
+        var protocol = automatic ? TimestampProtocol.Automatic : TimestampProtocol.Rfc3161;
 
         // A file where the log directory belongs makes every audit write fail.
         File.WriteAllText(Path.Combine(host.DataDirectory, "Logs"), string.Empty);
         var response = Timestamp(
-            Rfc3161Post(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32])),
-            TimestampProtocol.Rfc3161);
+            Rfc3161Post(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32]), automatic), protocol);
         AssertEx.Equal(503, response.StatusCode);
         AssertEx.Contains("audit log cannot be written", response.Text);
         AssertEx.True(response.ContentType.StartsWith("text/plain", StringComparison.Ordinal),
@@ -198,14 +235,15 @@ public sealed class HandlerTests
         // With fail-open auditing the same failure does not block issuance.
         host.Configure(configuration => configuration.FailClosedOnAuditError = false);
         var failOpen = Timestamp(
-            Rfc3161Post(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32])),
-            TimestampProtocol.Rfc3161);
+            Rfc3161Post(TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32]), automatic), protocol);
         AssertEx.Equal(200, failOpen.StatusCode);
         AssertEx.Equal(0, TestFixtures.ExtractRfc3161Status(failOpen.Body));
     }
 
     [TestMethod(DisplayName = "Timestamp endpoint bounds the request body")]
-    public void TimestampBoundsRequestBody()
+    [DataRow(false)]
+    [DataRow(true)]
+    public void TimestampBoundsRequestBody(bool automatic)
     {
         using var host = new HandlerTestHost(certificate: _ =>
             throw new InvalidOperationException("An oversized request must not reach certificate selection."));
@@ -215,17 +253,21 @@ public sealed class HandlerTests
             configuration.MaxRequestBytes = 1024;
         });
 
-        var declared = Timestamp(Rfc3161Post(new byte[1025]), TimestampProtocol.Rfc3161);
+        var protocol = automatic ? TimestampProtocol.Automatic : TimestampProtocol.Rfc3161;
+        var declared = Timestamp(Rfc3161Post(new byte[1025], automatic), protocol);
         AssertEx.Equal(413, declared.StatusCode);
 
         // A chunked request declares no length, so the bound applies while the body streams in.
-        var chunkedRequest = Rfc3161Post(new byte[1025]);
+        var chunkedRequest = Rfc3161Post(new byte[1025], automatic);
         chunkedRequest.Headers.Remove("Content-Length");
-        AssertEx.Equal(413, Timestamp(chunkedRequest, TimestampProtocol.Rfc3161).StatusCode);
+        AssertEx.Equal(413, Timestamp(chunkedRequest, protocol).StatusCode);
     }
 
     [TestMethod(DisplayName = "Authenticode endpoint issues an audited countersignature")]
-    public void AuthenticodeIssuesAuditedCountersignature()
+    [DataRow(false, "application/octet-stream")]
+    [DataRow(true, "application/octet-stream")]
+    [DataRow(true, "application/timestamp-query")]
+    public void AuthenticodeIssuesAuditedCountersignature(bool automatic, string contentType)
     {
         if (!PlatformSecurityPolicy.IsLegacyAuthenticodeAllowed)
             Assert.Inconclusive("Legacy Authenticode is unavailable while Windows FIPS mode is enabled.");
@@ -234,14 +276,16 @@ public sealed class HandlerTests
         using var host = new HandlerTestHost(certificate: _ => new X509Certificate2(certificate.Certificate));
         host.Configure(configuration => configuration.AuthenticodeEnabled = true);
         byte[] signature = [0x10, 0x20, 0x30, 0x40];
+        var protocol = automatic ? TimestampProtocol.Automatic : TimestampProtocol.Authenticode;
+        var url = automatic ? AutomaticUrl : AuthenticodeUrl;
 
         // SignTool posts NUL-terminated base64 text.
-        var text = Convert.ToBase64String(TestFixtures.BuildAuthenticodeRequest(signature)) + "\0";
-        var request = new FakeHttpRequest("POST", AuthenticodeUrl, Encoding.ASCII.GetBytes(text))
+        var text = "\r\n\t " + Convert.ToBase64String(TestFixtures.BuildAuthenticodeRequest(signature)) + "\0";
+        var request = new FakeHttpRequest("POST", url, Encoding.ASCII.GetBytes(text))
         {
-            ContentType = "application/octet-stream"
+            ContentType = contentType
         };
-        var response = Timestamp(request, TimestampProtocol.Authenticode);
+        var response = Timestamp(request, protocol);
         AssertEx.Equal(200, response.StatusCode);
         AssertEx.Equal("application/octet-stream", response.ContentType);
         var cms = TestFixtures.DecodeCms(Convert.FromBase64String(Encoding.ASCII.GetString(response.Body)));
@@ -251,11 +295,45 @@ public sealed class HandlerTests
         AssertEx.Contains("\"protocol\":\"authenticode\"", audit);
         AssertEx.Contains("\"result\":\"granted\"", audit);
 
-        var malformed = new FakeHttpRequest("POST", AuthenticodeUrl, Encoding.ASCII.GetBytes("not base64!"))
+        var malformed = new FakeHttpRequest("POST", url, Encoding.ASCII.GetBytes("not base64!"))
         {
             ContentType = "application/octet-stream"
         };
-        AssertEx.Equal(400, Timestamp(malformed, TimestampProtocol.Authenticode).StatusCode);
+        AssertEx.Equal(400, Timestamp(malformed, protocol).StatusCode);
+    }
+
+    [TestMethod(DisplayName = "Automatic timestamp detection rejects unsupported envelopes without fallback")]
+    public void AutomaticTimestampRejectsUnsupportedEnvelopes()
+    {
+        using var host = new HandlerTestHost(certificate: _ =>
+            throw new InvalidOperationException("An invalid envelope must not reach certificate selection."));
+        host.Configure(configuration =>
+        {
+            EnableRfc3161(configuration);
+            configuration.AuthenticodeEnabled = true;
+        });
+
+        // Raw legacy DER must not be interpreted as a valid RFC 3161 request.
+        var rawLegacy = new FakeHttpRequest("POST", AutomaticUrl, TestFixtures.BuildAuthenticodeRequest([1]))
+        {
+            ContentType = "application/octet-stream"
+        };
+        var rejected = Timestamp(rawLegacy, TimestampProtocol.Automatic);
+        AssertEx.Equal(200, rejected.StatusCode);
+        AssertEx.Equal(2, TestFixtures.ExtractRfc3161Status(rejected.Body));
+        AssertEx.Contains("\"protocol\":\"rfc3161\"", host.AuditLines().Single());
+
+        // Base64 RFC 3161 and empty input must not produce timestamps through the legacy parser.
+        var encodedRfc = Encoding.ASCII.GetBytes(Convert.ToBase64String(
+            TestFixtures.BuildRfc3161Request(TestFixtures.Sha256Oid, new byte[32])));
+        foreach (var body in new[] { encodedRfc, Array.Empty<byte>() })
+        {
+            var request = new FakeHttpRequest("POST", AutomaticUrl, body) { ContentType = "application/octet-stream" };
+            AssertEx.Equal(PlatformSecurityPolicy.IsLegacyAuthenticodeAllowed ? 400 : 503,
+                Timestamp(request, TimestampProtocol.Automatic).StatusCode);
+            if (PlatformSecurityPolicy.IsLegacyAuthenticodeAllowed)
+                AssertEx.Contains("\"protocol\":\"authenticode\"", host.AuditLines().Last());
+        }
     }
 
     [TestMethod(DisplayName = "Admin console is limited to the local server and authorized groups")]
@@ -483,8 +561,8 @@ public sealed class HandlerTests
         configuration.AcceptedPolicyOids = [TestFixtures.DefaultPolicyOid];
     }
 
-    private static FakeHttpRequest Rfc3161Post(byte[] body) =>
-        new("POST", Rfc3161Url, body) { ContentType = "application/timestamp-query" };
+    private static FakeHttpRequest Rfc3161Post(byte[] body, bool automatic = false) =>
+        new("POST", automatic ? AutomaticUrl : Rfc3161Url, body) { ContentType = "application/timestamp-query" };
 
     private static FakeHttpResponse Timestamp(FakeHttpRequest request, TimestampProtocol protocol)
     {

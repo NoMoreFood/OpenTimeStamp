@@ -9,6 +9,8 @@ $rfc3161Url = 'https://tsa.example.com/OpenTimeStamp/timestamp/rfc3161'
 $authenticodeUrl = 'https://tsa.example.com/OpenTimeStamp/timestamp/authenticode'
 ```
 
+Both clients can use the shared `/OpenTimeStamp/timestamp` URL when desired. The server detects the protocol from the request and applies its configured protocol restrictions. Use HTTP for legacy clients that require it.
+
 The document or code-signing certificate and its private key belong on the
 signing workstation; the TSA certificate and private key remain on the server.
 Distribute the production TSA chain through the organization's normal trust

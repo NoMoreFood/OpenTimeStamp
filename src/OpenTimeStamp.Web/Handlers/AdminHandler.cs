@@ -982,6 +982,7 @@ internal sealed class AdminHandler : IHttpHandler
         {
             "rfc3161" => "RFC 3161",
             "authenticode" => "Authenticode",
+            "automatic" => "Automatic",
             var value => value
         };
 

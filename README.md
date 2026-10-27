@@ -17,6 +17,7 @@ For the default IIS application path `/OpenTimeStamp`:
 
 | Path | Method | Purpose |
 | --- | --- | --- |
+| `/OpenTimeStamp/timestamp` | `POST` | Automatically detect RFC 3161 or legacy Authenticode requests |
 | `/OpenTimeStamp/timestamp/rfc3161` | `POST` | RFC 3161 timestamping; use this for SignTool `/tr` |
 | `/OpenTimeStamp/timestamp/authenticode` | `POST` | Legacy Authenticode timestamping; use this for SignTool `/t` |
 | `/OpenTimeStamp/health` | `GET` | Operational health and readiness |

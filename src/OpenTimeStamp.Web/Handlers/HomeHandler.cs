@@ -90,6 +90,7 @@ internal sealed class HomeHandler : IHttpHandler
         application = (application ?? string.Empty).TrimEnd('/');
         authority = (authority ?? string.Empty).TrimEnd('/');
         var root = authority + application;
+        var timestampPath = application + "/timestamp";
         var rfc3161Path = application + "/timestamp/rfc3161";
         var authenticodePath = application + "/timestamp/authenticode";
         var healthPath = application + "/health";
@@ -129,6 +130,14 @@ internal sealed class HomeHandler : IHttpHandler
                 "<code class=\"path\">")
             .Append(H(authenticodePath))
             .Append("</code><p class=\"detail\"><strong>Content type:</strong> application/octet-stream</p></article>" +
+                "<article class=\"endpoint\"><div class=\"endpoint-heading\"><h3>Automatic Detection</h3>" +
+                "<span class=\"method\">POST</span></div>" +
+                "<p class=\"muted\">One URL for RFC 3161 and legacy Authenticode clients. " +
+                "Detects the protocol from the request body and follows the same server policy as " +
+                "the dedicated endpoints.</p><code class=\"path\">")
+            .Append(H(timestampPath))
+            .Append("</code><p class=\"detail\"><strong>Content types:</strong> application/timestamp-query " +
+                "or application/octet-stream</p></article>" +
                 "<article class=\"endpoint health\"><div class=\"endpoint-heading\"><h3>Service Health</h3>" +
                 "<span class=\"method\">GET</span></div>" +
                 "<p class=\"muted\">Returns a compact JSON health result for monitoring systems and load balancers. " +

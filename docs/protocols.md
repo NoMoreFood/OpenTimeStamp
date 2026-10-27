@@ -4,15 +4,15 @@ For the default IIS application path `/OpenTimeStamp`:
 
 | Path | Method | Purpose |
 | --- | --- | --- |
+| `/OpenTimeStamp/timestamp` | `POST` | Automatically detect RFC 3161 or legacy Authenticode from the request body |
 | `/OpenTimeStamp/timestamp/rfc3161` | `POST` | RFC 3161 request (`application/timestamp-query`) and reply (`application/timestamp-reply`); use this for SignTool `/tr` |
 | `/OpenTimeStamp/timestamp/authenticode` | `POST` | Legacy Authenticode base64 request/response (`application/octet-stream`); use this for SignTool `/t` |
 | `/OpenTimeStamp/health` | `GET` | Operational health response; inherits the public authentication mode |
 | `/OpenTimeStamp/admin` | `GET`, `POST` | Administrative UI; Windows-authenticated and local-computer-only regardless of public mode |
 
-There is intentionally no content-sniffing `/timestamp` endpoint. Clients must
-select the protocol explicitly.
+The automatic endpoint accepts `application/timestamp-query` and `application/octet-stream`. It detects binary RFC 3161 requests and base64-encoded Authenticode requests from the body, then returns the selected protocol's normal response. Protocol enablement, authentication, limits, auditing, and FIPS restrictions apply to all routes. A disabled protocol returns HTTP 404; Authenticode returns HTTP 503 while Windows FIPS mode is enabled.
 
-For per-application certificate, digest, policy, and authentication settings, see [Signing Endpoints and Hash Policies](signing-endpoints.md). Distinct IIS application roots provide independent signing profiles while retaining these explicit protocol routes.
+For per-application certificate, digest, policy, and authentication settings, see [Signing Endpoints and Hash Policies](signing-endpoints.md). Distinct IIS application roots provide independent signing profiles with the same protocol routes.
 
 RFC 3161/RFC 5816 message imprints support MD5, SHA-1, SHA-224, SHA-256,
 SHA-384, and SHA-512 OIDs. Safe defaults enable SHA-256, SHA-384, and SHA-512.

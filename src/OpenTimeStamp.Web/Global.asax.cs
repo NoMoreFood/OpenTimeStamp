@@ -98,6 +98,8 @@ internal static class ApplicationStartup
 
             var routes = RouteTable.Routes;
             routes.RouteExistingFiles = false;
+            routes.Add("Timestamp", new Route("timestamp", new HandlerRouteHandler(
+                () => new TimestampHandler(TimestampProtocol.Automatic))));
             routes.Add("Rfc3161", new Route("timestamp/rfc3161", new HandlerRouteHandler(() => new TimestampHandler(TimestampProtocol.Rfc3161))));
             routes.Add("Authenticode", new Route("timestamp/authenticode", new HandlerRouteHandler(() => new TimestampHandler(TimestampProtocol.Authenticode))));
             routes.Add("Admin", new Route("admin", new HandlerRouteHandler(() => new AdminHandler())));

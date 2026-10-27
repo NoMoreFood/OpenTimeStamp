@@ -120,14 +120,23 @@ internal static class TimestampEndpointChecks
             [1], "application/octet-stream").Status == 415));
         Check(profile.Name + " HTTP body limit", () => Require(Send(profile, "/timestamp/rfc3161", "POST",
             new byte[65537], "application/timestamp-query").Status == 413));
-        Check(profile.Name + " no protocol sniffing", () => Require(Send(profile, "/timestamp", "POST",
-            [1], "application/timestamp-query").Status == 404));
+        Check(profile.Name + " automatic RFC 3161", () =>
+        {
+            var digest = CreateDigest("SHA256", 32);
+            var nonce = CreateNonce();
+            var request = CreateRequest("2.16.840.1.101.3.4.2.1", digest, nonce, null, true, true);
+            var response = Send(profile, "/timestamp", "POST", request, "application/octet-stream");
+            var expectedFailure = ExpectedFailure(profile, "SHA256");
+            if (expectedFailure.HasValue) VerifyRejection(response, expectedFailure.Value);
+            else VerifyGranted(profile, response, request, "2.16.840.1.101.3.4.2.1", digest, nonce, true);
+        });
         if (profile.WindowsAuthentication)
             Check(profile.Name + " anonymous denied", () => Require(Send(profile, "/health", "GET",
                 authenticate: false).Status == 401));
 
         // Legacy requests contain a signature rather than an independently selected RFC message-imprint hash.
         Check(profile.Name + " Authenticode endpoint", () => VerifyAuthenticode(profile));
+        Check(profile.Name + " automatic Authenticode", () => VerifyAuthenticode(profile, true));
         if (!manifest.FipsEnabled && !profile.WindowsAuthentication)
         {
             Check(profile.Name + " native RFC 3161 signing", () => VerifyNativeSigning(profile, false));
@@ -255,7 +264,7 @@ internal static class TimestampEndpointChecks
         outer.ThrowIfNotEmpty();
     }
 
-    private static void VerifyAuthenticode(EndpointProfile profile)
+    private static void VerifyAuthenticode(EndpointProfile profile, bool automatic = false)
     {
         // Build the Windows legacy timestamp request around fresh signature bytes.
         var signature = CreateNonce();
@@ -271,7 +280,7 @@ internal static class TimestampEndpointChecks
         });
 
         // Match the legacy HTTP envelope used by SignTool and PowerShell, then verify the signed signature bytes.
-        var response = Send(profile, "/timestamp/authenticode", "POST",
+        var response = Send(profile, automatic ? "/timestamp" : "/timestamp/authenticode", "POST",
             Encoding.ASCII.GetBytes(Convert.ToBase64String(writer.Encode())), "application/octet-stream");
         if (!profile.AuthenticodeEnabled || manifest.FipsEnabled)
         {
