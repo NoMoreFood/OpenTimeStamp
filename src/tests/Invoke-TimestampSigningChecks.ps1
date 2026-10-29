@@ -33,7 +33,8 @@ $results = @()
 foreach ($server in $ServerUrl) {
     foreach ($tool in @('PowerShell', 'SignTool')) {
         $extension = if ($tool -eq 'PowerShell') { 'ps1' } else { 'exe' }
-        $path = Join-Path $runPath ($server.Scheme + '-' + $tool + '-' + $server.Port + '.' + $extension)
+        $path = Join-Path $runPath ($server.Scheme + '-' + $tool + '-' +
+            [guid]::NewGuid().ToString('N') + '.' + $extension)
         if ($tool -eq 'PowerShell') { [IO.File]::WriteAllText($path, "'OpenTimeStamp signing qualification'`r`n") }
         else { Copy-Item -LiteralPath $fixturePath -Destination $path }
         $parameters = @{

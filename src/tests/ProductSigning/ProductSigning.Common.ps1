@@ -537,16 +537,25 @@ function Get-DerObjectBytes {
 }
 
 function Assert-Rfc3161Token {
-    param([Parameter(Mandatory)][byte[]]$Bytes, [string]$ExpectedTsaThumbprint)
+    param(
+        [Parameter(Mandatory)][byte[]]$Bytes,
+        [string]$ExpectedTsaThumbprint,
+        [Security.Cryptography.Pkcs.SignerInfo]$SignerInfo
+    )
 
     Add-Type -AssemblyName System.Security.Cryptography.Pkcs
-    $cms = [System.Security.Cryptography.Pkcs.SignedCms]::new()
-    $cms.Decode((Get-DerObjectBytes -Bytes $Bytes))
-    Assert-Condition ($cms.ContentInfo.ContentType.Value -eq '1.2.840.113549.1.9.16.1.4') `
-        "CMS content type '$($cms.ContentInfo.ContentType.Value)' is not RFC 3161 TSTInfo."
+    $token = $null
+    $consumed = 0
+    Assert-Condition ([Security.Cryptography.Pkcs.Rfc3161TimestampToken]::TryDecode(
+        [ReadOnlyMemory[byte]]::new($Bytes), [ref]$token, [ref]$consumed) -and $consumed -eq $Bytes.Length) `
+        'The timestamp is not a complete RFC 3161 token with a valid TSA certificate and signature.'
+    $cms = $token.AsSignedCms()
     $cms.CheckSignature($true)
-    Assert-Condition ($cms.SignerInfos.Count -eq 1) `
-        "The RFC 3161 token contains $($cms.SignerInfos.Count) signers instead of one."
+    if ($null -ne $SignerInfo) {
+        $tokenSigner = $null
+        Assert-Condition $token.VerifySignatureForSignerInfo($SignerInfo, [ref]$tokenSigner, $null) `
+            'The RFC 3161 message imprint does not match the document signature.'
+    }
     if ($ExpectedTsaThumbprint) {
         $tokenSigner = $cms.SignerInfos[0].Certificate
         Assert-Condition ($tokenSigner -and $tokenSigner.Thumbprint -eq $ExpectedTsaThumbprint) `
@@ -570,7 +579,8 @@ function Assert-CmsHasRfc3161Timestamp {
         foreach ($attribute in $signer.UnsignedAttributes) {
             if ($attribute.Oid.Value -ne '1.2.840.113549.1.9.16.2.14') { continue }
             foreach ($value in $attribute.Values) {
-                Assert-Rfc3161Token -Bytes $value.RawData -ExpectedTsaThumbprint $ExpectedTsaThumbprint
+                Assert-Rfc3161Token -Bytes $value.RawData -ExpectedTsaThumbprint $ExpectedTsaThumbprint `
+                    -SignerInfo $signer
             }
             return
         }

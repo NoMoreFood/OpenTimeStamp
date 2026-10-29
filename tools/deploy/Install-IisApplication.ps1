@@ -2428,7 +2428,8 @@ finally {
                 $newIssuanceArtifacts = @($issuanceArtifactsAfter | Where-Object { $issuanceArtifactsBefore -notcontains $_ })
                 $markerOwned = $false
                 if (Test-Path -LiteralPath $dataInitialization.MarkerPath -PathType Leaf) {
-                    $createdMarker = Get-Content -LiteralPath $dataInitialization.MarkerPath -Raw | ConvertFrom-Json
+                    $createdMarker = Get-Content -LiteralPath $dataInitialization.MarkerPath -Raw -Encoding UTF8 |
+                        ConvertFrom-Json
                     $markerOwned = [string]$createdMarker.Product -eq 'OpenTimeStamp' -and
                         [int]$createdMarker.SchemaVersion -eq 1 -and
                         ([string]$createdMarker.DataDirectoryId).Equals(
@@ -2479,7 +2480,8 @@ finally {
             try {
                 $markerOwned = $false
                 if (Test-Path -LiteralPath $deploymentRootMarkerInitialization.MarkerPath -PathType Leaf) {
-                    $marker = Get-Content -LiteralPath $deploymentRootMarkerInitialization.MarkerPath -Raw | ConvertFrom-Json
+                    $marker = Get-Content -LiteralPath $deploymentRootMarkerInitialization.MarkerPath `
+                        -Raw -Encoding UTF8 | ConvertFrom-Json
                     $markerOwned = [string]$marker.Product -eq 'OpenTimeStamp' -and
                         [int]$marker.SchemaVersion -eq 1 -and
                         ([string]$marker.DeploymentId).Equals(

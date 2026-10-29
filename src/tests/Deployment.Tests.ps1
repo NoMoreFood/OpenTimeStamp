@@ -904,6 +904,40 @@ catch {
         } 'A publish ownership marker transplanted to another path was accepted.'
     }
 
+    Invoke-Test 'UTF-8 manifests and ownership markers preserve Unicode filesystem paths' {
+        $unicodeName = 'unicode-' + [char]0x00e9 + [char]0x6f22
+        $payload = Join-Path $testRoot ($unicodeName + '-payload')
+        New-TestPayload -Path $payload
+        $fileName = $unicodeName + '.txt'
+        [System.IO.File]::WriteAllText((Join-Path $payload $fileName), 'release content')
+        Write-OpenTimeStampPublishMarker -OutputPath $payload | Out-Null
+        Assert-OpenTimeStampPublishMarker -OutputPath $payload | Out-Null
+        New-OpenTimeStampDeploymentManifest -PayloadPath $payload | Out-Null
+        $manifest = Assert-OpenTimeStampPublishedPayload -PayloadPath $payload -AllowPublishMarker
+        Assert-True (@($manifest.Files.Path) -ccontains $fileName) 'The manifest changed a Unicode filename.'
+
+        $data = Join-Path $testRoot ($unicodeName + '-data')
+        $initialization = Initialize-OpenTimeStampDataDirectory -Path $data
+        Assert-Equal 'Marked' (Get-OpenTimeStampDataDirectoryClassification -Path $data).Kind `
+            'The UTF-8 data ownership marker was rejected.'
+        Set-OpenTimeStampDataDirectoryIssuanceInitialized -Path $data `
+            -ExpectedDataDirectoryId $initialization.MarkerId | Out-Null
+        Assert-True (Get-OpenTimeStampDataDirectoryClassification -Path $data).Marker.IssuanceStateInitialized `
+            'The Unicode data directory lost its issuance lifecycle state.'
+
+        $deployment = Join-Path $testRoot ($unicodeName + '-deployment')
+        New-Item -ItemType Directory -Path $deployment | Out-Null
+        $marker = [ordered]@{
+            Product = 'OpenTimeStamp'; SchemaVersion = 1
+            DeploymentId = [Guid]::NewGuid().ToString('D')
+            DeploymentRoot = [System.IO.Path]::GetFullPath($deployment)
+        }
+        [System.IO.File]::WriteAllText((Join-Path $deployment '.opentimestamp-deployment.json'),
+            ($marker | ConvertTo-Json), [System.Text.UTF8Encoding]::new($false))
+        Assert-True (Test-OpenTimeStampDeploymentRootMarker -Path $deployment) `
+            'The UTF-8 deployment ownership marker was rejected.'
+    }
+
     Invoke-Test 'Publish marker is excluded from deployed manifests and staged releases' {
         $payload = Join-Path $testRoot 'publish-marker-source'
         $stage = Join-Path $testRoot 'publish-marker-stage'

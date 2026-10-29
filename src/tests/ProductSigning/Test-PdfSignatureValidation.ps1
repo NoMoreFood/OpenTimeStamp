@@ -19,6 +19,7 @@ function Assert-PdfRejected {
 
 $rsa = [Security.Cryptography.RSA]::Create(2048)
 $certificate = $null
+$tsaCertificate = $null
 try {
     $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
         'CN=OpenTimeStamp PDF regression', $rsa, [Security.Cryptography.HashAlgorithmName]::SHA256,
@@ -28,6 +29,29 @@ try {
     $signer = [Security.Cryptography.Pkcs.CmsSigner]::new($certificate)
     $signer.DigestAlgorithm = [Security.Cryptography.Oid]::new('2.16.840.1.101.3.4.2.1')
     $signer.IncludeOption = [Security.Cryptography.X509Certificates.X509IncludeOption]::EndCertOnly
+
+    $tsaRequest = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
+        'CN=OpenTimeStamp PDF regression TSA', $rsa, [Security.Cryptography.HashAlgorithmName]::SHA256,
+        [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    $timestampUsage = [Security.Cryptography.OidCollection]::new()
+    [void]$timestampUsage.Add([Security.Cryptography.Oid]::new('1.3.6.1.5.5.7.3.8'))
+    $tsaRequest.CertificateExtensions.Add(
+        [Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($timestampUsage, $true))
+    $tsaCertificate = $tsaRequest.CreateSelfSigned([DateTimeOffset]::UtcNow.AddMinutes(-1),
+        [DateTimeOffset]::UtcNow.AddHours(1))
+    $timestampSigner = [Security.Cryptography.Pkcs.CmsSigner]::new($tsaCertificate)
+    $timestampSigner.DigestAlgorithm = $signer.DigestAlgorithm
+    $timestampSigner.IncludeOption = $signer.IncludeOption
+    $ess = [System.Formats.Asn1.AsnWriter]::new([System.Formats.Asn1.AsnEncodingRules]::DER)
+    [void]$ess.PushSequence()
+    [void]$ess.PushSequence()
+    [void]$ess.PushSequence()
+    $ess.WriteOctetString([Security.Cryptography.SHA256]::HashData($tsaCertificate.RawData))
+    $ess.PopSequence()
+    $ess.PopSequence()
+    $ess.PopSequence()
+    [void]$timestampSigner.SignedAttributes.Add([Security.Cryptography.AsnEncodedData]::new(
+        [Security.Cryptography.Oid]::new('1.2.840.113549.1.9.16.2.47'), $ess.Encode()))
 
     $prefix = "%PDF-1.4`n1 0 obj`n<< /Type /Sig /SubFilter /adbe.pkcs7.detached /Contents "
     $hexLength = 16384
@@ -48,14 +72,14 @@ try {
     $token = [Security.Cryptography.Pkcs.SignedCms]::new(
         [Security.Cryptography.Pkcs.ContentInfo]::new(
             [Security.Cryptography.Oid]::new('1.2.840.113549.1.9.16.1.4'), $tokenInfo.Encode()), $false)
-    $token.ComputeSignature($signer)
+    $token.ComputeSignature($timestampSigner)
     $cms.SignerInfos[0].AddUnsignedAttribute([Security.Cryptography.AsnEncodedData]::new(
         [Security.Cryptography.Oid]::new('1.2.840.113549.1.9.16.2.14'), $token.Encode()))
     $encoded = $cms.Encode()
     $hex = [Convert]::ToHexString($encoded)
     Assert-Condition ($hex.Length -le $hexLength) 'The PDF regression signature exceeds its placeholder.'
     $pdf = [Text.Encoding]::ASCII.GetBytes($prefix + '<' + $hex.PadRight($hexLength, '0') + '>' + $suffix)
-    Assert-PdfHasRfc3161Timestamp -Bytes $pdf -ExpectedTsaThumbprint $certificate.Thumbprint
+    Assert-PdfHasRfc3161Timestamp -Bytes $pdf -ExpectedTsaThumbprint $tsaCertificate.Thumbprint
 
     $modified = [byte[]]$pdf.Clone()
     $modified[1] = $modified[1] -bxor 1
@@ -84,9 +108,10 @@ try {
     Assert-PdfRejected -Bytes ([Text.Encoding]::ASCII.GetBytes($prefix + '<' + $unsignedHex + '>' + $suffix)) `
         -Message 'A detached PDF signature without a timestamp was accepted.'
 
-    Write-Host 'PASS detached PDF CMS verification, signed-byte integrity, ByteRange bounds, and required timestamp'
+    Write-Host 'PASS detached PDF CMS verification, signed-byte integrity, ByteRange bounds, and bound RFC 3161 timestamp'
 }
 finally {
     if ($null -ne $certificate) { $certificate.Dispose() }
+    if ($null -ne $tsaCertificate) { $tsaCertificate.Dispose() }
     $rsa.Dispose()
 }

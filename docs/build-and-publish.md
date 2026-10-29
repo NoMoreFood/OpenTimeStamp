@@ -5,7 +5,7 @@
 - Windows Server 2019 for RSA deployments, or Windows Server 2025 for RSA and
   supported ML-DSA deployments, with current security updates
 - .NET Framework 4.8 or a compatible in-place update on the IIS server
-- IIS 10; the installation script enables the required role services
+- IIS 10 with all required role services installed before setup
 - Visual Studio 18 or later Build Tools with a C# 14-capable MSBuild, the .NET
   Framework 4.8 targeting pack, and Web development build tools on the build
   computer
@@ -13,13 +13,7 @@
   test projects
 - Windows PowerShell 5.1 for the supplied scripts
 
-The solution deliberately targets .NET Framework 4.8 (`net48`). It runs on
-Windows Server 2025's in-box .NET Framework 4.8.1 without installing another
-.NET runtime; .NET Framework 4.8.1 is an in-place, runtime-compatible update,
-not a separate application target required by this project. Windows Server 2019
-remains a supported RSA deployment target with its in-box .NET Framework 4.8.
-The projects use the C# 14 compiler, but only language features that emit code
-compatible with the .NET Framework 4.8 runtime.
+The solution deliberately targets .NET Framework 4.8 (`net48`). It runs on Windows Server 2025's in-box .NET Framework 4.8.1 without installing another .NET runtime; .NET Framework 4.8.1 is an in-place, runtime-compatible update, not a separate application target required by this project. Windows Server 2019 remains a supported RSA deployment target after installing .NET Framework 4.8; its in-box runtime is 4.7.2. See Microsoft's [.NET Framework system requirements](https://learn.microsoft.com/en-us/dotnet/framework/get-started/system-requirements). The projects use the C# 14 compiler, but only language features that emit code compatible with the .NET Framework 4.8 runtime.
 
 The service uses the first-party `Microsoft.Bcl.Cryptography`, `System.Formats.Asn1`, and
 `System.Security.Cryptography.Pkcs` NuGet packages plus their transitive

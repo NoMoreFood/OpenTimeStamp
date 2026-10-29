@@ -76,12 +76,9 @@ checks the signer identity, content/signature integrity, and timestamp token. Pa
 `-CertificateThumbprint` for a fully trusted certificate already in Current
 User Personal when native trust-chain success is itself under test.
 
-The private-key PFX exists only in the user's temporary directory while Acrobat
-runs. The harness removes the PFX, certificate, and named CNG key that it
-created. `-KeepTestCertificate` preserves the signing certificate and key for
-manual investigation, but never preserves the PFX. Cleanup retries transient
-file locks, verifies that credential-bearing files are gone, and fails the run
-if any PFX, generated certificate/key, or Acrobat JavaScript cannot be removed.
+HTTPS runs for PowerShell, EXE, and Excel VBA use the production signing wrapper, which requires normal Windows trust validation. Supply a trusted signing certificate with `-CertificateThumbprint` and a trusted TSA chain for those runs; the temporary self-signed signing certificate is supported only by the direct HTTP test path.
+
+The private-key PFX is stored in the user's temporary directory for the test run so Acrobat can use it. The harness removes the PFX, certificate, and named CNG key that it created. `-KeepTestCertificate` preserves the signing certificate and key for manual investigation, but never preserves the PFX. Cleanup retries transient file locks, verifies that credential-bearing files are gone, and fails the run if any PFX, generated certificate/key, or Acrobat JavaScript cannot be removed.
 
 If the host is forcibly terminated, remove any matching temporary
 `OpenTimeStamp-ProductSigning-*.pfx` file and uniquely named `OTS*.js` file under

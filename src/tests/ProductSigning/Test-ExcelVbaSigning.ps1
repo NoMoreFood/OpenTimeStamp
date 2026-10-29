@@ -138,8 +138,6 @@ End Function
     Release-ComObject $workbooks
     $workbooks = $null
     Assert-Condition ([bool]$verificationWorkbook.VBASigned) 'Excel did not recognize the VBA project signature.'
-    $verificationWorkbook.Close($false)
-    $excel.Quit()
 
     $result = New-ProductTestResult -Name $testName -Status Passed -Artifact $artifactPath `
         -Detail 'Excel recognized the signed VBA project, and x86 SignTool validated its RFC 3161 signature.'

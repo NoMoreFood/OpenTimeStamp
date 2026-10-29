@@ -834,7 +834,7 @@ function Assert-OpenTimeStampPublishedPayload {
 
     if ($null -eq $Manifest) {
         try {
-            $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
         }
         catch {
             throw "The deployment manifest could not be parsed: $($_.Exception.Message)"
@@ -1149,7 +1149,7 @@ function Assert-OpenTimeStampPublishMarker {
     }
 
     try {
-        $marker = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        $marker = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
         $identifier = [Guid]::Empty
         $created = [DateTimeOffset]::MinValue
         if ([string]$marker.Product -ne 'OpenTimeStamp' -or [int]$marker.SchemaVersion -ne 1 -or
@@ -1365,7 +1365,7 @@ function Get-OpenTimeStampDataDirectoryClassification {
     $markerPath = Join-Path $root $script:OpenTimeStampDataMarkerName
     if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
         try {
-            $marker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
+            $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
             $identifier = [Guid]::Empty
             if ([string]$marker.Product -ne 'OpenTimeStamp' -or [int]$marker.SchemaVersion -ne 1 -or
                 -not [Guid]::TryParse([string]$marker.DataDirectoryId, [ref]$identifier) -or $identifier -eq [Guid]::Empty -or
@@ -1590,7 +1590,7 @@ function Test-OpenTimeStampDeploymentRootMarker {
     $markerPath = Join-Path $root $script:OpenTimeStampDeploymentMarkerName
     if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $false }
     try {
-        $marker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
+        $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $identifier = [Guid]::Empty
         if ([string]$marker.Product -ne 'OpenTimeStamp' -or [int]$marker.SchemaVersion -ne 1 -or
             -not [Guid]::TryParse([string]$marker.DeploymentId, [ref]$identifier) -or $identifier -eq [Guid]::Empty -or

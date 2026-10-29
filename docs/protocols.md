@@ -33,12 +33,7 @@ are deliberately limited to the standardized combinations:
 | ML-DSA-65 | SHA-384, SHA-512 |
 | ML-DSA-87 | SHA-512 |
 
-The legacy Authenticode endpoint remains RSA-only. The service makes no support
-claim for composite signatures or SLH-DSA. MD5, SHA-1, and Authenticode are
-legacy choices and are subject to the FIPS behavior described below. RFC 3161
-protocol rejections are returned as DER protocol-format status replies over
-HTTP 200, so clients must inspect the PKI status rather than treating HTTP
-success as a granted timestamp.
+The legacy Authenticode endpoint remains RSA-only. The service makes no support claim for composite signatures or SLH-DSA. MD5, SHA-1, and Authenticode are legacy choices and are subject to the [FIPS policy restrictions](administration.md#fips-and-legacy-behavior). RFC 3161 protocol rejections are returned as DER protocol-format status replies over HTTP 200, so clients must inspect the PKI status rather than treating HTTP success as a granted timestamp.
 
 OID values are centralized in one catalog. Where .NET Framework exposes a
 Windows `Oid.FromFriendlyName` mapping, the service uses it only when it exactly

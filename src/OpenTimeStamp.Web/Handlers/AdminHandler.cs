@@ -660,8 +660,8 @@ internal sealed class AdminHandler : IHttpHandler
             .Append("<li><strong>Timestamp ordering:</strong> Leave this off unless clients require every " +
                 "timestamp to be later than the previous timestamp.</li>")
             .Append("<li><strong>Backward clock adjustment:</strong> Two seconds allows small Windows Time " +
-                "corrections. Use a larger value only when your time-sync policy requires it. This value cannot " +
-                "exceed the published time accuracy.</li>")
+                "corrections. Use a larger value only when your time-sync policy requires it. When a nonzero " +
+                "time accuracy is published, this value cannot exceed it.</li>")
             .Append("<li><strong>Maximum request size:</strong> 65,536 bytes works for most clients. " +
                 "Increase it only for known larger requests; smaller limits reduce unnecessary input " +
                 "processing.</li></ul></div>")

@@ -10,9 +10,7 @@ settings must be customized.
 
 ## Install on IIS
 
-Copy the entire repository `deploy` directory, including
-`Deployment.Common.ps1`, and the published payload to the server. In an elevated
-Windows PowerShell 5.1 prompt:
+Copy the entire repository `tools\deploy` directory, including `Deployment.Common.ps1`, and the published payload to the server. In an elevated Windows PowerShell 5.1 prompt:
 
 ```powershell
 .\tools\deploy\Install-IisApplication.ps1 `

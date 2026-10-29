@@ -14,13 +14,14 @@ internal sealed class HomeHandler : IHttpHandler
         *{box-sizing:border-box}
         body{margin:0;background:linear-gradient(180deg,#edf4fb 0,#f5f7fa 18rem);color:var(--ink);
         font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
-        main{max-width:92rem;margin:auto;padding:clamp(1rem,3vw,2.5rem)}
+        main{overflow-wrap:anywhere;max-width:92rem;margin:auto;padding:clamp(1rem,3vw,2.5rem)}
         h1,h2,h3{line-height:1.2}h1{margin:.1rem 0 .35rem;font-size:clamp(1.9rem,4vw,2.7rem);
         letter-spacing:-.04em}h2{margin:0;font-size:1.5rem;letter-spacing:-.02em}
         h3{margin:.75rem 0 .35rem;font-size:1.2rem}p{margin:.35rem 0}a{color:var(--primary);text-underline-offset:.18em}
-        .page-header{display:flex;gap:1rem;align-items:center;margin-bottom:2rem;padding:1.35rem 1.5rem;
+        .page-header{display:flex;flex-wrap:wrap;gap:1rem;align-items:center;margin-bottom:2rem;padding:1.35rem 1.5rem;
         background:linear-gradient(135deg,#fff 35%,#f1f7fc);border:1px solid rgba(11,92,171,.16);
         border-radius:1rem;box-shadow:var(--shadow)}
+        .page-header>div:last-child{flex:1 1 18rem;min-width:0}
         .brand-mark{display:grid;place-items:center;flex:0 0 3.25rem;height:3.25rem;border-radius:.8rem;
         background:linear-gradient(135deg,var(--primary),#1785bd);color:#fff;font-size:.8rem;font-weight:800;
         letter-spacing:.08em;box-shadow:0 8px 18px rgba(11,92,171,.22)}
@@ -33,9 +34,9 @@ internal sealed class HomeHandler : IHttpHandler
         box-shadow:0 5px 18px rgba(32,55,79,.05)}
         .endpoint.recommended{border-top-color:var(--accent)}.endpoint.legacy{border-top-color:#7867b7}
         .endpoint.health{border-top-color:var(--primary)}.endpoint.admin{border-top-color:#d29222}
-        .endpoint-heading{display:flex;align-items:center;justify-content:space-between;gap:.75rem}
-        .method{display:inline-flex;align-items:center;padding:.2rem .5rem;border-radius:999px;background:#e8f2fb;
-        color:var(--primary-dark);font-size:.7rem;font-weight:800;letter-spacing:.055em}
+        .endpoint-heading{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.75rem}
+        .method{display:inline-flex;white-space:nowrap;align-items:center;padding:.2rem .5rem;border-radius:999px;
+        background:#e8f2fb;color:var(--primary-dark);font-size:.7rem;font-weight:800;letter-spacing:.055em}
         .recommended .method{background:#e8f5f1;color:#087161}.legacy .method{background:#f0edfa;color:#5f4fa2}
         .admin .method{background:#fff3db;color:#8a5b08}.endpoint .muted{flex:1}
         .path{display:block;margin:.8rem 0;padding:.62rem .7rem;overflow-wrap:anywhere;background:var(--surface-soft);
@@ -54,7 +55,7 @@ internal sealed class HomeHandler : IHttpHandler
         .note{margin-top:1rem;padding:.85rem 1rem;background:#eef6fd;border:1px solid #c9deef;
         border-radius:.55rem;color:#314b61}
         @media(max-width:46rem){main{padding:1rem}.page-header{align-items:flex-start;padding:1rem}.brand-mark{flex-basis:2.75rem;
-        height:2.75rem}.endpoints{grid-template-columns:1fr}.quick-start{padding:1rem}}
+        height:2.75rem}.endpoints,.examples{grid-template-columns:minmax(0,1fr)}.quick-start{padding:1rem}}
         """;
 
     public bool IsReusable => false;

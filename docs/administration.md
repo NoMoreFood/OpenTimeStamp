@@ -64,25 +64,7 @@ Prefer RFC 3161 and SHA-256 or stronger for every new integration.
 
 ## State, Logs, and Operations
 
-Mutable data is under the configured data directory (`App_Data` by default).
-Settings are written atomically with a backup. Serial numbers are random
-128-bit positive integers drawn for each timestamp, so they do not depend on
-stored state. Timestamp state records the last issuance time, which detects a
-clock stepped backward and keeps ordered timestamps strictly increasing; it is
-written atomically, with the previous record kept as a backup. UTF-8 JSON Lines
-audit logs are stored in its `Logs` subdirectory. Daily rollover produces
-`timestamp-YYYYMMDD.jsonl`; hourly rollover produces
-`timestamp-YYYYMMDD-HH.jsonl`; weekly rollover produces
-`timestamp-week-YYYYMMDD.jsonl`, dated for Monday at the start of the UTC week.
-Administration can enable or disable automatic pruning and select a retention
-period from 1 through 3650 days. New configurations default to daily rollover
-and 365 days of retention.
-Cross-process coordination uses persistent zero-content `tsa.config.lock`,
-`issuance.state.lock`, and `Logs\.audit.lock` files. These are neither state nor
-backup payloads and should not be deleted during normal operation or recovery.
-Restoring an older `issuance.state` cannot cause a serial number to repeat, but
-local validation cannot tell that the restored issuance time is stale. Reconcile
-the last issuance time against the audit history and confirm the host clock is correct before resuming issuance.
+Mutable data is under the configured data directory (`App_Data` by default). Settings are written atomically with a backup. Serial numbers are positive integers with 127 random bits drawn for each timestamp, so they do not depend on stored state. Timestamp state records the last issuance time, which detects a clock stepped backward and keeps ordered timestamps strictly increasing; it is written atomically, with the previous record kept as a backup. UTF-8 JSON Lines audit logs are stored in its `Logs` subdirectory. Daily rollover produces `timestamp-YYYYMMDD.jsonl`; hourly rollover produces `timestamp-YYYYMMDD-HH.jsonl`; weekly rollover produces `timestamp-week-YYYYMMDD.jsonl`, dated for Monday at the start of the UTC week. Administration can enable or disable automatic pruning and select a retention period from 1 through 3650 days. New configurations default to daily rollover and 365 days of retention. Cross-process coordination uses persistent zero-content `tsa.config.lock`, `issuance.state.lock`, and `Logs\.audit.lock` files. These are neither state nor backup payloads and should not be deleted during normal operation or recovery. Restoring an older `issuance.state` cannot cause a serial number to repeat, but local validation cannot tell that the restored issuance time is stale. Reconcile the last issuance time against the audit history and confirm the host clock is correct before resuming issuance.
 
 Audit records include result, protocol, correlation ID, remote address, policy,
 hash OID, serial, certificate thumbprint, elapsed time, and identity fields.
