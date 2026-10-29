@@ -451,6 +451,12 @@ catch {
                 @{ Schemes = @('https', 'http', 'https'); RequireHttps = $false })) {
             $endpoints = @($scenario.Schemes | ForEach-Object { [pscustomobject]@{ Scheme = $_ } })
             foreach ($existingFlags in @(0, 8, 32, 40, 104, 296)) {
+                if (-not $scenario.RequireHttps -and $existingFlags -ne 0) {
+                    Assert-Throws {
+                        Get-OpenTimeStampBindingProtocolPolicy -Endpoints $endpoints -ExistingSslFlags $existingFlags
+                    } 'HTTP bindings weakened an existing IIS SSL requirement.'
+                    continue
+                }
                 $policy = Get-OpenTimeStampBindingProtocolPolicy -Endpoints $endpoints -ExistingSslFlags $existingFlags
                 Assert-Equal $scenario.RequireHttps $policy.RequireHttps 'HTTPS requirement differs from site bindings.'
                 $expectedFlags = if ($scenario.RequireHttps) { $existingFlags -bor 264 } else { 0 }
@@ -472,6 +478,13 @@ catch {
         Assert-Throws {
             Get-OpenTimeStampBindingProtocolPolicy -Endpoints @([pscustomobject]@{ Scheme = 'ftp' })
         } 'A non-HTTP application protocol was accepted.'
+        Assert-Throws {
+            Get-OpenTimeStampBindingProtocolPolicy -Endpoints @([pscustomobject]@{ Scheme = 'http' }) `
+                -AuthenticationMode Windows
+        } 'Windows authentication was accepted over HTTP.'
+        $windows = Get-OpenTimeStampBindingProtocolPolicy -Endpoints @([pscustomobject]@{ Scheme = 'https' }) `
+            -AuthenticationMode Windows
+        Assert-True $windows.RequireHttps 'An HTTPS-only Windows-authenticated site was rejected.'
     }
 
     Invoke-Test 'Mixed bindings cannot silently downgrade an unusable HTTPS protocol to HTTP' {
@@ -1581,6 +1594,24 @@ catch {
         $installCommand = $wixSource.Substring($installCommandStart, $installCommandEnd - $installCommandStart)
         Assert-True ($installCommand -notmatch 'IISSITENAME|APPLICATIONNAME') `
             'Untrusted IIS selections are interpolated into the elevated PowerShell command line.'
+        [xml]$wixDocument = $wixSource
+        $ns = [Xml.XmlNamespaceManager]::new($wixDocument.NameTable)
+        $ns.AddNamespace('w', $wixDocument.DocumentElement.NamespaceURI)
+        foreach ($operation in @('Install', 'Uninstall')) {
+            $rollback = $wixDocument.SelectSingleNode("//w:CustomAction[@Id='Rollback${operation}OpenTimeStamp']", $ns)
+            $commit = $wixDocument.SelectSingleNode("//w:CustomAction[@Id='Commit${operation}OpenTimeStamp']", $ns)
+            Assert-Equal 'rollback' $rollback.Execute 'IIS recovery is not a Windows Installer rollback action.'
+            Assert-Equal 'commit' $commit.Execute 'IIS cleanup is not deferred until Windows Installer commits.'
+            $sequence = if ($operation -eq 'Install') {
+                $wixDocument.SelectSingleNode("//w:Custom[@Action='InstallOpenTimeStamp']", $ns).After
+            } else {
+                $wixDocument.SelectSingleNode("//w:Custom[@Action='RollbackUninstallOpenTimeStamp']", $ns).Before
+            }
+            $expected = if ($operation -eq 'Install') { 'RollbackInstallOpenTimeStamp' } else { 'UninstallOpenTimeStamp' }
+            Assert-Equal $expected $sequence 'The rollback action must precede the IIS mutation.'
+        }
+        Assert-True ($wixSource -match 'NOT RollbackDisabled AND NOT DISABLEROLLBACK') `
+            'MSI allows deployment without its required rollback actions.'
         Assert-True ($build -match [regex]::Escape('tools\msi\Build-Msi.ps1') -and
             $build -match 'RequireSignedInstaller') 'The normal build does not produce and sign the MSI.'
         Assert-True ($publish -match [regex]::Escape("'tools/msi'") -and
@@ -1824,7 +1855,8 @@ catch {
         $document.Save($path)
         foreach ($schemes in @(@('https'), @('http'), @('http', 'https'))) {
             $endpoints = @($schemes | ForEach-Object { [pscustomobject]@{ Scheme = $_ } })
-            $policy = Get-OpenTimeStampBindingProtocolPolicy -Endpoints $endpoints -ExistingSslFlags 264
+            $existingFlags = if ($schemes -contains 'http') { 0 } else { 264 }
+            $policy = Get-OpenTimeStampBindingProtocolPolicy -Endpoints $endpoints -ExistingSslFlags $existingFlags
             $requireHttps = $policy.RequireHttps
             Set-OpenTimeStampStagedWebSettings -ReleasePath $stage -Mode Anonymous `
                 -EffectiveDataPath 'C:\ProgramData\OpenTimeStamp' -EffectiveAdminHosts @('localhost') `

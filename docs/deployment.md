@@ -45,7 +45,7 @@ C:\inetpub\OpenTimeStamp\
 On 64-bit Windows, run the installer from a 64-bit PowerShell process; it
 rejects a 32-bit WOW64 process before reading or changing IIS configuration.
 IIS Shared Configuration must be disabled on the target server. The installer
-checks this before installing role services or mutating IIS because its exact
+checks this before inspecting role services or mutating IIS because its exact
 rollback snapshots require the local IIS configuration store.
 
 The IIS installer does not change Office or Acrobat settings. Those settings are
@@ -65,18 +65,14 @@ The installer:
   older validated releases only after the new release commits; use
   `-RetainReleases` to select another bounded retention count, while malformed or
   unrecognized release-shaped directories are preserved with a warning;
-- enables only the IIS leaf services needed by ASP.NET 4.x, Windows
-  authentication, request filtering, IP restrictions, HTTP errors/logging, and
-  the PowerShell administration provider;
+- verifies the IIS leaf services needed by ASP.NET 4.x, Windows authentication,
+  request filtering, IP restrictions, HTTP errors/logging, and the PowerShell administration provider;
 - creates a dedicated `OpenTimeStamp` application pool using
   `ApplicationPoolIdentity`, 64-bit integrated mode, .NET CLR v4.0, one worker
-  process, non-overlapping recycling, `AlwaysRunning` startup, no idle timeout,
-  and no scheduled periodic recycle, and
+  process, non-overlapping recycling, on-demand startup, a 20-minute idle timeout,
+  and recycling after 29 hours or 35,000 requests, and
   refuses both a target pool and an existing application's actual current pool
   if either is assigned to another IIS application;
-- enables site, pool, and ASP.NET service auto-start, registers the
-  `OpenTimeStampPreloadClient` provider, and initializes configuration, routes,
-  admission controls, and a background health probe before the first request;
 - grants the pool read/execute access to the application and modify access only
   to the configured data directory (`App_Data` by default);
 - writes the selected mode to the application's immutable
@@ -92,11 +88,9 @@ The installer:
   and an exact configured host name for `/admin`.
 
 During a release switch, the installer stops the application's real current pool
-and the target pool. A successful installation leaves the selected site and
-target pool started so service auto-start can warm the worker immediately and
-after future IIS restarts. If a failure occurs before the issuance-state format
-commit, the IIS application pointer, always-warm attributes, provider
-registration, pool settings, and original site and pool states are rolled back.
+and the target pool. A successful installation starts the target pool; IIS starts
+the worker on demand. If a failure occurs before the issuance-state format
+commit, the IIS application pointer, pool settings, and original site and pool states are rolled back.
 A shared current pool is rejected before any stop, because quiescing it would
 interrupt unrelated applications. The enforced single-worker and
 non-overlapping-recycle settings keep the application-wide admission limits
@@ -139,9 +133,8 @@ deliberately suppressed and the new release remains selected.
 
 Serial numbers are random and do not depend on this state, so a restored or
 copied `issuance.state` cannot cause a serial to repeat. The state records only
-the last issuance time. If it is lost, restore `issuance.state` from any backup;
-an older copy only makes the clock-rollback and ordering checks start from that
-earlier time.
+the last issuance time. If the current record is lost or corrupt and no valid staged record survives,
+issuance stops. Restore an authoritative state and reconcile it with the audit history before resuming issuance.
 
 For stronger separation in production, place mutable data outside the web root:
 
@@ -151,7 +144,6 @@ For stronger separation in production, place mutable data outside the web root:
     -DataPath "$env:ProgramData\OpenTimeStamp" `
     -AdminHostNames 'tsa.example.com' `
     -AuthenticationMode Windows `
-    -RequireHttps `
     -ManifestSignaturePath .\OpenTimeStamp.DeploymentManifest.p7s `
     -TrustedManifestSignerThumbprint '<release-signing-certificate-thumbprint>'
 ```
@@ -168,30 +160,21 @@ all deployment-controlled paths.
 
 For production, create a dedicated IIS site and exact host-name HTTPS binding,
 install its TLS certificate, then install OpenTimeStamp as the child application
-shown above and pass `-RequireHttps`. A dedicated site avoids inheriting unrelated
+shown above. A dedicated site avoids inheriting unrelated
 application settings. The installer deliberately does not create bindings or
 select a site's TLS certificate: a safe binding needs an operator-selected IP,
 host name, port, certificate, and SNI policy, and the existing
 `-CertificateThumbprint` parameter identifies the TSA signing certificate, not a
-TLS certificate. HTTPS is strongly recommended for all deployments and is
-essential when authentication credentials traverse a network. `-RequireHttps`
-accepts only a usable HTTPS binding that directly identifies one currently valid
-`LocalMachine` certificate with a private key; the installer rechecks bindings
-at the durable commit boundary and reports a base URL derived from that binding.
+TLS certificate. HTTPS is strongly recommended for all deployments; Windows authentication
+requires an HTTPS-only site. HTTPS bindings must identify a currently valid
+`LocalMachine` certificate with a private key. The installer rechecks bindings
+at the durable commit boundary and reports the application URLs. Existing IIS SSL
+requirements cannot be weakened by adding an HTTP binding.
 
-By default, the installer asks ServerManager for only `Web-Asp-Net45`,
+The installer requires `Web-Asp-Net45`,
 `Web-Windows-Auth`, `Web-IP-Security`, `Web-Filtering`, `Web-Http-Errors`,
-`Web-Http-Logging`, and `Web-Scripting-Tools`; Windows adds only their required
-dependencies. It does not request Static Content, Default Document, Directory
-Browsing, WebDAV, CGI, classic ASP, FTP, the remote Management Service, the IIS
-Manager GUI, or the broad default `Web-Server` feature set. HTTP logging is kept
-as the one non-runtime service needed for security investigation. The installer
-never removes a pre-existing IIS feature because another site may need it.
-
-If IIS is already provisioned, pass `-InstallIisFeatures:$false`. The installer
-still verifies every required leaf service and reports the missing names without
-changing IIS. If Windows reports that role installation needs a restart, restart
-the server and rerun the installer before serving requests.
+`Web-Http-Logging`, and `Web-Scripting-Tools`. Install missing role services before
+running setup; the installer reports missing services and does not change Windows features.
 
 ## Development Certificate
 

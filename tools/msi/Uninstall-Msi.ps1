@@ -84,9 +84,6 @@ try {
     }
 
     $pool = $manager.ApplicationPools[$appPoolName]
-    if ($null -ne $pool -and [string]$pool.State -notin @('Stopped', 'Stopping')) {
-        [void]$pool.Stop()
-    }
     [void]$site.Applications.Remove($application)
     if ($null -ne $pool) { [void]$manager.ApplicationPools.Remove($pool) }
 

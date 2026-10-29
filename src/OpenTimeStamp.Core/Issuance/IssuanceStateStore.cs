@@ -73,6 +73,12 @@ public sealed class IssuanceStateStore
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             if (!TryReadHighWaterMark(out _))
             {
+                if (ReadRecord(backupPath) is not null)
+                {
+                    throw new IssuanceStateException(
+                        "The current timestamp state is missing or corrupt. An older backup cannot establish " +
+                        "the latest issuance time; reconcile the state with the audit history before restoring it.");
+                }
                 var migrated = LegacyIssuanceState.ReadLastIssuedUtc(path);
                 if (migrated is null && CurrentPaths().Any(File.Exists))
                 {
@@ -210,18 +216,12 @@ public sealed class IssuanceStateStore
                   "state written by an earlier release."
                 : "Timestamp state has not been initialized.");
 
-    // The mark only ever moves forward, so the newest valid copy is always the right one. A staged
-    // file wins after a crash that preceded its publication. The backup holds the mark before the
-    // latest issuance and is reached only when nothing newer survives; the rollback check then
-    // starts from that earlier time.
+    // A backup alone can be older than an issued token, so only a published or staged mark is authoritative.
     private bool TryReadHighWaterMark(out DateTime lastIssuedUtc)
     {
-        long? newest = null;
-        foreach (var candidate in CurrentPaths())
-        {
-            var ticks = ReadRecord(candidate);
-            if (ticks is not null && (newest is null || ticks > newest)) newest = ticks;
-        }
+        var published = ReadRecord(path);
+        var staged = ReadRecord(temporaryPath);
+        var newest = published is null ? staged : staged is null ? published : Math.Max(published.Value, staged.Value);
 
         lastIssuedUtc = new DateTime(newest ?? 0, DateTimeKind.Utc);
         return newest is not null;

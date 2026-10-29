@@ -461,7 +461,8 @@ function Get-OpenTimeStampValidatedBindingEndpoint {
 function Get-OpenTimeStampBindingProtocolPolicy {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Endpoints,
-        [uint32]$ExistingSslFlags = 0
+        [uint32]$ExistingSslFlags = 0,
+        [ValidateSet('Anonymous', 'Windows')][string]$AuthenticationMode = 'Anonymous'
     )
 
     $schemes = @($Endpoints | ForEach-Object { [string]$_.Scheme } | Sort-Object -Unique)
@@ -469,6 +470,12 @@ function Get-OpenTimeStampBindingProtocolPolicy {
         throw 'The application requires at least one validated HTTP or HTTPS site binding.'
     }
     $requireHttps = $schemes -notcontains 'http'
+    if (-not $requireHttps -and $ExistingSslFlags -ne 0) {
+        throw 'An HTTP binding conflicts with the existing IIS SSL requirements. Preserve those requirements or remove the HTTP binding.'
+    }
+    if (-not $requireHttps -and $AuthenticationMode -eq 'Windows') {
+        throw 'Windows authentication requires an HTTPS-only IIS site.'
+    }
     return [PSCustomObject]@{
         Schemes = $schemes
         RequireHttps = $requireHttps

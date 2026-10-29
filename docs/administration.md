@@ -81,8 +81,8 @@ Cross-process coordination uses persistent zero-content `tsa.config.lock`,
 `issuance.state.lock`, and `Logs\.audit.lock` files. These are neither state nor
 backup payloads and should not be deleted during normal operation or recovery.
 Restoring an older `issuance.state` cannot cause a serial number to repeat, but
-local validation cannot tell that the restored issuance time is stale. After a
-restore, confirm the host clock is correct before the service resumes issuance.
+local validation cannot tell that the restored issuance time is stale. Reconcile
+the last issuance time against the audit history and confirm the host clock is correct before resuming issuance.
 
 Audit records include result, protocol, correlation ID, remote address, policy,
 hash OID, serial, certificate thumbprint, elapsed time, and identity fields.
@@ -102,7 +102,7 @@ for the audit logs on disk.
   or clock steps.
 - Restrict server administration and back up the configured data directory
   securely as one application-consistent set. Prefer the most recent
-  `issuance.state`; an older copy weakens only the clock-rollback check.
+  `issuance.state`; an older copy can also break ordering guarantees.
 - Forward audit logs to append-only or off-host protected storage before local
   retention expires.
 - Monitor certificate expiry, private-key availability, disk space, HTTP errors,

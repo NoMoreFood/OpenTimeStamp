@@ -237,10 +237,14 @@ namespace OpenTimeStamp.Clients
 }
 
 $stage = Join-Path $file.DirectoryName ('.opentimestamp-' + [guid]::NewGuid().ToString('N') + '-' + $file.Name)
+$backup = $file.FullName + '.OpenTimeStamp-' + [guid]::NewGuid().ToString('N') + '.bak'
 $transport = $null
 try {
     $originalHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
     [IO.File]::Copy($file.FullName, $stage, $false)
+    if ((Get-FileHash -LiteralPath $stage -Algorithm SHA256).Hash -ne $originalHash) {
+        throw 'The input file changed while it was copied; its newer contents were preserved.'
+    }
     if (([uri]$timestampUrl).Scheme -eq 'https') {
         $transport = New-Object OpenTimeStamp.Clients.TimestampTransport $timestampUrl
         $nativeTimestampUrl = $transport.Url
@@ -271,12 +275,22 @@ try {
         ($ExpectedTsaThumbprint -and $signature.TimeStamperCertificate.Thumbprint -ne $ExpectedTsaThumbprint)) {
         throw 'A valid signature with the intended timestamp was not obtained.'
     }
-    if ((Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash -ne $originalHash) {
-        throw 'The input file changed during signing; its newer contents were preserved.'
+    # Prevent writes through the final check and retain the displaced file if its path was replaced.
+    $inputLock = [IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        ([IO.FileShare]::Read -bor [IO.FileShare]::Delete))
+    try {
+        if ((Get-FileHash -InputStream $inputLock -Algorithm SHA256).Hash -ne $originalHash) {
+            throw 'The input file changed during signing; its newer contents were preserved.'
+        }
+        [IO.File]::Replace($stage, $file.FullName, $backup)
     }
-    [IO.File]::Replace($stage, $file.FullName, [NullString]::Value)
+    finally { $inputLock.Dispose() }
+    if ((Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash -ne $originalHash) {
+        throw "The input file was replaced during signing; its displaced contents were preserved at '$backup'."
+    }
     [pscustomobject]@{
         FilePath = $file.FullName
+        BackupPath = $backup
         Tool = $Tool
         TimestampUrl = $timestampUrl
         Status = [string]$signature.Status
@@ -286,7 +300,12 @@ try {
     }
 }
 catch {
-    if ($transport -and $transport.Error) { throw "HTTPS timestamp retrieval failed: $($transport.Error)" }
+    if ([IO.File]::Exists($backup) -and -not $_.Exception.Message.Contains($backup)) {
+        throw "$($_.Exception.Message) The displaced input is preserved at '$backup'."
+    }
+    if ($transport -and $transport.Error -and -not [IO.File]::Exists($backup)) {
+        throw "HTTPS timestamp retrieval failed: $($transport.Error)"
+    }
     throw
 }
 finally {

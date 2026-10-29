@@ -30,6 +30,8 @@
     <Launch Condition="VersionNT64" Message="OpenTimeStamp requires 64-bit Windows Server." />
     <Launch Condition="Installed OR IISINSTALLED"
       Message="Microsoft IIS must be installed and configured before installing OpenTimeStamp." />
+    <Launch Condition="NOT RollbackDisabled AND NOT DISABLEROLLBACK"
+      Message="Windows Installer rollback must be enabled to install or remove OpenTimeStamp safely." />
 
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLERCACHE" />
     <UI Id="IisConfigurationUI">
@@ -109,6 +111,7 @@
       <Component Id="InstallerScripts" Guid="{56530866-AFB4-479F-9060-786241FBA341}">
         <File Id="InstallMsiScript" Source="$(var.SetupPath)\Install-Msi.ps1" />
         <File Id="UninstallMsiScript" Source="$(var.SetupPath)\Uninstall-Msi.ps1" />
+        <File Id="MsiTransactionScript" Source="$(var.SetupPath)\Invoke-MsiTransaction.ps1" />
         <File Id="InstallerReadme" Source="$(var.SetupPath)\README.md" Name="README.md" />
         <RegistryValue Root="HKLM" Key="Software\OpenTimeStamp\Installer" Name="Version"
           Value="$(var.ProductVersion)" Type="string" KeyPath="yes" />
@@ -120,7 +123,7 @@
     </DirectoryRef>
 
     <SetProperty Id="InstallOpenTimeStamp"
-      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#InstallMsiScript]&quot;"
+      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#MsiTransactionScript]&quot; -Action Install -TransactionId &quot;[ProductCode]&quot;"
       Before="InstallOpenTimeStamp" Sequence="execute" Condition="NOT Installed AND NOT REMOVE~=&quot;ALL&quot;" />
     <CustomAction Id="InstallOpenTimeStamp"
       BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
@@ -130,7 +133,7 @@
       Return="check" />
 
     <SetProperty Id="UninstallOpenTimeStamp"
-      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#UninstallMsiScript]&quot;"
+      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#MsiTransactionScript]&quot; -Action Uninstall -TransactionId &quot;[ProductCode]&quot;"
       Before="UninstallOpenTimeStamp" Sequence="execute"
       Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     <CustomAction Id="UninstallOpenTimeStamp"
@@ -140,10 +143,39 @@
       Impersonate="no"
       Return="check" />
 
+    <SetProperty Id="RollbackInstallOpenTimeStamp"
+      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#MsiTransactionScript]&quot; -Action Rollback -TransactionId &quot;[ProductCode]&quot;"
+      Before="RollbackInstallOpenTimeStamp" Sequence="execute" Condition="NOT Installed AND NOT REMOVE~=&quot;ALL&quot;" />
+    <CustomAction Id="RollbackInstallOpenTimeStamp" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+      DllEntry="WixQuietExec" Execute="rollback" Impersonate="no" Return="check" />
+    <SetProperty Id="RollbackUninstallOpenTimeStamp"
+      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#MsiTransactionScript]&quot; -Action Rollback -TransactionId &quot;[ProductCode]&quot;"
+      Before="RollbackUninstallOpenTimeStamp" Sequence="execute" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    <CustomAction Id="RollbackUninstallOpenTimeStamp" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+      DllEntry="WixQuietExec" Execute="rollback" Impersonate="no" Return="check" />
+    <SetProperty Id="CommitInstallOpenTimeStamp"
+      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[WindowsFolder]Installer\OpenTimeStamp-[ProductCode]\Invoke-MsiTransaction.ps1&quot; -Action Commit -TransactionId &quot;[ProductCode]&quot;"
+      Before="CommitInstallOpenTimeStamp" Sequence="execute" Condition="NOT Installed AND NOT REMOVE~=&quot;ALL&quot;" />
+    <CustomAction Id="CommitInstallOpenTimeStamp" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+      DllEntry="WixQuietExec" Execute="commit" Impersonate="no" Return="check" />
+    <SetProperty Id="CommitUninstallOpenTimeStamp"
+      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[WindowsFolder]Installer\OpenTimeStamp-[ProductCode]\Invoke-MsiTransaction.ps1&quot; -Action Commit -TransactionId &quot;[ProductCode]&quot;"
+      Before="CommitUninstallOpenTimeStamp" Sequence="execute" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    <CustomAction Id="CommitUninstallOpenTimeStamp" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+      DllEntry="WixQuietExec" Execute="commit" Impersonate="no" Return="check" />
+
     <InstallExecuteSequence>
-      <Custom Action="InstallOpenTimeStamp" After="WriteRegistryValues"
+      <Custom Action="RollbackInstallOpenTimeStamp" After="WriteRegistryValues"
         Condition="NOT Installed AND NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="InstallOpenTimeStamp" After="RollbackInstallOpenTimeStamp"
+        Condition="NOT Installed AND NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="CommitInstallOpenTimeStamp" After="InstallOpenTimeStamp"
+        Condition="NOT Installed AND NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="RollbackUninstallOpenTimeStamp" Before="UninstallOpenTimeStamp"
+        Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="UninstallOpenTimeStamp" Before="RemoveRegistryValues"
+        Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="CommitUninstallOpenTimeStamp" After="UninstallOpenTimeStamp"
         Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
     </InstallExecuteSequence>
   </Package>

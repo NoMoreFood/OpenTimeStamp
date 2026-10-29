@@ -76,6 +76,12 @@ if ($matches.Count -gt 1) { throw 'PDF-XChange contains duplicate presets for th
 $preset = if ($matches.Count) { $matches[0] } else {
     [PSCustomObject]@{ ID = '{' + [Guid]::NewGuid().ToString().ToUpperInvariant() + '}'; Flags = 0 }
 }
+if ($matches.Count -and
+    (($preset.Data.PSObject.Properties['RequireAuth'] -and $preset.Data.RequireAuth) -or
+        ($preset.Data.PSObject.Properties['User'] -and $preset.Data.User) -or
+        ($preset.Data.PSObject.Properties['Password'] -and $preset.Data.Password))) {
+    throw 'The matching PDF-XChange timestamp preset uses authentication; its settings were preserved.'
+}
 $description = "URL: $canonicalUrl"
 if ($preset.PSObject.Properties['Name']) { $preset.Name = $ServerName }
 else { $preset | Add-Member -NotePropertyName Name -NotePropertyValue $ServerName }

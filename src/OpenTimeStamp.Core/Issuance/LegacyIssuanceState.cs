@@ -23,8 +23,7 @@ internal static class LegacyIssuanceState
     private const int MarkerPayloadLength = MarkerKeyOffset + MarkerKeyLength + sizeof(ulong) + 16;
     private const int MarkerLength = MarkerPayloadLength + 32;
 
-    private static readonly string[] StateSuffixes =
-        [string.Empty, ".bak", ".new", ".bak.new", ".migrate", ".migrate.new"];
+    private static readonly string[] StateSuffixes = [string.Empty, ".new", ".migrate", ".migrate.new"];
     private static readonly string[] MarkerSuffixes = [".meta", ".meta.bak", ".meta.new"];
 
     /// <summary>
@@ -34,8 +33,10 @@ internal static class LegacyIssuanceState
     internal static DateTime? ReadLastIssuedUtc(string path)
     {
         var keys = MarkerSuffixes.Select(suffix => ReadMarkerKey(path + suffix)).OfType<byte[]>().ToList();
-        var present = MarkerSuffixes.Any(suffix => File.Exists(path + suffix));
+        var present = StateSuffixes.Concat(MarkerSuffixes).Concat([".bak", ".bak.new"])
+            .Any(suffix => File.Exists(path + suffix));
         long? newest = null;
+        var publishedValid = false;
         foreach (var suffix in StateSuffixes)
         {
             var record = ReadBounded(path + suffix, Ots2Length);
@@ -56,12 +57,15 @@ internal static class LegacyIssuanceState
                 if (record.Length == Ots1Length) ticks = BitConverter.ToInt64(record, Ots1Length - sizeof(long));
             }
 
-            // Any surviving copy is at least as old as the last issuance, so the newest one is the
-            // safest clock to continue from.
-            if (ticks is >= 0 && ticks <= DateTime.MaxValue.Ticks && (newest is null || ticks > newest)) newest = ticks;
+            // The published or staged record may carry a newer mark than an old mirror.
+            if (ticks is >= 0 && ticks <= DateTime.MaxValue.Ticks)
+            {
+                if (suffix.Length == 0) publishedValid = true;
+                if (newest is null || ticks > newest) newest = ticks;
+            }
         }
 
-        if (newest is not null) return new DateTime(newest.Value, DateTimeKind.Utc);
+        if (publishedValid && newest is not null) return new DateTime(newest.Value, DateTimeKind.Utc);
         if (!present) return null;
 
         throw new IssuanceStateException(

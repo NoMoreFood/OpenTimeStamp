@@ -11,9 +11,9 @@ marked data directory, switches the IIS application only while its real current
 pool is quiesced, and rolls the IIS pointer and pool states back on failure.
 #>
 
-[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium', DefaultParameterSetName = 'Deploy')]
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $true, ParameterSetName = 'Deploy')]
     [ValidateScript({ Test-Path -LiteralPath $_ -PathType Container })]
     [string]$SourcePath,
 
@@ -49,7 +49,13 @@ param(
     [switch]$AllowBroadExistingKeyAcl,
 
     [ValidateRange(1, 100)]
-    [int]$RetainReleases = 5
+    [int]$RetainReleases = 5,
+
+    [Parameter(Mandatory = $true, ParameterSetName = 'Functions', DontShow = $true)]
+    [switch]$LoadFunctionsOnly,
+
+    [Parameter(ParameterSetName = 'Deploy', DontShow = $true)]
+    [switch]$MsiTransaction
 )
 
 Set-StrictMode -Version Latest
@@ -224,7 +230,9 @@ function Restore-IisExactLocalState {
             if (-not [string]::IsNullOrWhiteSpace([string]$attribute.ChildElement)) {
                 $target = $target.GetChildElement($attribute.ChildElement)
             }
-            if ($attribute.HasLocalValue) { $target.SetAttributeValue($attribute.Attribute, $attribute.RawValue) }
+            if ($attribute.HasLocalValue) {
+                Set-IisRawAttributeValue -Element $target -Name $attribute.Attribute -Value $attribute.RawValue
+            }
             else { $target.GetAttribute($attribute.Attribute).Delete() }
         }
         $ipSnapshot = $Snapshot.IpSecurity
@@ -232,7 +240,7 @@ function Restore-IisExactLocalState {
         $ipSection.RevertToParent()
         if ($ipSnapshot.SectionWasLocal) {
             foreach ($attribute in @($ipSnapshot.Attributes)) {
-                $ipSection.SetAttributeValue($attribute.Name, $attribute.Value)
+                Set-IisRawAttributeValue -Element $ipSection -Name $attribute.Name -Value $attribute.Value
             }
             $collection = $ipSection.GetCollection()
             foreach ($directiveXml in @($ipSnapshot.Directives)) {
@@ -256,7 +264,9 @@ function Restore-IisExactLocalState {
                 }
                 if ($directive.LocalName -ne 'add') { throw "Unsupported local ipSecurity directive '$($directive.LocalName)'." }
                 $element = $collection.CreateElement('add')
-                foreach ($name in @($values.Keys)) { $element.SetAttributeValue($name, $values[$name]) }
+                foreach ($name in @($values.Keys)) {
+                    Set-IisRawAttributeValue -Element $element -Name $name -Value $values[$name]
+                }
                 [void]$collection.Add($element)
             }
         }
@@ -520,6 +530,18 @@ function Get-IisRawAttributeSnapshot {
     }
 }
 
+function Set-IisRawAttributeValue {
+    param($Element, [string]$Name, [AllowEmptyString()][string]$Value)
+
+    $attribute = $Element.GetAttribute($Name)
+    $converted = if ($attribute.Value -is [TimeSpan]) {
+        [TimeSpan]::Parse($Value, [Globalization.CultureInfo]::InvariantCulture)
+    }
+    elseif ($attribute.Schema.Type -in @('enum', 'flags', 'string')) { $Value }
+    else { [Convert]::ChangeType($Value, $attribute.Value.GetType(), [Globalization.CultureInfo]::InvariantCulture) }
+    $Element.SetAttributeValue($Name, $converted.PSObject.BaseObject)
+}
+
 function Restore-IisRawAttributeSnapshot {
     param(
         $Element,
@@ -527,7 +549,7 @@ function Restore-IisRawAttributeSnapshot {
     )
 
     if ($Snapshot.HasLocalValue) {
-        $Element.SetAttributeValue([string]$Snapshot.Name, $Snapshot.RawValue)
+        Set-IisRawAttributeValue -Element $Element -Name $Snapshot.Name -Value $Snapshot.RawValue
     }
     else {
         $Element.GetAttribute([string]$Snapshot.Name).Delete()
@@ -1323,6 +1345,8 @@ function Assert-LocalDedicatedPath {
     return $fullPath
 }
 
+if ($LoadFunctionsOnly) { return }
+
 $deploymentLock = Enter-OpenTimeStampDeploymentLock -Scope 'OpenTimeStamp-MachineDeployment'
 try {
 try {
@@ -1443,12 +1467,6 @@ try {
 }
 finally { $manager.Dispose() }
 
-$bindingProtocolPolicy = Get-OpenTimeStampBindingProtocolPolicy -Endpoints $siteBindingEndpoints `
-    -ExistingSslFlags $existingSslFlags
-$effectiveRequireHttps = $bindingProtocolPolicy.RequireHttps
-$requestedSslFlags = $bindingProtocolPolicy.SslFlags
-$uploadReadAheadSize = $bindingProtocolPolicy.UploadReadAheadSize
-
 if ($applicationExists -and -not $PSBoundParameters.ContainsKey('PhysicalPath')) {
     $parent = Split-Path -Parent $existingApplicationPhysicalPath
     if ((Split-Path -Leaf $parent) -eq 'Releases') {
@@ -1505,6 +1523,12 @@ if (-not $applicationExists -and -not $PSBoundParameters.ContainsKey('Authentica
     throw 'AuthenticationMode must be explicit when adopting a deployment root that has no authoritative IIS application.'
 }
 
+$bindingProtocolPolicy = Get-OpenTimeStampBindingProtocolPolicy -Endpoints $siteBindingEndpoints `
+    -ExistingSslFlags $existingSslFlags -AuthenticationMode $AuthenticationMode
+$effectiveRequireHttps = $bindingProtocolPolicy.RequireHttps
+$requestedSslFlags = $bindingProtocolPolicy.SslFlags
+$uploadReadAheadSize = $bindingProtocolPolicy.UploadReadAheadSize
+
 $existingRuntimeDataPath = $null
 if ($applicationExists) {
     $savedDataPath = if ($null -eq $existingWebSettings['DataPath']) { '' } else { $existingWebSettings['DataPath'].Trim() }
@@ -1540,6 +1564,10 @@ else {
 }
 
 $runtimeDataPath = Assert-LocalDedicatedPath -Path $runtimeDataPath -Label 'DataPath' -ProtectedRoots $protectedRoots
+if ($MsiTransaction -and $applicationExists -and
+    -not (Test-IssuanceStateUsesCurrentFormat -EffectiveDataPath $runtimeDataPath)) {
+    throw 'MSI upgrades require current issuance state. Use the PowerShell deployment workflow to migrate or recover this deployment first.'
+}
 $dataIsDefault = $runtimeDataPath.TrimEnd('\').Equals($defaultDataPath.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)
 if ((Test-OpenTimeStampPathContained -Parent $releasesPath -Child $runtimeDataPath -AllowEqual) -or
     (Test-OpenTimeStampPathContained -Parent $SourcePath -Child $runtimeDataPath -AllowEqual) -or
@@ -2028,7 +2056,8 @@ try {
     $commitSiteBindings = @(Get-IisSiteBindings -SiteName $SiteName)
     $committedSiteBindingEndpoints = @(Get-ValidatedSiteBindingEndpoints -Bindings $commitSiteBindings `
         -SiteName $SiteName)
-    $committedBindingProtocolPolicy = Get-OpenTimeStampBindingProtocolPolicy -Endpoints $committedSiteBindingEndpoints
+    $committedBindingProtocolPolicy = Get-OpenTimeStampBindingProtocolPolicy -Endpoints $committedSiteBindingEndpoints `
+        -AuthenticationMode $AuthenticationMode
     if (($committedBindingProtocolPolicy.Schemes -join ',') -ne ($bindingProtocolPolicy.Schemes -join ',')) {
         throw 'IIS site HTTP/HTTPS binding protocols changed during deployment. Retry with the current bindings.'
     }
@@ -2164,8 +2193,10 @@ try {
         throw "Application pool '$AppPoolName' changed before the committed application could be started."
     }
     try {
-        Start-PoolForDeployment -Name $AppPoolName
-        $installerExpectedPoolStates[$AppPoolName] = 'Started'
+        if (-not $MsiTransaction) {
+            Start-PoolForDeployment -Name $AppPoolName
+            $installerExpectedPoolStates[$AppPoolName] = 'Started'
+        }
     }
     catch {
         $observedPoolState = Get-PoolStateValue -Name $AppPoolName
@@ -2580,15 +2611,19 @@ if ($null -ne $caughtError) {
 # Optional Event Viewer delivery must not roll back a working timestamp service.
 $eventLogRegistered = $false
 try {
-    Initialize-OpenTimeStampEventLog
-    $eventLogRegistered = $true
+    if (-not $MsiTransaction) {
+        Initialize-OpenTimeStampEventLog
+        $eventLogRegistered = $true
+    }
 }
 catch { Write-Warning "Optional Event Viewer logging could not be registered: $($_.Exception.Message)" }
 
 $removedReleases = @()
 try {
-    $removedReleases = @(Remove-OpenTimeStampObsoleteReleases -ReleasesPath $releasesPath `
-        -ActiveReleasePath $releasePath -RetainCount $RetainReleases)
+    if (-not $MsiTransaction) {
+        $removedReleases = @(Remove-OpenTimeStampObsoleteReleases -ReleasesPath $releasesPath `
+            -ActiveReleasePath $releasePath -RetainCount $RetainReleases)
+    }
 }
 catch { Write-Warning "Release retention could not be completed: $($_.Exception.Message)" }
 

@@ -30,8 +30,13 @@ MSI repair restores the installer cache while keeping the existing deployed
 release selected. Use the PowerShell deployment workflow with a newly published
 release to repair the running application.
 
-Uninstall removes the matching IIS application, dedicated application pool, and
-unused service auto-start registration only after validating their ownership.
+Windows Installer rollback restores the selected IIS application, dedicated pool configuration and running state, local authentication and access settings, and preexisting data-directory permissions. A failed first installation removes its unchanged new deployment files so that setup can be retried. Existing issuance state, releases, and configuration are preserved. Rollback must be enabled in Windows Installer.
+
+MSI upgrades require current issuance-state storage. Use the PowerShell deployment workflow to migrate legacy state before upgrading through MSI. The new pool stays stopped until Windows Installer commits, and release cleanup runs only after commit.
+
+Recovery snapshots are restricted to administrators and SYSTEM under `%WINDIR%\Installer\OpenTimeStamp-{ProductCode}` and are removed after successful commit or rollback. If recovery detects a conflicting change to the target IIS configuration or data, or an interrupted operation has no complete recovery snapshot, it preserves the journal and stops rather than overwriting that change. Keep the journal and reconcile the target application before retrying setup; do not restore its IIS configuration snapshot over the whole server.
+
+Uninstall removes the matching IIS application and dedicated application pool only after validating their ownership.
 It deliberately preserves releases, configuration, issuance state, and audit
 logs under the deployment root for recovery. A later reinstall must use the
 PowerShell workflow with an explicit `-AuthenticationMode`; MSI setup fails

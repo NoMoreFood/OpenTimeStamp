@@ -489,6 +489,122 @@ try {
         Assert-True ($result.Count -eq 3 -and @($result | Where-Object Status -ne ManualReview).Count -eq 0) `
             'Manual clients were reported as automatically configured.'
     }
+
+    Invoke-Test 'Shared timestamp endpoint works in direct client helpers' {
+        $shared = 'https://tsa.example.test/OpenTimeStamp/timestamp'
+        foreach ($protocol in @('rfc3161', 'authenticode')) {
+            Assert-True ((Get-ClientTimestampUrl -Url $shared -Protocol $protocol) -ceq $shared) `
+                'The shared endpoint was rejected.'
+        }
+        Assert-Throws { Get-ClientServerEndpoints -ServerUrl $shared }
+        $namedTimestamp = Get-ClientServerEndpoints -ServerUrl 'https://tsa.example.test/timestamp'
+        Assert-True ($namedTimestamp.Rfc3161Url -ceq 'https://tsa.example.test/timestamp/timestamp/rfc3161') `
+            'An application named timestamp was mistaken for the shared endpoint.'
+        & $officeScript -Rfc3161Url $shared -AuthenticodeUrl $shared -RegistryRoot $registryRoot | Out-Null
+        & $libreOfficeScript -TimestampUrl $shared -SettingsPath (Join-Path $testRoot 'shared.xcu') | Out-Null
+        & $pdfScript -TimestampUrl $shared -PresetPath (Join-Path $testRoot 'shared.presets') | Out-Null
+        & (Join-Path $deployPath 'Configure-AcrobatTimestamping.ps1') -TimestampUrl $shared `
+            -RegistryRoot $acrobatRoot -ServerName 'Shared endpoint' | Out-Null
+    }
+
+    Invoke-Test 'Authenticated client presets are not converted to anonymous' {
+        $url = 'https://auth.example.test/OpenTimeStamp/timestamp/rfc3161'
+        $path = Join-Path $testRoot 'authenticated.presets'
+        $preset = @{ TimestampServers = @{ Items = @(@{ ID = '{AUTH}'; Name = 'Existing'; Flags = 0
+            Data = @{ URL = $url; User = 'fixture'; Password = 'fixture'; RequireAuth = $true } }) } }
+        [IO.File]::WriteAllText($path, ($preset | ConvertTo-Json -Depth 10))
+        $before = [IO.File]::ReadAllText($path)
+        Assert-Throws { & $pdfScript -TimestampUrl $url -PresetPath $path }
+        Assert-True ([IO.File]::ReadAllText($path) -ceq $before) 'Authenticated PDF preset changed.'
+
+        $key = Join-Path $acrobatRoot 'Security\cPPKHandler\cTimeStampServers\c999'
+        New-Item -Path $key -Force | Out-Null
+        New-ItemProperty -LiteralPath $key -Name tServer -Value $url -PropertyType String -Force | Out-Null
+        New-ItemProperty -LiteralPath $key -Name tName -Value 'Authenticated' -PropertyType String -Force | Out-Null
+        New-ItemProperty -LiteralPath $key -Name bAuthRequired -Value 1 -PropertyType DWord -Force | Out-Null
+        Assert-Throws {
+            & (Join-Path $deployPath 'Configure-AcrobatTimestamping.ps1') -TimestampUrl $url -RegistryRoot $acrobatRoot
+        }
+        Assert-True ((Get-Item -LiteralPath $key).GetValue('bAuthRequired') -eq 1) `
+            'Authenticated Acrobat server changed.'
+        Set-ItemProperty -LiteralPath $key -Name bAuthRequired -Value 0
+        $provider = Join-Path $acrobatRoot 'Security\cASPKI\cAdobe_TSPProvider'
+        Set-ItemProperty -LiteralPath $provider -Name sURL -Value ([Text.Encoding]::ASCII.GetBytes($url + [char]0))
+        Set-ItemProperty -LiteralPath $provider -Name bAuthReqd -Value 1
+        Assert-Throws {
+            & (Join-Path $deployPath 'Configure-AcrobatTimestamping.ps1') -TimestampUrl $url -RegistryRoot $acrobatRoot
+        }
+        Assert-True ((Get-Item -LiteralPath $provider).GetValue('bAuthReqd') -eq 1) `
+            'Authenticated Acrobat provider changed.'
+    }
+
+    Invoke-Test 'Cross-user profile variables do not expand using the operator account' {
+        $profile = [pscustomobject]@{}
+        $profile | Add-Member ScriptMethod GetValue { param($name) 'C:\Users\IntendedUser' }
+        $shell = [pscustomobject]@{}
+        $shell | Add-Member ScriptMethod GetValue { param($name, $default, $options) 'C:\Users\%USERNAME%\AppData\Roaming' }
+        function Get-Item {
+            param([string]$LiteralPath)
+            if ($LiteralPath -like '*ProfileList*') { return $profile }
+            if ($LiteralPath -like '*User Shell Folders') { return $shell }
+            throw 'Unexpected registry path.'
+        }
+        $user = [pscustomobject]@{
+            Sid = 'S-1-5-21-1-2-3-1001'; RegistryRoot = 'Registry::HKEY_USERS\S-1-5-21-1-2-3-1001'
+        }
+        Assert-Throws { Get-ClientRoamingAppData -UserContext $user }
+    }
+
+    Invoke-Test 'Signing preserves a concurrent replacement of the input path' {
+        $global:signingRacePath = Join-Path $testRoot 'signing-race.ps1'
+        $global:signingRaceThumbprint = 'A' * 40
+        $global:signingRaceSwap = $true
+        [IO.File]::WriteAllText($global:signingRacePath, 'original')
+        function Get-Item {
+            param([string]$LiteralPath)
+            if ($LiteralPath -like 'Cert:*') { return [pscustomobject]@{ HasPrivateKey = $true } }
+            Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath
+        }
+        function Get-FileHash {
+            param([string]$LiteralPath, $InputStream, [string]$Algorithm)
+            if ($InputStream) {
+                $hash = Microsoft.PowerShell.Utility\Get-FileHash -InputStream $InputStream -Algorithm $Algorithm
+                if ($global:signingRaceSwap) {
+                    [IO.File]::Move($global:signingRacePath, $global:signingRacePath + '.moved')
+                    [IO.File]::WriteAllText($global:signingRacePath, 'concurrent edit')
+                }
+                return $hash
+            }
+            Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $LiteralPath -Algorithm $Algorithm
+        }
+        function Set-AuthenticodeSignature {
+            param($LiteralPath, $Certificate, $HashAlgorithm, $TimestampServer)
+            [IO.File]::WriteAllText($LiteralPath, 'signed original')
+            return [pscustomobject]@{
+                Status = 'Valid'; SignerCertificate = [pscustomobject]@{ Thumbprint = $global:signingRaceThumbprint }
+                TimeStamperCertificate = [pscustomobject]@{ Thumbprint = 'B' * 40 }
+            }
+        }
+        $signingFailure = $null
+        try {
+            & (Join-Path $deployPath 'Invoke-TimestampSigning.ps1') -LiteralPath $global:signingRacePath `
+                -ServerUrl 'http://localhost/OpenTimeStamp' -CertificateThumbprint $global:signingRaceThumbprint `
+                -Tool PowerShell -AllowInsecureHttp
+        }
+        catch { $signingFailure = $_.Exception.Message }
+        $backup = @(Get-ChildItem -LiteralPath $testRoot -Filter 'signing-race.ps1.OpenTimeStamp-*.bak')
+        Assert-True ($signingFailure -and $backup.Count -eq 1 -and
+            [IO.File]::ReadAllText($backup[0].FullName) -ceq 'concurrent edit') `
+            "The concurrently replaced input was not retained in the backup: $signingFailure"
+        $global:signingRaceSwap = $false
+        $global:signingRacePath = Join-Path $testRoot 'signing-success.ps1'
+        [IO.File]::WriteAllText($global:signingRacePath, 'original')
+        $result = & (Join-Path $deployPath 'Invoke-TimestampSigning.ps1') -LiteralPath $global:signingRacePath `
+            -ServerUrl 'http://localhost/OpenTimeStamp' -CertificateThumbprint $global:signingRaceThumbprint `
+            -Tool PowerShell -AllowInsecureHttp
+        Assert-True ([IO.File]::ReadAllText($global:signingRacePath) -ceq 'signed original' -and
+            [IO.File]::ReadAllText($result.BackupPath) -ceq 'original') 'Signing did not retain the original backup.'
+    }
 }
 finally {
     if ($acrobatRoot -match '^Registry::HKEY_CURRENT_USER\\Software\\OpenTimeStamp-AcrobatSetupTests-[A-Fa-f0-9]+$' -and

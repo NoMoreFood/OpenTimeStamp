@@ -262,27 +262,31 @@ public sealed class PersistenceAndConfigurationTests
             AssertEx.Throws<ClockRollbackException>(() => store.Validate(later.AddSeconds(-1), TimeSpan.Zero));
             AssertEx.Equal(later.AddTicks(1), store.Allocate(later, TimeSpan.Zero, true).GenerationTimeUtc);
 
-            // A truncated staging file and a corrupted published record are both ignored in
-            // favor of the backup, which still holds the previous mark.
+            // A backup can be older than an issued token and must not recover a corrupt primary.
             var newest = later.AddTicks(1);
             store.Allocate(newest.AddSeconds(1), TimeSpan.Zero, false);
-            var corrupted = File.ReadAllBytes(path);
+            var newestRecord = File.ReadAllBytes(path);
+            var corrupted = (byte[])newestRecord.Clone();
             corrupted[6] ^= 0x01;
             File.WriteAllBytes(path, corrupted);
             File.WriteAllBytes(path + ".new", new byte[] { 0x4f, 0x54, 0x53 });
-            AssertEx.Throws<ClockRollbackException>(() => store.Validate(newest.AddSeconds(-1), TimeSpan.Zero));
-            AssertEx.Equal(newest.AddSeconds(2), store.Allocate(newest.AddSeconds(2), TimeSpan.Zero, false).GenerationTimeUtc);
+            AssertEx.Throws<IssuanceStateException>(() => store.Validate(newest.AddSeconds(-1), TimeSpan.Zero));
+            AssertEx.Throws<IssuanceStateException>(() => store.Allocate(newest.AddSeconds(2), TimeSpan.Zero, false));
+            AssertEx.Throws<IssuanceStateException>(() => store.Initialize());
+
+            // Restore the last authoritative record before continuing.
+            File.WriteAllBytes(path, newestRecord);
 
             // The published record alone is sufficient.
             File.Delete(path + ".bak");
             File.Delete(path + ".new");
             store.Validate();
 
-            // So is the backup alone.
+            // The backup alone cannot prove the most recently issued time.
             store.Allocate(newest.AddSeconds(3), TimeSpan.Zero, false);
             File.Delete(path);
-            AssertEx.Equal(newest.AddSeconds(2).AddTicks(1),
-                store.Allocate(newest.AddSeconds(2), TimeSpan.Zero, true).GenerationTimeUtc);
+            AssertEx.Throws<IssuanceStateException>(() =>
+                store.Allocate(newest.AddSeconds(2), TimeSpan.Zero, true));
         }
     }
 
@@ -393,14 +397,13 @@ public sealed class PersistenceAndConfigurationTests
             ahead.Initialize();
             AssertEx.Throws<ClockRollbackException>(() => ahead.Validate(issuedAt.AddSeconds(29), TimeSpan.Zero));
 
-            // A damaged active copy is ignored in favor of its authentic mirror.
+            // A damaged active copy cannot be replaced by a potentially older mirror.
             var damagedPath = directory.File("damaged.bin");
             WriteLegacyOts2Store(damagedPath, issuedAt, issuedAt);
             var damaged = File.ReadAllBytes(damagedPath);
             damaged[44] ^= 0x01;
             File.WriteAllBytes(damagedPath, damaged);
-            new IssuanceStateStore(damagedPath).Initialize();
-            AssertEx.Equal("OTS3", Encoding.ASCII.GetString(File.ReadAllBytes(damagedPath), 0, 4));
+            AssertEx.Throws<IssuanceStateException>(() => new IssuanceStateStore(damagedPath).Initialize());
 
             // State that no surviving marker authenticates must not seed the new clock.
             var forgedPath = directory.File("forged.bin");
@@ -421,6 +424,31 @@ public sealed class PersistenceAndConfigurationTests
             File.Delete(keylessPath + ".meta");
             File.Delete(keylessPath + ".meta.bak");
             AssertEx.Throws<IssuanceStateException>(() => new IssuanceStateStore(keylessPath).Initialize());
+
+            // An unauthenticated staging backup still proves this is not a fresh store.
+            var stagedBackupPath = directory.File("staged-backup.bin");
+            WriteLegacyOts2Store(stagedBackupPath, issuedAt, issuedAt);
+            var stagedBackup = File.ReadAllBytes(stagedBackupPath);
+            File.WriteAllBytes(stagedBackupPath + ".bak.new", stagedBackup);
+            foreach (var suffix in new[] { string.Empty, ".bak", ".meta", ".meta.bak" })
+            {
+                File.Delete(stagedBackupPath + suffix);
+            }
+
+            AssertEx.Throws<IssuanceStateException>(() => new IssuanceStateStore(stagedBackupPath).Initialize());
+            AssertEx.False(File.Exists(stagedBackupPath));
+            AssertEx.SequenceEqual(stagedBackup, File.ReadAllBytes(stagedBackupPath + ".bak.new"));
+
+            // Incomplete migration files also prevent initialization from discarding existing state.
+            foreach (var suffix in new[] { ".migrate", ".migrate.new" })
+            {
+                var incompletePath = directory.File("incomplete" + suffix);
+                var incomplete = Encoding.ASCII.GetBytes("OTS");
+                File.WriteAllBytes(incompletePath + suffix, incomplete);
+                AssertEx.Throws<IssuanceStateException>(() => new IssuanceStateStore(incompletePath).Initialize());
+                AssertEx.False(File.Exists(incompletePath));
+                AssertEx.SequenceEqual(incomplete, File.ReadAllBytes(incompletePath + suffix));
+            }
         }
     }
 

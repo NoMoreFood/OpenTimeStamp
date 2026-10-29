@@ -19,9 +19,11 @@ function Get-ClientTimestampUrl {
     if ($Url.UserInfo -or $Url.Query -or $Url.Fragment -or $Url.OriginalString.IndexOfAny([char[]]'*|') -ge 0) {
         throw 'The timestamp URL cannot contain credentials, a query, a fragment, a wildcard, or a list delimiter.'
     }
+    $endpointPath = $Url.AbsolutePath.TrimEnd('/')
     if ($Protocol -ne 'Application' -and
-        -not $Url.AbsolutePath.TrimEnd('/').EndsWith("/timestamp/$Protocol", [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Use the OpenTimeStamp /timestamp/$Protocol endpoint."
+        -not $endpointPath.EndsWith("/timestamp/$Protocol", [StringComparison]::OrdinalIgnoreCase) -and
+        -not $endpointPath.EndsWith('/timestamp', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Use the OpenTimeStamp /timestamp or /timestamp/$Protocol endpoint."
     }
 
     $builder = New-Object UriBuilder $Url
@@ -34,7 +36,7 @@ function Get-ClientServerEndpoints {
     param([Parameter(Mandatory = $true)][uri]$ServerUrl, [switch]$AllowInsecureHttp)
 
     $canonical = Get-ClientTimestampUrl -Url $ServerUrl -AllowInsecureHttp:$AllowInsecureHttp
-    if ($ServerUrl.AbsolutePath.TrimEnd('/') -match '/timestamp/(rfc3161|authenticode)$') {
+    if ($ServerUrl.AbsolutePath.TrimEnd('/') -match '/timestamp/(rfc3161|authenticode)$|/.+/timestamp$') {
         throw 'ServerUrl must identify the IIS application, for example https://tsa.example.com/OpenTimeStamp.'
     }
     return [PSCustomObject]@{
@@ -73,7 +75,12 @@ function Get-ClientRoamingAppData {
         $profileKey = Get-Item -LiteralPath (
             'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' +
             $UserContext.Sid) -ErrorAction Stop
-        $profilePath = [Environment]::ExpandEnvironmentVariables([string]$profileKey.GetValue('ProfileImagePath'))
+        $profilePath = [string]$profileKey.GetValue('ProfileImagePath', $null,
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $profilePath = [regex]::Replace($profilePath, '(?i)%SystemDrive%', [Text.RegularExpressions.MatchEvaluator]{
+            param($match)
+            $env:SystemDrive
+        })
         $shellKey = Get-Item -LiteralPath (Join-Path $UserContext.RegistryRoot `
             'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders') -ErrorAction Stop
         $name = if ($Local) { 'Local AppData' } else { 'AppData' }
@@ -83,7 +90,6 @@ function Get-ClientRoamingAppData {
             param($match)
             $profilePath
         })
-        $path = [Environment]::ExpandEnvironmentVariables($path)
     }
     if ([string]::IsNullOrWhiteSpace($path) -or $path.Contains('%') -or -not [IO.Path]::IsPathRooted($path)) {
         throw 'The signing user roaming AppData path could not be resolved. Supply an explicit settings file path.'

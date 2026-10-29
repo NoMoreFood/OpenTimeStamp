@@ -97,8 +97,10 @@ function Get-CanonicalTimestampUrl {
     if ($Url.OriginalString.IndexOfAny([char[]]'*|') -ge 0) {
         throw 'TimestampUrl cannot contain a wildcard or the Trust Manager list delimiter.'
     }
-    if (-not $Url.AbsolutePath.TrimEnd('/').EndsWith('/timestamp/rfc3161', [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'TimestampUrl must identify the OpenTimeStamp /timestamp/rfc3161 endpoint.'
+    $endpointPath = $Url.AbsolutePath.TrimEnd('/')
+    if (-not $endpointPath.EndsWith('/timestamp/rfc3161', [StringComparison]::OrdinalIgnoreCase) -and
+        -not $endpointPath.EndsWith('/timestamp', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'TimestampUrl must identify the OpenTimeStamp /timestamp or /timestamp/rfc3161 endpoint.'
     }
 
     $builder = New-Object UriBuilder $Url
@@ -284,7 +286,12 @@ function Get-AcrobatTimestampServerKey {
             -not $sameUrl) {
             throw "Acrobat timestamp server name '$ServerName' already refers to '$existingUrl'."
         }
-        if ($sameUrl) { $urlMatches += $key.PSPath }
+        if ($sameUrl) {
+            if ($key.GetValue('bAuthRequired', 0) -ne 0) {
+                throw 'The matching Acrobat timestamp server requires authentication; its settings were preserved.'
+            }
+            $urlMatches += $key.PSPath
+        }
     }
     if ($urlMatches.Count -gt 1) { throw "Acrobat contains multiple timestamp server entries for '$Url'." }
     if ($urlMatches.Count -eq 1) { return $urlMatches[0] }
@@ -309,6 +316,18 @@ if ($script:acrobatRegistryRoot -notmatch '\\OpenTimeStamp-AcrobatSetupTests-' -
 
 try {
     $serverPath = Get-AcrobatTimestampServerKey -Url $canonicalUrl
+    $providerPath = Join-Path $script:acrobatRegistryRoot 'Security\cASPKI\cAdobe_TSPProvider'
+    $provider = Get-Item -LiteralPath $providerPath -ErrorAction SilentlyContinue
+    if ($provider) {
+        $providerUrl = $provider.GetValue('sURL', $null)
+        if ($providerUrl -is [byte[]]) { $providerUrl = [Text.Encoding]::ASCII.GetString($providerUrl).TrimEnd([char]0) }
+        try { $providerUrl = Get-CanonicalTimestampUrl -Url ([uri]$providerUrl) }
+        catch { }
+        if ([string]$providerUrl -ceq $canonicalUrl -and
+            ($provider.GetValue('bAuthReqd', 0) -ne 0 -or $provider.GetValue('bAuthRequired', 0) -ne 0)) {
+            throw 'The matching Acrobat timestamp provider requires authentication; its settings were preserved.'
+        }
+    }
     Set-TrackedRegistryValue -Path $serverPath -Name 'tName' -Value $ServerName `
         -Kind ([Microsoft.Win32.RegistryValueKind]::String)
     Set-TrackedRegistryValue -Path $serverPath -Name 'tServer' -Value $canonicalUrl `
@@ -316,7 +335,6 @@ try {
     Set-TrackedRegistryValue -Path $serverPath -Name 'bAuthRequired' -Value 0 `
         -Kind ([Microsoft.Win32.RegistryValueKind]::DWord)
 
-    $providerPath = Join-Path $script:acrobatRegistryRoot 'Security\cASPKI\cAdobe_TSPProvider'
     $binaryUrl = [Text.Encoding]::ASCII.GetBytes($canonicalUrl + [char]0)
     Set-TrackedRegistryValue -Path $providerPath -Name 'sURL' -Value $binaryUrl `
         -Kind ([Microsoft.Win32.RegistryValueKind]::Binary)
