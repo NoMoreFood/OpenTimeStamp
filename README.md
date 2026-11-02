@@ -51,7 +51,7 @@ From a Windows PowerShell 5.1 prompt on the build computer:
 ```
 
 The deployable output is written to `tools\artifacts\OpenTimeStamp`, and the MSI is
-written to `tools\artifacts\OpenTimeStamp-1.0.0-x64.msi`. Install the
+written to `tools\artifacts\OpenTimeStamp-1.0.1-x64.msi`. Install the
 payload manually from an elevated Windows PowerShell 5.1 prompt:
 
 ```powershell

@@ -16,7 +16,7 @@ rejects a website name that does not already exist. For an unattended install,
 set the public MSI properties explicitly:
 
 ```powershell
-msiexec /i OpenTimeStamp-1.0.0-x64.msi `
+msiexec /i OpenTimeStamp-1.0.1-x64.msi `
     IISSITENAME="Default Web Site" `
     APPLICATIONNAME="OpenTimeStamp"
 ```
@@ -51,7 +51,7 @@ Build the application and MSI from the repository root:
 
 The build uses [WiX Toolset 7.0.0](https://github.com/wixtoolset/wix/releases/tag/v7.0.0)
 through the pinned SDK project and writes
-`tools\artifacts\OpenTimeStamp-1.0.0-x64.msi`. WiX 7 use is subject to its Open Source
+`tools\artifacts\OpenTimeStamp-1.0.1-x64.msi`. WiX 7 use is subject to its Open Source
 Maintenance Fee terms and requires acceptance of the applicable WiX EULA.
 
 Signing follows the WinDirStat build pattern: SignTool selects a suitable code-
