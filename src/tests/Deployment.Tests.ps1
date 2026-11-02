@@ -1581,7 +1581,7 @@ catch {
         $build = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\build\Build.ps1') -Raw
         $publish = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tools\build\Publish.ps1') -Raw
 
-        Assert-Equal 'WixToolset.Sdk/7.0.0' ([string]$wixProject.Project.Sdk) `
+        Assert-Equal 'WixToolset.Sdk/7.0.1' ([string]$wixProject.Project.Sdk) `
             'The MSI project does not pin the current WiX 7 SDK.'
         Assert-True ($wixProject.OuterXml -match 'WixToolset\.Util\.wixext') `
             'The MSI project does not reference the WiX utility extension.'
