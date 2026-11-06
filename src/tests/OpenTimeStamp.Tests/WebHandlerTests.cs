@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -8,11 +9,13 @@ using System.Runtime.Serialization;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Web.Routing;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using OpenTimeStamp.Audit;
 using OpenTimeStamp.Configuration;
 using OpenTimeStamp.Web.Handlers;
 using OpenTimeStamp.Web.Infrastructure;
+using OpenTimeStamp.Web.Routing;
 
 namespace OpenTimeStamp.Tests;
 
@@ -63,6 +66,46 @@ public sealed class WebHandlerTests
         var escapedHtml = HomeHandler.Render("/<app>", "https://example.test", true);
         AssertEx.False(escapedHtml.IndexOf("<app>", StringComparison.Ordinal) >= 0,
             "The service landing page emitted a path without HTML encoding.");
+    }
+
+    [TestMethod(DisplayName = "Custom public routes reach handlers and appear in client commands")]
+    public void CustomPublicRoutesReachHandlersAndLandingPage()
+    {
+        PublicRoutes paths = new(new NameValueCollection
+        {
+            ["TimestampPath"] = "/sign/auto",
+            ["Rfc3161Path"] = "/sign/rfc",
+            ["AuthenticodePath"] = "/sign/legacy",
+            ["HealthPath"] = "/status"
+        });
+        RouteCollection routes = new() { RouteExistingFiles = true };
+        paths.Register(routes);
+        foreach (var path in new[] { "/sign/auto", "/sign/rfc", "/sign/legacy", "/status", "/admin", "/" })
+        {
+            FakeHttpContext context = new(new FakeHttpRequest("GET", "https://tsa.example.test" + path));
+            AssertEx.NotNull(routes.GetRouteData(context), "A configured route did not resolve: " + path);
+        }
+        FakeHttpContext oldRoute = new(new FakeHttpRequest("GET", "https://tsa.example.test/timestamp/rfc3161"));
+        AssertEx.True(routes.GetRouteData(oldRoute) is null, "A replaced route remained accessible.");
+        var html = HomeHandler.Render("/Tsa", "http://tsa.example.test:8080", true, paths);
+        AssertEx.Contains("/Tsa/sign/auto", html);
+        AssertEx.Contains("/tr http://tsa.example.test:8080/Tsa/sign/rfc", html);
+        AssertEx.Contains("http://tsa.example.test:8080/Tsa/sign/legacy", html);
+        AssertEx.Contains("/Tsa/status", html);
+        AssertEx.Contains("/Tsa/admin", html);
+        AssertEx.False(html.Contains("/timestamp/rfc3161"), "Client commands retained a replaced route.");
+    }
+
+    [TestMethod(DisplayName = "Public route configuration rejects IIS collisions and ambiguous URLs")]
+    public void PublicRoutesRejectUnsafeConfiguration()
+    {
+        foreach (var path in new[] { "", "/admin", "/ADMIN/health", "/bin/probe", "/sign/App_Data",
+            "/health", "/timestamp/rfc3161/", "/../health", "/x%2fy", "/x?y", "/x#y", "/{route}",
+            "/sign.dll", "https://other.test/sign", new string('x', 257) })
+        {
+            AssertEx.Throws<System.Configuration.ConfigurationErrorsException>(() =>
+                _ = new PublicRoutes(new NameValueCollection { ["Rfc3161Path"] = path }));
+        }
     }
 
     [TestMethod(DisplayName = "FIPS policy permits Authenticode disable but not enable")]
@@ -878,7 +921,6 @@ public sealed class WebHandlerTests
     {
         private readonly TaskCompletionSource<int> pendingRead = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        private int pendingOffset;
 
         internal bool AbortCalled { get; private set; }
 
@@ -889,12 +931,6 @@ public sealed class WebHandlerTests
         internal void FaultAfterReturn() =>
             pendingRead.TrySetException(new IOException("The delayed native read failed."));
 
-        internal void CompleteAfterReturn(byte[] value)
-        {
-            Buffer.BlockCopy(value, 0, PendingBuffer, pendingOffset, value.Length);
-            pendingRead.TrySetResult(value.Length);
-        }
-
         public override Task<int> ReadAsync(
             byte[] buffer,
             int offset,
@@ -902,7 +938,6 @@ public sealed class WebHandlerTests
             CancellationToken cancellationToken)
         {
             PendingBuffer = buffer;
-            pendingOffset = offset;
             return pendingRead.Task;
         }
 

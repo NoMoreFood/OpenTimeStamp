@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 #Requires -RunAsAdministrator
 
 [CmdletBinding()]
@@ -11,7 +11,7 @@ $payloadPath = Join-Path $PSScriptRoot 'payload'
 $installer = Join-Path $PSScriptRoot 'deploy\Install-IisApplication.ps1'
 if (-not (Test-Path -LiteralPath $payloadPath -PathType Container) -or
     -not (Test-Path -LiteralPath $installer -PathType Leaf)) {
-    throw 'The MSI cache is missing its payload or IIS deployment script.'
+    throw 'The installation is missing its payload or IIS deployment script.'
 }
 
 $configurationKey = 'HKLM:\Software\OpenTimeStamp\Installer'
@@ -52,6 +52,10 @@ Write-Host "Installing OpenTimeStamp as '$siteName$applicationPath'."
     -SiteName $siteName `
     -ApplicationPath $applicationPath `
     -AppPoolName 'OpenTimeStamp' `
+    -TimestampPath ([string]$configuration.TimestampPath) `
+    -Rfc3161Path ([string]$configuration.Rfc3161Path) `
+    -AuthenticodePath ([string]$configuration.AuthenticodePath) `
+    -HealthPath ([string]$configuration.HealthPath) `
     -MsiTransaction `
     -AllowUnsignedManifest `
     -Confirm:$false

@@ -374,15 +374,17 @@ catch {
                     param($node)
                     $node -is [System.Management.Automation.Language.ForEachStatementAst] -and
                         ($node.Condition.Extent.Text.Contains("'localhost'") -or
+                            $node.Condition.Extent.Text.Contains('$siteBindingEndpoints') -or
                             $node.Condition.Extent.Text.Contains('$configuredHost -split'))
                 }, $true))
-        Assert-Equal 2 $loops.Count 'The installer host-candidate loops could not be isolated.'
+        Assert-Equal 3 $loops.Count 'The installer host-candidate loops could not be isolated.'
+        $siteBindingEndpoints = @([pscustomobject]@{ Host = '192.0.2.10' })
         $hostCandidates = [System.Collections.Generic.List[string]]::new()
         $configuredHost = 'tsa.example.test;tsa2.example.test'
         foreach ($loop in $loops) { & ([scriptblock]::Create($loop.Extent.Text)) }
-        Assert-Equal 6 $hostCandidates.Count 'The installer did not collect all default and configured hosts.'
+        Assert-Equal 7 $hostCandidates.Count 'The installer did not collect all default and configured hosts.'
         foreach ($expected in @('localhost', '127.0.0.1', '::1', [Environment]::MachineName,
-                'tsa.example.test', 'tsa2.example.test')) {
+                'tsa.example.test', 'tsa2.example.test', '192.0.2.10')) {
             Assert-True ($hostCandidates.Contains($expected)) "Administrative host '$expected' was omitted."
         }
     }
@@ -1380,9 +1382,6 @@ catch {
         Assert-Throws {
             & $setupPath -TimestampUrl 'https://tsa.example.test/OpenTimeStamp/timestamp/rfc3161?unsafe=1' -WhatIf
         } 'Acrobat client setup accepted a timestamp URL containing a query.'
-        Assert-Throws {
-            & $setupPath -TimestampUrl 'https://tsa.example.test/OpenTimeStamp/timestamp/authenticode' -WhatIf
-        } 'Acrobat client setup accepted a non-RFC3161 OpenTimeStamp endpoint.'
         & $setupPath -TimestampUrl 'https://tsa.example.test/OpenTimeStamp/timestamp/rfc3161' `
             -WhatIf 6>$null | Out-Null
         & $setupPath -TimestampUrl 'http://127.0.0.1/OpenTimeStamp/timestamp/rfc3161' `
@@ -1729,8 +1728,6 @@ catch {
             'Installer records issuance initialization before the state initializer returns.'
         Assert-True ($installer -match 'missing, invalid, or ambiguous') `
             'Installer does not fail closed on ambiguous inherited authentication settings.'
-        Assert-True ($installer -match 'AuthenticationMode must be explicit when adopting a deployment root') `
-            'Installer does not fail closed when a preserved deployment has no authoritative IIS application.'
         Assert-True ($installer -notmatch 'issuance\.state\.bak.*(?:Copy|Move|Replace)') `
             'Installer appears to restore a potentially stale issuance-state backup.'
         Assert-True ($installer.IndexOf('Enter-OpenTimeStampDeploymentLock') -lt `
@@ -1904,6 +1901,59 @@ catch {
         Assert-True ($installer -notmatch "GetSection\('system.web/httpCookies'") `
             'The installer writes ASP.NET cookie settings into native IIS applicationHost.config.'
     }
+    Invoke-Test 'Retained deployments recover only consistent verified settings' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1'), [ref]$tokens, [ref]$parseErrors)
+        foreach ($name in @('Get-ExistingWebSettings', 'Get-RetainedWebSettings')) {
+            $definition = $ast.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+            }.GetNewClosure(), $true)
+            . ([scriptblock]::Create($definition.Extent.Text))
+        }
+        $root = Join-Path $testRoot 'retained-deployment'
+        $data = Join-Path $testRoot 'retained-data'
+        $releases = @(foreach ($index in 1..2) {
+            $id = '202607170101{0:D2}Z-0123456789ab' -f $index
+            $path = Join-Path $root "Releases\$id"
+            New-TestPayload -Path $path
+            Set-OpenTimeStampStagedWebSettings -ReleasePath $path -Mode Windows `
+                -EffectiveDataPath $data -EffectiveAdminHosts @('localhost')
+            New-OpenTimeStampDeploymentManifest -PayloadPath $path -ReleaseId $id | Out-Null
+            $path
+        })
+        Assert-True ($null -eq (Get-RetainedWebSettings -DeploymentRoot $root)) `
+            'Recovery adopted a directory without an ownership marker.'
+        $marker = Join-Path $root '.opentimestamp-deployment.json'
+        [IO.File]::WriteAllText($marker, (@{
+            Product = 'OpenTimeStamp'; SchemaVersion = 1; DeploymentId = [guid]::NewGuid().ToString('D')
+            DeploymentRoot = $root
+        } | ConvertTo-Json))
+        $settings = Get-RetainedWebSettings -DeploymentRoot $root
+        Assert-Equal 'Windows' $settings['AuthenticationMode'] 'Recovery changed the saved authentication mode.'
+        Assert-Equal $data $settings['DataPath'] 'Recovery changed the saved external data path.'
+
+        Set-OpenTimeStampStagedWebSettings -ReleasePath $releases[1] -Mode Anonymous `
+            -EffectiveDataPath $data -EffectiveAdminHosts @('localhost')
+        New-OpenTimeStampDeploymentManifest -PayloadPath $releases[1] `
+            -ReleaseId (Split-Path -Leaf $releases[1]) | Out-Null
+        Assert-Throws { Get-RetainedWebSettings -DeploymentRoot $root } `
+            'Recovery guessed between conflicting retained authentication settings.'
+        Set-OpenTimeStampStagedWebSettings -ReleasePath $releases[1] -Mode Windows `
+            -EffectiveDataPath $data -EffectiveAdminHosts @('localhost')
+        New-OpenTimeStampDeploymentManifest -PayloadPath $releases[1] `
+            -ReleaseId (Split-Path -Leaf $releases[1]) | Out-Null
+        $damaged = Join-Path $releases[1] 'bin\OpenTimeStamp.Web.dll'
+        [IO.File]::AppendAllText($damaged, '-damaged')
+        $hash = (Get-FileHash -LiteralPath $damaged).Hash
+        Assert-Throws { Get-RetainedWebSettings -DeploymentRoot $root } `
+            'Recovery accepted a release with damaged contents.'
+        Assert-Equal $hash (Get-FileHash -LiteralPath $damaged).Hash `
+            'Recovery changed retained files while inspecting them.'
+    }
+
     Invoke-Test 'Installer recognizes current and earlier issuance-state files' {
         $tokens = $null
         $parseErrors = $null
@@ -2142,6 +2192,48 @@ namespace OpenTimeStamp.Issuance {
             'Application does not explicitly reject double-escaped URLs.'
         Assert-Equal 'false' $requestFiltering.GetAttribute('allowHighBitCharacters') `
             'Application does not explicitly limit routes to their ASCII surface.'
+    }
+
+    Invoke-Test 'Custom route settings survive staging and produce links for every binding' {
+        $payload = Join-Path $testRoot 'custom-routes'
+        New-TestPayload -Path $payload
+        $requested = @{ TimestampPath = '/sign/auto'; Rfc3161Path = '/sign/rfc';
+            AuthenticodePath = '/sign/legacy'; HealthPath = '/status' }
+        Set-OpenTimeStampStagedWebSettings -ReleasePath $payload -Mode Anonymous `
+            -EffectiveDataPath 'C:\OpenTimeStampData' -EffectiveAdminHosts @('localhost') `
+            -RoutePaths $requested
+        $document = Read-OpenTimeStampXmlDocument -Path (Join-Path $payload 'Web.config')
+        $saved = @{}
+        foreach ($key in $requested.Keys) {
+            $saved[$key] = $document.SelectSingleNode("/configuration/appSettings/add[@key='$key']").value
+            Assert-Equal $requested[$key] $saved[$key] 'The deployed route differs from setup.'
+        }
+        Set-OpenTimeStampStagedWebSettings -ReleasePath $payload -Mode Anonymous `
+            -EffectiveDataPath 'C:\OpenTimeStampData' -EffectiveAdminHosts @('localhost') -ExistingSettings $saved
+        $document = Read-OpenTimeStampXmlDocument -Path (Join-Path $payload 'Web.config')
+        Assert-Equal '/sign/rfc' $document.SelectSingleNode(
+            "/configuration/appSettings/add[@key='Rfc3161Path']").value 'Upgrade lost the configured route.'
+        $deployment = [pscustomobject]@{
+            BaseUrls = @('http://tsa.example.test:8080/Tsa', 'https://secure.example.test/Tsa')
+            TimestampPath = '/Tsa/sign/auto'; Rfc3161Path = '/Tsa/sign/rfc'
+            AuthenticodePath = '/Tsa/sign/legacy'; HealthPath = '/Tsa/status'; AdminPath = '/Tsa/admin'
+        }
+        $links = @(Get-OpenTimeStampEndpointLinks -Deployment $deployment)
+        Assert-Equal 12 $links.Count 'The completion list omitted a binding or route.'
+        foreach ($authority in @('http://tsa.example.test:8080', 'https://secure.example.test')) {
+            Assert-True ($links -contains "RFC 3161|$authority/Tsa/sign/rfc") 'A custom RFC 3161 link is missing.'
+            Assert-True ($links -contains "Administration|$authority/Tsa/admin") 'The admin link is missing.'
+        }
+        $originalCulture = [Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            [Threading.Thread]::CurrentThread.CurrentCulture = [Globalization.CultureInfo]::GetCultureInfo('tr-TR')
+            foreach ($invalid in @('', '/admin', '/ADMIN/info', '/bin/probe', '/sign/App_Data', '/health',
+                    '/../health', '/x%2fy', '/x?y', '/x#y', '/{route}', '/sign.dll', 'https://other.test/sign')) {
+                Assert-Throws { Resolve-OpenTimeStampRoutePaths -Requested @{ Rfc3161Path = $invalid } } `
+                    "An unsafe route was accepted: $invalid"
+            }
+        }
+        finally { [Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture }
     }
 
     Invoke-Test 'Dotted application root URLs retain their narrowly scoped extension allowlist' {

@@ -113,11 +113,13 @@ namespace OpenTimeStamp {
     }
 
     public static class PublishNativeMethods {
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         public static extern SafeFileHandle CreateFileW(
             string fileName, uint desiredAccess, uint shareMode, IntPtr securityAttributes,
             uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool GetFileInformationByHandle(
             SafeFileHandle handle, out ByHandleFileInformation information);

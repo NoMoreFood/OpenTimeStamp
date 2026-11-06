@@ -423,7 +423,14 @@ function Get-OpenTimeStampValidatedBindingEndpoint {
             [System.Net.IPAddress]::TryParse($bindingAddress, [ref]$parsedAddress)) {
             $resultHost = $parsedAddress.ToString()
         }
-        else { $resultHost = [Environment]::MachineName }
+        else {
+            $properties = [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties()
+            $resultHost = $properties.HostName
+            if ($properties.DomainName -and -not $resultHost.EndsWith(
+                    "." + $properties.DomainName, [StringComparison]::OrdinalIgnoreCase)) {
+                $resultHost += "." + $properties.DomainName
+            }
+        }
     }
 
     $certificateThumbprint = $null
@@ -549,6 +556,46 @@ function Assert-OpenTimeStampIntakeSettings {
     }
 }
 
+function Get-OpenTimeStampEndpointLinks {
+    param([Parameter(Mandatory = $true)]$Deployment)
+
+    foreach ($baseUrl in $Deployment.BaseUrls) {
+        $authority = ([uri]$baseUrl).GetLeftPart([UriPartial]::Authority)
+        "Service Home|$($baseUrl.TrimEnd("/"))/"
+        "RFC 3161|$authority$($Deployment.Rfc3161Path)"
+        "Authenticode|$authority$($Deployment.AuthenticodePath)"
+        "Automatic Detection|$authority$($Deployment.TimestampPath)"
+        "Service Health|$authority$($Deployment.HealthPath)"
+        "Administration|$authority$($Deployment.AdminPath)"
+    }
+}
+
+function Resolve-OpenTimeStampRoutePaths {
+    param([hashtable]$Requested, [hashtable]$Existing)
+
+    $paths = @{
+        TimestampPath = "/timestamp"; Rfc3161Path = "/timestamp/rfc3161"
+        AuthenticodePath = "/timestamp/authenticode"; HealthPath = "/health"
+    }
+    $used = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($key in @($paths.Keys)) {
+        if ($null -ne $Existing -and $null -ne $Existing[$key]) { $paths[$key] = [string]$Existing[$key] }
+        if ($null -ne $Requested -and $Requested.ContainsKey($key)) { $paths[$key] = [string]$Requested[$key] }
+        $value = [string]$paths[$key]
+        if ($value.Length -gt 256 -or $value -cnotmatch "\A/?[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*\z" -or
+            [regex]::IsMatch($value,
+                "(?:\A|/)(?:admin|bin|App_Data|App_Code|App_GlobalResources|App_LocalResources|" +
+                "App_WebReferences|App_Browsers|aspnet_client)(?:/|\z)",
+                [Text.RegularExpressions.RegexOptions]'IgnoreCase,CultureInvariant') -or
+            -not $used.Add($value.TrimStart("/"))) {
+            throw ("$key must be a unique path of letters, numbers, underscores, or hyphens, " +
+                "separated by slashes, outside reserved IIS and admin paths.")
+        }
+        $paths[$key] = "/" + $value.TrimStart("/")
+    }
+    return $paths
+}
+
 function Set-OpenTimeStampStagedWebSettings {
     param(
         [string]$ReleasePath,
@@ -556,12 +603,23 @@ function Set-OpenTimeStampStagedWebSettings {
         [string]$EffectiveDataPath,
         [string[]]$EffectiveAdminHosts,
         [hashtable]$ExistingSettings,
+        [hashtable]$RoutePaths,
         [bool]$RequireHttps,
         [string]$ApplicationPath
     )
 
     $path = Join-Path $ReleasePath 'web.config'
     $document = Assert-OpenTimeStampWebConfig -Path $path
+    $routes = Resolve-OpenTimeStampRoutePaths -Requested $RoutePaths -Existing $ExistingSettings
+    foreach ($key in $routes.Keys) {
+        $node = $document.SelectSingleNode("/configuration/appSettings/add[@key='$key']")
+        if ($null -eq $node) {
+            $node = $document.CreateElement("add")
+            $node.SetAttribute("key", $key)
+            [void]$document.configuration.appSettings.AppendChild($node)
+        }
+        $node.SetAttribute("value", $routes[$key])
+    }
     $document.SelectSingleNode("/configuration/appSettings/add[@key='AuthenticationMode']").SetAttribute('value', $Mode)
     $document.SelectSingleNode("/configuration/appSettings/add[@key='DataPath']").SetAttribute('value', $EffectiveDataPath)
     $document.SelectSingleNode("/configuration/appSettings/add[@key='AdminHostNames']").SetAttribute('value', ($EffectiveAdminHosts -join ','))

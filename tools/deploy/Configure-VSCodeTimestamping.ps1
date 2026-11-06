@@ -15,6 +15,8 @@ independently of the executable being signed.
 param(
     [Parameter(Mandatory = $true)][string]$WorkspacePath,
     [Parameter(Mandatory = $true)][uri]$ServerUrl,
+    [string]$Rfc3161Path = '/timestamp/rfc3161',
+    [string]$AuthenticodePath = '/timestamp/authenticode',
     [ValidateSet('PowerShell', 'SignTool')][string]$SigningTool = 'PowerShell',
     [ValidateSet('Auto', 'x86', 'x64')][string]$PowerShellArchitecture = 'Auto',
     [ValidateSet('CurrentUser', 'LocalMachine')][string]$CertificateStoreLocation = 'CurrentUser',
@@ -30,7 +32,8 @@ if (-not (Get-Command Get-ClientTimestampUrl -CommandType Function -ErrorAction 
 {
     . (Join-Path $PSScriptRoot 'ClientConfiguration.Common.ps1')
 }
-Get-ClientServerEndpoints -ServerUrl $ServerUrl -AllowInsecureHttp:$AllowInsecureHttp | Out-Null
+Get-ClientServerEndpoints -ServerUrl $ServerUrl -Rfc3161Path $Rfc3161Path `
+    -AuthenticodePath $AuthenticodePath -AllowInsecureHttp:$AllowInsecureHttp | Out-Null
 $workspace = Get-Item -LiteralPath $WorkspacePath -ErrorAction Stop
 if (-not $workspace.PSIsContainer) { throw 'WorkspacePath must identify an existing project directory.' }
 if (-not $SigningScriptPath) { $SigningScriptPath = Join-Path $PSScriptRoot 'Invoke-TimestampSigning.ps1' }
@@ -71,7 +74,8 @@ $certificateInput = 'OpenTimeStampCertificate' + $id.Substring(0, 12)
 $arguments = @('-NoLogo', '-NoProfile', '-File', $SigningScriptPath,
     '-LiteralPath', ('${input:' + $fileInput + '}'), '-ServerUrl', $ServerUrl.AbsoluteUri,
     '-CertificateThumbprint', ('${input:' + $certificateInput + '}'), '-Tool', $SigningTool,
-    '-CertificateStoreLocation', $CertificateStoreLocation)
+    '-CertificateStoreLocation', $CertificateStoreLocation,
+    '-Rfc3161Path', $Rfc3161Path, '-AuthenticodePath', $AuthenticodePath)
 if ($SigningTool -eq 'SignTool') { $arguments += @('-SignToolPath', $SignToolPath) }
 if ($AllowInsecureHttp) { $arguments += '-AllowInsecureHttp' }
 $task = [pscustomobject][ordered]@{

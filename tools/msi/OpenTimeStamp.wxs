@@ -13,6 +13,10 @@
       Schedule="afterInstallInitialize" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
+    <Icon Id="OpenTimeStampIcon" SourceFile="$(var.SetupPath)\..\..\assets\branding\OpenTimeStamp.ico" />
+    <Property Id="ARPPRODUCTICON" Value="OpenTimeStampIcon" />
+    <WixVariable Id="WixUIBannerBmp" Value="$(var.SetupPath)\..\..\assets\branding\InstallerBanner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="$(var.SetupPath)\..\..\assets\branding\InstallerDialog.bmp" />
     <Property Id="ARPCONTACT" Value="OpenTimeStamp maintainers" />
     <Property Id="IISINSTALLED">
       <RegistrySearch Id="IisInstalledSearch" Root="HKLM" Key="SOFTWARE\Microsoft\InetStp"
@@ -26,48 +30,64 @@
       <RegistrySearch Id="ExistingApplicationNameSearch" Root="HKLM"
         Key="Software\OpenTimeStamp\Installer" Name="ApplicationName" Type="raw" Bitness="always64" />
     </Property>
-    <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLERCACHE]" After="CostFinalize" />
+    <Property Id="TIMESTAMPPATH" Value="/timestamp" Secure="yes">
+      <RegistrySearch Id="ExistingTimestampPathSearch" Root="HKLM"
+        Key="Software\OpenTimeStamp\Installer" Name="TimestampPath" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="RFC3161PATH" Value="/timestamp/rfc3161" Secure="yes">
+      <RegistrySearch Id="ExistingRfc3161PathSearch" Root="HKLM"
+        Key="Software\OpenTimeStamp\Installer" Name="Rfc3161Path" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="AUTHENTICODEPATH" Value="/timestamp/authenticode" Secure="yes">
+      <RegistrySearch Id="ExistingAuthenticodePathSearch" Root="HKLM"
+        Key="Software\OpenTimeStamp\Installer" Name="AuthenticodePath" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="HEALTHPATH" Value="/health" Secure="yes">
+      <RegistrySearch Id="ExistingHealthPathSearch" Root="HKLM"
+        Key="Software\OpenTimeStamp\Installer" Name="HealthPath" Type="raw" Bitness="always64" />
+    </Property>
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLFOLDER]" After="CostFinalize" />
     <Launch Condition="VersionNT64" Message="OpenTimeStamp requires 64-bit Windows Server." />
     <Launch Condition="Installed OR IISINSTALLED"
       Message="Microsoft IIS must be installed and configured before installing OpenTimeStamp." />
     <Launch Condition="NOT RollbackDisabled AND NOT DISABLEROLLBACK"
       Message="Windows Installer rollback must be enabled to install or remove OpenTimeStamp safely." />
 
-    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLERCACHE" />
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <EnsureTable Id="ComboBox" />
+    <Binary Id="IisSitePicker" SourceFile="$(var.SetupPath)\Query-IisWebsites.js" />
+    <CustomAction Id="LoadIisWebsites" BinaryRef="IisSitePicker" JScriptCall="LoadIisWebsites"
+      Bitness="always64" Return="check" />
+    <CustomAction Id="LoadIisApplications" BinaryRef="IisSitePicker" JScriptCall="LoadIisApplications"
+      Bitness="always64" Return="check" />
     <UI Id="IisConfigurationUI">
       <Dialog Id="IisConfigurationDlg" Width="370" Height="270" Title="OpenTimeStamp IIS Configuration">
+        <Control Id="Banner" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="yes"
+          Text="WixUI_Bmp_Banner" />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="2" />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="2" />
         <Control Id="Title" Type="Text" X="15" Y="6" Width="280" Height="15" Transparent="yes"
-          NoPrefix="yes" Text="{\WixUI_Font_Title}IIS Application" />
+          NoPrefix="yes" Text="{\WixUI_Font_Title}IIS Website" />
         <Control Id="Description" Type="Text" X="25" Y="23" Width="320" Height="15" Transparent="yes"
-          NoPrefix="yes" Text="Choose the existing IIS website and the URL application name." />
+          NoPrefix="yes" Text="Choose the existing IIS website that will host OpenTimeStamp." />
         <Control Id="SiteNameLabel" Type="Text" X="25" Y="56" Width="320" Height="12"
-          Text="IIS website name:" />
-        <Control Id="SiteName" Type="ComboBox" X="25" Y="70" Width="320" Height="18"
-          Property="IISSITENAME" ComboList="no" Sorted="yes">
-          <ComboBox Property="IISSITENAME">
-            <ListItem Value="Default Web Site" />
-          </ComboBox>
-        </Control>
-        <Control Id="SiteNameHelp" Type="Text" X="25" Y="91" Width="320" Height="18" Transparent="yes"
-          NoPrefix="yes" Text="Select Default Web Site or type the exact name of another existing IIS website." />
-        <Control Id="ApplicationNameLabel" Type="Text" X="25" Y="119" Width="320" Height="12"
-          Text="Application name:" />
-        <Control Id="ApplicationName" Type="Edit" X="25" Y="133" Width="320" Height="18"
-          Property="APPLICATIONNAME" />
-        <Control Id="ApplicationNameHelp" Type="Text" X="25" Y="154" Width="320" Height="18"
-          Transparent="yes" NoPrefix="yes"
-          Text="The service will be installed at /[APPLICATIONNAME] on the selected website." />
+          Text="&amp;IIS Website:" />
+        <Control Id="SiteName" Type="ComboBox" X="25" Y="70" Width="320" Height="80"
+          Property="IISSITENAME" ComboList="yes" Sorted="yes"
+          DisableCondition="NOT IISSITESAVAILABLE" EnableCondition="IISSITESAVAILABLE" />
+        <Control Id="SiteNameHelp" Type="Text" X="25" Y="91" Width="320" Height="24" Transparent="yes"
+          NoPrefix="yes" Text="[IISSITESTATUS]" />
         <Control Id="PrerequisiteHelp" Type="Text" X="25" Y="183" Width="320" Height="28"
           Transparent="yes" NoPrefix="yes"
           Text="IIS and all required role services must already be installed. Setup will not add or modify Windows features." />
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes"
-          Text="!(loc.WixUINext)">
+          Text="!(loc.WixUINext)" DisableCondition="NOT IISSITESAVAILABLE" EnableCondition="IISSITESAVAILABLE">
           <Publish Event="SpawnDialog" Value="InvalidIisSelectionDlg" Order="1"
-            Condition="IISSITENAME = &quot;&quot; OR APPLICATIONNAME = &quot;&quot;" />
-          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="2"
-            Condition="IISSITENAME &lt;&gt; &quot;&quot; AND APPLICATIONNAME &lt;&gt; &quot;&quot;" />
+            Condition="IISSITENAME = &quot;&quot;" />
+          <Publish Event="DoAction" Value="LoadIisApplications" Order="2"
+            Condition="IISSITENAME &lt;&gt; &quot;&quot;" />
+          <Publish Event="NewDialog" Value="RouteConfigurationDlg" Order="3"
+            Condition="IISSITENAME &lt;&gt; &quot;&quot;" />
         </Control>
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17"
           Text="!(loc.WixUIBack)">
@@ -78,41 +98,119 @@
           <Publish Event="SpawnDialog" Value="CancelDlg" Condition="1" Order="100" />
         </Control>
       </Dialog>
-      <Dialog Id="InvalidIisSelectionDlg" Width="260" Height="90" Title="OpenTimeStamp IIS Configuration">
+      <Dialog Id="RouteConfigurationDlg" Width="370" Height="270" Title="OpenTimeStamp Application and Routes">
+        <Control Id="Banner" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="yes"
+          Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="2" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="2" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="280" Height="15" Transparent="yes"
+          NoPrefix="yes" Text="{\WixUI_Font_Title}Application and Routes" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="300" Height="15" Transparent="yes"
+          NoPrefix="yes" Text="Choose an existing application or enter a new name." />
+        <Control Id="ApplicationNameLabel" Type="Text" X="25" Y="60" Width="118" Height="12"
+          Text="Application &amp;Name:" />
+        <Control Id="ApplicationName" Type="ComboBox" X="148" Y="57" Width="197" Height="80"
+          Property="APPLICATIONNAME" ComboList="no" Sorted="yes"
+          DisableCondition="NOT IISAPPLICATIONSAVAILABLE" EnableCondition="IISAPPLICATIONSAVAILABLE" />
+        <Control Id="TimestampLabel" Type="Text" X="25" Y="91" Width="118" Height="12"
+          Text="&amp;Automatic Detection:" />
+        <Control Id="Timestamp" Type="Edit" X="148" Y="88" Width="197" Height="18" Property="TIMESTAMPPATH" />
+        <Control Id="Rfc3161Label" Type="Text" X="25" Y="122" Width="118" Height="12" Text="&amp;RFC 3161:" />
+        <Control Id="Rfc3161" Type="Edit" X="148" Y="119" Width="197" Height="18" Property="RFC3161PATH" />
+        <Control Id="AuthenticodeLabel" Type="Text" X="25" Y="153" Width="118" Height="12" Text="Authent&amp;icode:" />
+        <Control Id="Authenticode" Type="Edit" X="148" Y="150" Width="197" Height="18" Property="AUTHENTICODEPATH" />
+        <Control Id="HealthLabel" Type="Text" X="25" Y="184" Width="118" Height="12" Text="Service &amp;Health:" />
+        <Control Id="Health" Type="Edit" X="148" Y="181" Width="197" Height="18" Property="HEALTHPATH" />
+        <Control Id="Help" Type="Text" X="25" Y="207" Width="320" Height="24" Transparent="yes" NoPrefix="yes"
+          Text="[IISAPPLICATIONSTATUS]" />
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes"
+          Text="!(loc.WixUINext)" DisableCondition="NOT IISAPPLICATIONSAVAILABLE" EnableCondition="IISAPPLICATIONSAVAILABLE">
+          <Publish Event="SpawnDialog" Value="InvalidRouteSelectionDlg" Order="1"
+            Condition="APPLICATIONNAME = &quot;&quot; OR TIMESTAMPPATH = &quot;&quot; OR RFC3161PATH = &quot;&quot; OR AUTHENTICODEPATH = &quot;&quot; OR HEALTHPATH = &quot;&quot;" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="2"
+            Condition="APPLICATIONNAME &lt;&gt; &quot;&quot; AND TIMESTAMPPATH &lt;&gt; &quot;&quot; AND RFC3161PATH &lt;&gt; &quot;&quot; AND AUTHENTICODEPATH &lt;&gt; &quot;&quot; AND HEALTHPATH &lt;&gt; &quot;&quot;" />
+        </Control>
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="DoAction" Value="LoadIisWebsites" Condition="1" Order="1" />
+          <Publish Event="NewDialog" Value="IisConfigurationDlg" Condition="1" Order="2" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes"
+          Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" Condition="1" />
+        </Control>
+      </Dialog>
+      <Dialog Id="InvalidRouteSelectionDlg" Width="260" Height="90" Title="OpenTimeStamp Public Routes">
         <Control Id="Message" Type="Text" X="18" Y="18" Width="224" Height="32"
-          Text="Enter both an existing IIS website name and an application name." />
+          Text="Select or enter an application name and a path for each public endpoint." />
         <Control Id="OK" Type="PushButton" X="102" Y="60" Width="56" Height="17" Default="yes"
           Cancel="yes" Text="OK">
           <Publish Event="EndDialog" Value="Return" Condition="1" />
         </Control>
       </Dialog>
+      <Dialog Id="InvalidIisSelectionDlg" Width="260" Height="90" Title="OpenTimeStamp IIS Configuration">
+        <Control Id="Message" Type="Text" X="18" Y="18" Width="224" Height="32"
+          Text="Select an existing IIS website." />
+        <Control Id="OK" Type="PushButton" X="102" Y="60" Width="56" Height="17" Default="yes"
+          Cancel="yes" Text="OK">
+          <Publish Event="EndDialog" Value="Return" Condition="1" />
+        </Control>
+      </Dialog>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg"
+        Order="2" Condition="NOT Installed" />
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="DoAction" Value="LoadIisWebsites"
+        Order="4" Condition="NOT Installed OR WIX_UPGRADE_DETECTED" />
       <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="IisConfigurationDlg"
         Order="5" Condition="NOT Installed OR WIX_UPGRADE_DETECTED" />
-      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="IisConfigurationDlg"
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="DoAction" Value="LoadIisApplications"
+        Order="4" Condition="NOT Installed OR WIX_UPGRADE_DETECTED" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="RouteConfigurationDlg"
         Order="5" Condition="NOT Installed OR WIX_UPGRADE_DETECTED" />
     </UI>
 
     <Feature Id="Complete" Title="OpenTimeStamp" Level="1">
       <ComponentRef Id="InstallerScripts" />
+      <ComponentRef Id="AdministrationShortcutComponent" />
       <Files Directory="PAYLOADFOLDER" Include="$(var.PayloadPath)\**" />
       <Files Directory="DEPLOYFOLDER" Include="$(var.DeployPath)\*.ps1" />
     </Feature>
 
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="PRODUCTFOLDER" Name="OpenTimeStamp">
-        <Directory Id="INSTALLERCACHE" Name="Installer">
-          <Directory Id="PAYLOADFOLDER" Name="payload" />
-          <Directory Id="DEPLOYFOLDER" Name="deploy" />
-        </Directory>
+      <Directory Id="INSTALLFOLDER" Name="OpenTimeStamp">
+        <Directory Id="PAYLOADFOLDER" Name="payload" />
+        <Directory Id="DEPLOYFOLDER" Name="deploy" />
       </Directory>
     </StandardDirectory>
 
-    <DirectoryRef Id="INSTALLERCACHE">
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="AdministrationShortcutComponent" Guid="{C796E3F4-072D-46BE-9CD3-57C7E46CDCF4}">
+        <Shortcut Id="AdministrationShortcut" Directory="ProgramMenuFolder" Name="OpenTimeStamp Administration"
+          Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+          Arguments="-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]Open-OpenTimeStamp.ps1&quot; -Admin"
+          WorkingDirectory="INSTALLFOLDER" Icon="OpenTimeStampIcon" />
+        <RegistryValue Root="HKCU" Key="Software\OpenTimeStamp" Name="AdministrationShortcut"
+          Value="[INSTALLFOLDER]" Type="string" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <DirectoryRef Id="INSTALLFOLDER">
       <Component Id="InstallerScripts" Guid="{56530866-AFB4-479F-9060-786241FBA341}">
         <File Id="InstallMsiScript" Source="$(var.SetupPath)\Install-Msi.ps1" />
         <File Id="UninstallMsiScript" Source="$(var.SetupPath)\Uninstall-Msi.ps1" />
         <File Id="MsiTransactionScript" Source="$(var.SetupPath)\Invoke-MsiTransaction.ps1" />
-        <File Id="InstallerReadme" Source="$(var.SetupPath)\README.md" Name="README.md" />
+        <File Id="OpenTimeStampLinksScript" Source="$(var.SetupPath)\Open-OpenTimeStamp.ps1" />
+        <File Source="$(var.SetupPath)\..\..\assets\branding\OpenTimeStamp.png" />
+        <File Source="$(var.SetupPath)\..\..\assets\branding\OpenTimeStamp.ico" />
+
+        <RemoveRegistryKey Root="HKLM" Key="Software\OpenTimeStamp\Installer" Action="removeOnUninstall" />
+        <RegistryValue Root="HKLM" Key="Software\OpenTimeStamp\Installer" Name="TimestampPath"
+          Value="[TIMESTAMPPATH]" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\OpenTimeStamp\Installer" Name="Rfc3161Path"
+          Value="[RFC3161PATH]" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\OpenTimeStamp\Installer" Name="AuthenticodePath"
+          Value="[AUTHENTICODEPATH]" Type="string" />
+        <RegistryValue Root="HKLM" Key="Software\OpenTimeStamp\Installer" Name="HealthPath"
+          Value="[HEALTHPATH]" Type="string" />
         <RegistryValue Root="HKLM" Key="Software\OpenTimeStamp\Installer" Name="Version"
           Value="$(var.ProductVersion)" Type="string" KeyPath="yes" />
         <RegistryValue Root="HKLM" Key="Software\OpenTimeStamp\Installer" Name="SiteName"
@@ -121,6 +219,14 @@
           Value="[APPLICATIONNAME]" Type="string" />
       </Component>
     </DirectoryRef>
+
+    <CustomAction Id="ShowEndpointLinks" Directory="System64Folder"
+      ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;[#OpenTimeStampLinksScript]&quot;"
+      Execute="immediate" Return="ignore" />
+    <InstallUISequence>
+      <Custom Action="ShowEndpointLinks" After="ExecuteAction" Condition="NOT REMOVE~=&quot;ALL&quot; AND UILevel = 5" />
+      <Show Dialog="override ExitDialog" OnExit="success" Condition="REMOVE~=&quot;ALL&quot;" />
+    </InstallUISequence>
 
     <SetProperty Id="InstallOpenTimeStamp"
       Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[#MsiTransactionScript]&quot; -Action Install -TransactionId &quot;[ProductCode]&quot;"

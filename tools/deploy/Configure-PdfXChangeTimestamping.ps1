@@ -27,7 +27,7 @@ $ErrorActionPreference = 'Stop'
 if (-not (Get-Command Get-ClientTimestampUrl -CommandType Function -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'ClientConfiguration.Common.ps1')
 }
-$canonicalUrl = Get-ClientTimestampUrl -Url $TimestampUrl -Protocol rfc3161 -AllowInsecureHttp:$AllowInsecureHttp
+$canonicalUrl = Get-ClientTimestampUrl -Url $TimestampUrl -AllowInsecureHttp:$AllowInsecureHttp
 if ([string]::IsNullOrWhiteSpace($ServerName) -or $ServerName.IndexOfAny([char[]]"`r`n") -ge 0) {
     throw 'ServerName must contain visible text on one line.'
 }
@@ -54,7 +54,7 @@ if (-not $settings -or $settings -is [array] -or -not $settings.PSObject.Propert
     throw 'PresetPath must contain a JSON object with TimestampServers.Items.'
 }
 $items = @($settings.TimestampServers.Items)
-$matches = @()
+$matchingPresets = @()
 foreach ($item in $items) {
     if (-not $item -or -not $item.PSObject.Properties['Data'] -or -not $item.Data -or
         -not $item.Data.PSObject.Properties['URL'] -or -not $item.PSObject.Properties['Name']) {
@@ -62,7 +62,7 @@ foreach ($item in $items) {
     }
     $existingUrl = [string]$item.Data.URL
     try {
-        $existingUrl = Get-ClientTimestampUrl -Url ([uri]$existingUrl) -Protocol rfc3161 `
+        $existingUrl = Get-ClientTimestampUrl -Url ([uri]$existingUrl) `
             -AllowInsecureHttp:$AllowInsecureHttp
     }
     catch { }
@@ -70,13 +70,13 @@ foreach ($item in $items) {
     if ($item.Name -eq $ServerName -and -not $sameUrl) {
         throw "PDF-XChange server name '$ServerName' already refers to another URL. Supply a different ServerName."
     }
-    if ($sameUrl) { $matches += $item }
+    if ($sameUrl) { $matchingPresets += $item }
 }
-if ($matches.Count -gt 1) { throw 'PDF-XChange contains duplicate presets for this timestamp URL.' }
-$preset = if ($matches.Count) { $matches[0] } else {
+if ($matchingPresets.Count -gt 1) { throw 'PDF-XChange contains duplicate presets for this timestamp URL.' }
+$preset = if ($matchingPresets.Count) { $matchingPresets[0] } else {
     [PSCustomObject]@{ ID = '{' + [Guid]::NewGuid().ToString().ToUpperInvariant() + '}'; Flags = 0 }
 }
-if ($matches.Count -and
+if ($matchingPresets.Count -and
     (($preset.Data.PSObject.Properties['RequireAuth'] -and $preset.Data.RequireAuth) -or
         ($preset.Data.PSObject.Properties['User'] -and $preset.Data.User) -or
         ($preset.Data.PSObject.Properties['Password'] -and $preset.Data.Password))) {
@@ -95,7 +95,7 @@ foreach ($setting in $serverSettings.GetEnumerator()) {
     if ($preset.Data.PSObject.Properties[$setting.Key]) { $preset.Data.($setting.Key) = $setting.Value }
     else { $preset.Data | Add-Member -NotePropertyName $setting.Key -NotePropertyValue $setting.Value }
 }
-if (-not $matches.Count) { $items += $preset }
+if (-not $matchingPresets.Count) { $items += $preset }
 $settings.TimestampServers.Items = @($items)
 $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($settings | ConvertTo-Json -Depth 30 -WarningAction Stop) + "`r`n")
 if (-not $PSCmdlet.ShouldProcess($PresetPath, "Register PDF-XChange timestamp preset '$ServerName'")) { return }

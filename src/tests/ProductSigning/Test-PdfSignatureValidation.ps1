@@ -10,9 +10,9 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Security.Cryptography.Pkcs
 
 function Assert-PdfRejected {
-    param([byte[]]$Bytes, [string]$Message)
+    param([byte[]]$Bytes, [string]$Message, [string]$ExpectedSignerThumbprint)
 
-    try { Assert-PdfHasRfc3161Timestamp -Bytes $Bytes }
+    try { Assert-PdfHasRfc3161Timestamp -Bytes $Bytes -ExpectedSignerThumbprint $ExpectedSignerThumbprint }
     catch { return }
     throw $Message
 }
@@ -79,7 +79,10 @@ try {
     $hex = [Convert]::ToHexString($encoded)
     Assert-Condition ($hex.Length -le $hexLength) 'The PDF regression signature exceeds its placeholder.'
     $pdf = [Text.Encoding]::ASCII.GetBytes($prefix + '<' + $hex.PadRight($hexLength, '0') + '>' + $suffix)
-    Assert-PdfHasRfc3161Timestamp -Bytes $pdf -ExpectedTsaThumbprint $tsaCertificate.Thumbprint
+    Assert-PdfHasRfc3161Timestamp -Bytes $pdf -ExpectedTsaThumbprint $tsaCertificate.Thumbprint `
+        -ExpectedSignerThumbprint $certificate.Thumbprint
+    Assert-PdfRejected -Bytes $pdf -ExpectedSignerThumbprint $tsaCertificate.Thumbprint `
+        -Message 'A PDF signed by a different certificate was accepted.'
 
     $modified = [byte[]]$pdf.Clone()
     $modified[1] = $modified[1] -bxor 1

@@ -16,7 +16,7 @@ $MsiPath = (Resolve-Path -LiteralPath $MsiPath).Path
 $UpgradeMsiPath = (Resolve-Path -LiteralPath $UpgradeMsiPath).Path
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $deploymentRoot = Join-Path $env:SystemDrive 'inetpub\OpenTimeStamp'
-$cache = Join-Path $env:ProgramFiles 'OpenTimeStamp\Installer'
+$cache = Join-Path $env:ProgramFiles 'OpenTimeStamp'
 $installer = New-Object -ComObject WindowsInstaller.Installer
 
 function Invoke-DatabaseCommand {
@@ -127,6 +127,9 @@ function Get-DeploymentSnapshot {
         $app = $manager.Sites[$SiteName].Applications['/OpenTimeStamp']
         $configuration = $manager.GetApplicationHostConfiguration()
         return [pscustomobject]@{
+            Bindings = $site.SelectSingleNode('./bindings').OuterXml
+            Endpoints = @(Get-ItemPropertyValue -LiteralPath 'HKLM:\Software\OpenTimeStamp\Installer' `
+                -Name Endpoints -ErrorAction SilentlyContinue)
             Application = if ($application.Count) { $application[0].OuterXml } else { $null }
             Pool = if ($pool.Count) { $pool[0].OuterXml } else { $null }
             PoolState = if ($manager.ApplicationPools['OpenTimeStamp']) {
@@ -194,6 +197,18 @@ Invoke-MsiCheck -Name 'rollback-disabled' -ExpectedExitCode 1603 `
     -Arguments "/i `"$($fresh.Path)`" DISABLEROLLBACK=1 IISSITENAME=$SiteName"
 if (Test-Path -LiteralPath $deploymentRoot) { throw 'Disabled rollback allowed deployment.' }
 Write-Host 'PASS rollback-disabled install rejected before deployment'
+Invoke-MsiCheck -Name 'missing-website' -ExpectedExitCode 1603 `
+    -Arguments "/i `"$MsiPath`" IISSITENAME=OpenTimeStampMissingSite"
+if ((Get-Content -LiteralPath (Join-Path $OutputDirectory 'missing-website.log') -Raw) -notmatch 'does not exist' -or
+    (Test-Path -LiteralPath $deploymentRoot)) {
+    throw 'A nonexistent website was not rejected before deployment.'
+}
+foreach ($path in @('/admin', '/health')) {
+    Invoke-MsiCheck -Name ('invalid-route-' + $path.TrimStart('/')) -ExpectedExitCode 1603 `
+        -Arguments "/i `"$MsiPath`" IISSITENAME=$SiteName RFC3161PATH=$path"
+    if (Test-Path -LiteralPath $deploymentRoot) { throw 'An invalid route created a deployment root.' }
+}
+Write-Host 'PASS nonexistent websites and invalid route paths are rejected'
 Invoke-MsiCheck -Name 'fresh-failure' -Arguments "/i `"$($fresh.Path)`" IISSITENAME=$SiteName" -ExpectedExitCode 1603
 $evidence = Get-Content -LiteralPath $fresh.Evidence -Raw | ConvertFrom-Json
 if (-not $evidence.ApplicationPresent -or $evidence.PoolState -ne 'Stopped') {
@@ -211,7 +226,106 @@ if (@(Get-ChildItem -LiteralPath $deploymentRoot -Force).Count -ne 0 -or
     throw 'Rollback did not preserve the empty directory and its ACL.'
 }
 Remove-Item -LiteralPath $deploymentRoot
-Invoke-MsiCheck -Name 'install-success' -Arguments "/i `"$($installed.Path)`" IISSITENAME=$SiteName" -ExpectedExitCode 0
+
+# Reuse a precreated application without taking ownership of its old content or shared pool.
+$precreatedRoot = Join-Path $OutputDirectory 'PrecreatedApplication'
+New-Item -ItemType Directory -Path $precreatedRoot | Out-Null
+$originalContent = Join-Path $precreatedRoot 'original.txt'
+[IO.File]::WriteAllText($originalContent, 'Preserve the existing application files.')
+[IO.File]::WriteAllText((Join-Path $precreatedRoot 'web.config'),
+    '<configuration><appSettings><add key="AuthenticationMode" value="UnrelatedApplication" /></appSettings></configuration>')
+$originalHash = (Get-FileHash -LiteralPath $originalContent).Hash
+$originalAcl = (Get-Acl -LiteralPath $precreatedRoot).Sddl
+$manager = [Microsoft.Web.Administration.ServerManager]::new()
+try {
+    $precreated = $manager.Sites[$SiteName].Applications.Add('/OpenTimeStamp', $precreatedRoot)
+    $precreated.ApplicationPoolName = 'DefaultAppPool'
+    [void]$precreated.VirtualDirectories.Add('/existing', $precreatedRoot)
+    $sharedPoolState = [string]$manager.ApplicationPools['DefaultAppPool'].State
+    $manager.CommitChanges()
+}
+finally { $manager.Dispose() }
+$before = Get-DeploymentSnapshot
+Invoke-MsiCheck -Name 'existing-application-failure' -ExpectedExitCode 1603 `
+    -Arguments "/i `"$($fresh.Path)`" IISSITENAME=$SiteName"
+$evidence = Get-Content -LiteralPath $fresh.Evidence -Raw | ConvertFrom-Json
+if (-not $evidence.ApplicationPresent -or $evidence.Path -eq $precreatedRoot) {
+    throw 'Existing-application failure did not execute after deploying into the reused application.'
+}
+Assert-Restored -Before $before -Name 'existing application rollback'
+if (Test-Path -LiteralPath $deploymentRoot) { throw 'Existing-application rollback left a deployment root.' }
+Write-Host 'PASS existing application rollback restores its original selection and virtual directories'
+
+Invoke-MsiCheck -Name 'install-success' -ExpectedExitCode 0 -Arguments (
+    "/i `"$($installed.Path)`" IISSITENAME=$SiteName TIMESTAMPPATH=/sign/auto " +
+    'RFC3161PATH=/sign/rfc AUTHENTICODEPATH=/sign/legacy HEALTHPATH=/status')
+
+# Exercise the installed routes and links against each configured binding before adding rollback fixtures.
+$configuration = Get-ItemProperty -LiteralPath 'HKLM:\Software\OpenTimeStamp\Installer'
+$links = @($configuration.Endpoints)
+$manager = [Microsoft.Web.Administration.ServerManager]::new()
+try {
+    $site = $manager.Sites[$SiteName]
+    if ($links.Count -ne $site.Bindings.Count * 6) { throw 'Completion URLs omit a route or binding.' }
+    $activePath = $site.Applications['/OpenTimeStamp'].VirtualDirectories['/'].PhysicalPath
+    if ($site.Applications['/OpenTimeStamp'].VirtualDirectories['/existing'].PhysicalPath -ne $precreatedRoot -or
+        [string]$manager.ApplicationPools['DefaultAppPool'].State -ne $sharedPoolState -or
+        (Get-FileHash -LiteralPath $originalContent).Hash -ne $originalHash -or
+        (Get-Acl -LiteralPath $precreatedRoot).Sddl -ne $originalAcl) {
+        throw 'Reusing the application changed its old content, virtual directories, or shared pool state.'
+    }
+    [xml]$webConfig = Get-Content -LiteralPath (Join-Path $activePath 'Web.config') -Raw
+    $settings = @{}
+    foreach ($setting in $webConfig.configuration.appSettings.add) { $settings[$setting.key] = $setting.value }
+    if ($settings.Rfc3161Path -ne '/sign/rfc' -or $settings.AuthenticodePath -ne '/sign/legacy' -or
+        $settings.TimestampPath -ne '/sign/auto' -or $settings.HealthPath -ne '/status') {
+        throw 'Setup did not persist the chosen public routes.'
+    }
+}
+finally { $manager.Dispose() }
+$localAddresses = @([Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | ForEach-Object {
+    $_.GetIPProperties().UnicastAddresses | ForEach-Object { $_.Address.ToString() }
+})
+foreach ($link in $links) {
+    $parts = ([string]$link).Split('|', 2)
+    $url = [uri]$parts[1]
+    $addresses = @([Net.Dns]::GetHostAddresses($url.DnsSafeHost))
+    if (-not $addresses.Count -or @($addresses | Where-Object {
+        -not [Net.IPAddress]::IsLoopback($_) -and $_.ToString() -notin $localAddresses
+    }).Count) { throw "Live MSI checks require URLs resolving only to this server: $url" }
+    $request = [Net.HttpWebRequest]::Create($url)
+    $request.Proxy = $null
+    $request.UseDefaultCredentials = $parts[0] -eq 'Administration'
+    $request.Timeout = 30000
+    $response = $null
+    try {
+        try { $response = $request.GetResponse() }
+        catch [Net.WebException] { $response = $_.Exception.Response; if (-not $response) { throw } }
+        $expected = switch ($parts[0]) {
+            'Service Home' { 200 }
+            'Administration' { 200 }
+            'Service Health' { 503 }
+            default { 405 }
+        }
+        if ([int]$response.StatusCode -ne $expected) {
+            throw "$link returned $([int]$response.StatusCode), expected $expected."
+        }
+    }
+    finally { if ($response) { $response.Dispose() } }
+}
+$shortcutPath = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'OpenTimeStamp Administration.lnk'
+if (-not (Test-Path -LiteralPath $shortcutPath) -or (Test-Path -LiteralPath (Join-Path $cache 'Installer'))) {
+    throw 'The admin shortcut is missing or the program files retain an Installer subfolder.'
+}
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut($shortcutPath)
+if ($shortcut.Arguments -notlike '*Open-OpenTimeStamp.ps1* -Admin' -or
+    $shortcut.TargetPath -notlike '*\powershell.exe') {
+    throw 'The Start menu shortcut does not launch the admin interface.'
+}
+[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut)
+[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
+Write-Host 'PASS application reuse, custom routes, all binding URLs, local admin links, and Start menu shortcut'
 
 # Preserve custom configuration and real data across failed upgrades and removals.
 $manager = [Microsoft.Web.Administration.ServerManager]::new()
@@ -290,5 +404,47 @@ $after = Get-DeploymentSnapshot
 if ($after.Application -or $after.Pool -or (Get-FileHash -LiteralPath $statePath).Hash -ne $stateHash) {
     throw 'Successful uninstall did not remove IIS while preserving issuance data.'
 }
+if ((Test-Path -LiteralPath $shortcutPath) -or $after.Endpoints.Count -ne 0) {
+    throw 'Uninstall left the admin shortcut or endpoint URLs behind.'
+}
 Write-Host 'PASS successful install, upgrade rollback, repair, and uninstall preserve issuance data'
+
+# Reinstall the same package over retained data, including failure after activation and a subsequent retry.
+$uninstalled = $after
+$rootAcl = (Get-Acl -LiteralPath $deploymentRoot).Sddl
+$reinstallArguments = "IISSITENAME=$SiteName TIMESTAMPPATH=/sign/auto RFC3161PATH=/sign/rfc " +
+    'AUTHENTICODEPATH=/sign/legacy HEALTHPATH=/status'
+Invoke-MsiCheck -Name 'reinstall-failure' -ExpectedExitCode 1603 `
+    -Arguments "/i `"$($fresh.Path)`" $reinstallArguments"
+$evidence = Get-Content -LiteralPath $fresh.Evidence -Raw | ConvertFrom-Json
+if (-not $evidence.ApplicationPresent -or $evidence.Path -eq $before.Path -or
+    (Test-Path -LiteralPath $evidence.Path)) {
+    throw 'Failed reinstall did not activate and roll back a fresh release.'
+}
+Assert-Restored -Before $uninstalled -Name 'reinstall rollback'
+if ((Get-FileHash -LiteralPath $statePath).Hash -ne $stateHash -or
+    (Get-FileHash -LiteralPath (Join-Path $before.Path 'Web.config')).Hash -ne $webHash -or
+    (Get-Acl -LiteralPath $data).Sddl -ne $dataAcl -or
+    (Get-Acl -LiteralPath $fixture).Sddl -ne $fixtureSddl -or
+    (Get-Acl -LiteralPath $deploymentRoot).Sddl -ne $rootAcl) {
+    throw 'Failed reinstall changed retained state, configuration, or ACLs.'
+}
+Invoke-MsiCheck -Name 'reinstall-success' -ExpectedExitCode 0 `
+    -Arguments "/i `"$($installed.Path)`" $reinstallArguments"
+$reinstalled = Get-DeploymentSnapshot
+if (-not $reinstalled.Application -or $reinstalled.PoolState -ne 'Started' -or
+    $reinstalled.Path -eq $before.Path -or (Get-FileHash -LiteralPath $statePath).Hash -ne $stateHash -or
+    (Get-FileHash -LiteralPath (Join-Path $before.Path 'Web.config')).Hash -ne $webHash) {
+    throw 'Reinstall did not preserve retained state while activating a fresh release.'
+}
+[xml]$reinstalledConfig = Get-Content -LiteralPath (Join-Path $reinstalled.Path 'Web.config') -Raw
+$restoredMode = $reinstalledConfig.SelectSingleNode('/configuration/appSettings/add[@key="AuthenticationMode"]')
+$restoredData = $reinstalledConfig.SelectSingleNode('/configuration/appSettings/add[@key="DataPath"]')
+if ($restoredMode.GetAttribute('value') -ne $settings.AuthenticationMode -or
+    $restoredData.GetAttribute('value') -ne $data) {
+    throw 'Reinstall changed the saved authentication mode or data path.'
+}
+Invoke-MsiCheck -Name 'reinstall-uninstall' -ExpectedExitCode 0 `
+    -Arguments "/x $($installed.Product) SKIPROLLBACKFAILURE=1"
+Write-Host 'PASS same-package reinstall, failed reinstall rollback, and retry preserve retained state and settings'
 Write-Host "Evidence: $OutputDirectory. The test-created deployment data remains at '$deploymentRoot' for inspection."

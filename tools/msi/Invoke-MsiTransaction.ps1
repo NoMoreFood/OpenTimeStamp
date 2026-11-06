@@ -209,8 +209,16 @@ try {
             if ($null -eq $site -and $Action -eq 'Install') { throw "The IIS site '$msiSite' does not exist." }
             $sitePresent = $null -ne $site
             $application = if ($site) { $site.Applications[$msiApplication] }
+            $settings = $null
+            if ($Action -eq 'Install' -and $application) {
+                $active = Get-OpenTimeStampCanonicalDirectoryPath `
+                    -Path $application.VirtualDirectories['/'].PhysicalPath
+                $settings = Get-ExistingWebSettings -ApplicationPhysicalPath $active
+            }
             $poolNames = @('OpenTimeStamp')
-            if ($application) { $poolNames += [string]$application.ApplicationPoolName }
+            if ($application -and ($Action -eq 'Uninstall' -or $null -ne $settings)) {
+                $poolNames += [string]$application.ApplicationPoolName
+            }
             $poolNames = @($poolNames | Sort-Object -Unique)
             foreach ($poolName in $poolNames) {
                 $others = @(Get-IisApplicationPoolAssignments -Name $poolName | Where-Object {
@@ -219,12 +227,9 @@ try {
                 if ($others.Count) { throw "Application pool '$poolName' is shared; MSI cannot transact it safely." }
             }
             $aclRoots = @()
-            if ($Action -eq 'Install' -and $application) {
-                $active = Get-OpenTimeStampCanonicalDirectoryPath `
-                    -Path $application.VirtualDirectories['/'].PhysicalPath
+            if ($Action -eq 'Install' -and $null -ne $settings) {
                 $parent = Split-Path -Parent $active
                 $root = if ((Split-Path -Leaf $parent) -eq 'Releases') { Split-Path -Parent $parent } else { $active }
-                $settings = Get-ExistingWebSettings -ApplicationPhysicalPath $active
                 $data = [Environment]::ExpandEnvironmentVariables([string]$settings['DataPath'])
                 if (-not $data) { $data = Join-Path $active 'App_Data' }
                 elseif (-not [IO.Path]::IsPathRooted($data)) { $data = Join-Path $active $data }
@@ -232,6 +237,13 @@ try {
             }
             elseif ($Action -eq 'Install' -and $defaultRootWasEmpty) {
                 $aclRoots = @(@{ Path = $defaultRoot; RootOnly = $true })
+            }
+            elseif ($Action -eq 'Install' -and $defaultRootExisted) {
+                $retained = Get-RetainedWebSettings -DeploymentRoot $defaultRoot
+                if ($null -ne $retained) {
+                    $aclRoots = @(@{ Path = $defaultRoot; RootOnly = $true },
+                        @{ Path = $retained['DataPath']; RootOnly = $false })
+                }
             }
             $poolStates = @(foreach ($name in $poolNames) {
                 [pscustomobject]@{ Name = $name; State = Get-PoolStateValue -Name $name }
@@ -266,6 +278,7 @@ try {
             LocalApplied = $null; AclsBefore = @(); AclsApplied = @(); Result = $null
             CreatedRoot = $null; CreatedRootContents = @(); RootExisted = $defaultRootExisted
             CreatedRelease = $null; CreatedReleaseContents = @()
+            EndpointsBefore = if ($configuration.PSObject.Properties['Endpoints']) { $configuration.Endpoints }
         }
         $transaction.Before = Get-MsiIisScope -ConfigurationPath (Join-Path $journalPath 'before.config')
         Write-MsiJournal
@@ -327,6 +340,9 @@ try {
     if ($Action -eq 'Commit') {
         if ($transaction.Operation -eq 'Install') {
             Start-PoolForDeployment -Name 'OpenTimeStamp'
+            $links = @(Get-OpenTimeStampEndpointLinks -Deployment $transaction.Result)
+            New-ItemProperty -LiteralPath "HKLM:\Software\OpenTimeStamp\Installer" -Name Endpoints `
+                -Value ([string[]]$links) -PropertyType MultiString -Force | Out-Null
             foreach ($state in $transaction.PoolStates | Where-Object { $_.Name -ne 'OpenTimeStamp' }) {
                 if ($state.State -eq 'Started') { Start-PoolForDeployment -Name $state.Name }
             }
@@ -451,6 +467,16 @@ try {
     foreach ($state in $transaction.PoolStates) {
         if ($state.State -eq 'Started') { Start-PoolForDeployment -Name $state.Name }
         elseif ($state.State -eq 'Stopped') { Stop-PoolForDeployment -Name $state.Name }
+    }
+    if ($transaction.Operation -eq 'Install') {
+        $configurationKey = 'HKLM:\Software\OpenTimeStamp\Installer'
+        if ($null -ne $transaction.EndpointsBefore) {
+            New-ItemProperty -LiteralPath $configurationKey -Name Endpoints `
+                -Value ([string[]]$transaction.EndpointsBefore) -PropertyType MultiString -Force | Out-Null
+        }
+        elseif (Get-ItemProperty -LiteralPath $configurationKey -Name Endpoints -ErrorAction SilentlyContinue) {
+            Remove-ItemProperty -LiteralPath $configurationKey -Name Endpoints
+        }
     }
     $transaction.Phase = 'RolledBack'
     Write-MsiJournal

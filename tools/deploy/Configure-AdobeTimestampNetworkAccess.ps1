@@ -28,7 +28,7 @@ $ErrorActionPreference = 'Stop'
 if (-not (Get-Command Get-ClientTimestampUrl -CommandType Function -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'ClientConfiguration.Common.ps1')
 }
-$url = [uri](Get-ClientTimestampUrl -Url $TimestampUrl -Protocol rfc3161 -AllowInsecureHttp:$AllowInsecureHttp)
+$url = [uri](Get-ClientTimestampUrl -Url $TimestampUrl -AllowInsecureHttp:$AllowInsecureHttp)
 $user = Get-ClientUserContext -UserSid $UserSid
 $productName = if ($Product -eq 'Reader') { 'Acrobat Reader' } else { 'Adobe Acrobat' }
 $root = if ($RegistryRoot) { $RegistryRoot } else { "$($user.RegistryRoot)\Software\Adobe\$productName\$Version" }

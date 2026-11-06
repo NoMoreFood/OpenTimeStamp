@@ -13,6 +13,8 @@ create a computer-wide default or sign files.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][uri]$ServerUrl,
+    [string]$Rfc3161Path = '/timestamp/rfc3161',
+    [string]$AuthenticodePath = '/timestamp/authenticode',
     [Parameter(Mandatory = $true)]
     [ValidateSet('SignTool', 'PowerShell', 'NuGet', 'DotNetNuGet', 'JarSigner', 'Mage', 'MSBuild')]
     [string]$Tool,
@@ -24,7 +26,8 @@ $ErrorActionPreference = 'Stop'
 if (-not (Get-Command Get-ClientTimestampUrl -CommandType Function -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'ClientConfiguration.Common.ps1')
 }
-$endpoints = Get-ClientServerEndpoints -ServerUrl $ServerUrl -AllowInsecureHttp:$AllowInsecureHttp
+$endpoints = Get-ClientServerEndpoints -ServerUrl $ServerUrl -Rfc3161Path $Rfc3161Path `
+    -AuthenticodePath $AuthenticodePath -AllowInsecureHttp:$AllowInsecureHttp
 switch ($Tool) {
     SignTool {
         if (([uri]$endpoints.Rfc3161Url).Scheme -eq 'https') {

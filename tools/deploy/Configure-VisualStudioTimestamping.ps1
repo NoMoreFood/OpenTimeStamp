@@ -13,6 +13,8 @@ assembly strong-name signing. Close or reload the selected file in the IDE.
 param(
     [Parameter(Mandatory = $true)][string]$ProjectPath,
     [Parameter(Mandatory = $true)][uri]$ServerUrl,
+    [string]$Rfc3161Path = '/timestamp/rfc3161',
+    [string]$AuthenticodePath = '/timestamp/authenticode',
     [switch]$AllowInsecureHttp
 )
 
@@ -22,7 +24,8 @@ if (-not (Get-Command Get-ClientTimestampUrl -CommandType Function -ErrorAction 
 {
     . (Join-Path $PSScriptRoot 'ClientConfiguration.Common.ps1')
 }
-$endpoints = Get-ClientServerEndpoints -ServerUrl $ServerUrl -AllowInsecureHttp:$AllowInsecureHttp
+$endpoints = Get-ClientServerEndpoints -ServerUrl $ServerUrl -Rfc3161Path $Rfc3161Path `
+    -AuthenticodePath $AuthenticodePath -AllowInsecureHttp:$AllowInsecureHttp
 $ProjectPath = (Get-Item -LiteralPath $ProjectPath -ErrorAction Stop).FullName
 if ([IO.Path]::GetExtension($ProjectPath) -notin '.csproj','.vbproj','.pubxml','.props')
 {

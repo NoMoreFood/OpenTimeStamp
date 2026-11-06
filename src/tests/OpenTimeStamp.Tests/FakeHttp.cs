@@ -80,6 +80,10 @@ internal sealed class FakeHttpRequest : HttpRequestBase
 
     public override string ApplicationPath => "/";
 
+    public override string AppRelativeCurrentExecutionFilePath => "~" + Url.AbsolutePath;
+
+    public override string PathInfo => string.Empty;
+
     public override string ContentType { get; set; }
 
     public override int ContentLength => body.Length;

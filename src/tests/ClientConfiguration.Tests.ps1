@@ -490,13 +490,26 @@ try {
             'Manual clients were reported as automatically configured.'
     }
 
+    Invoke-Test 'Client setup writes configured public routes' {
+        $server = 'https://tsa.example.test:8443/Tsa'
+        $paths = @{ Rfc3161Path = '/sign/rfc'; AuthenticodePath = '/sign/legacy' }
+        $endpoints = Get-ClientServerEndpoints -ServerUrl $server @paths
+        Assert-True ($endpoints.Rfc3161Url -ceq "$server/sign/rfc") 'RFC 3161 path was not applied.'
+        Assert-True ($endpoints.AuthenticodeUrl -ceq "$server/sign/legacy") 'Authenticode path was not applied.'
+        $settings = Join-Path $testRoot 'custom-routes.xcu'
+        & $libreOfficeScript -TimestampUrl $endpoints.Rfc3161Url -SettingsPath $settings | Out-Null
+        Assert-True ([IO.File]::ReadAllText($settings).Contains("$server/sign/rfc")) 'Client config lost the custom route.'
+        & (Join-Path $deployPath 'Configure-AcrobatTimestamping.ps1') -TimestampUrl $endpoints.Rfc3161Url `
+            -RegistryRoot $acrobatRoot -ServerName 'Custom route' | Out-Null
+        $manual = @(& (Join-Path $deployPath 'Configure-SigningClients.ps1') `
+            -ServerUrl $server @paths -Applications Foxit)
+        Assert-True ($manual[0].Rfc3161Url -ceq "$server/sign/rfc") 'Client orchestration lost the configured route.'
+        Assert-Throws { Get-ClientServerEndpoints -ServerUrl $server -Rfc3161Path 'https://other.test/sign' }
+    }
+
     Invoke-Test 'Shared timestamp endpoint works in direct client helpers' {
         $shared = 'https://tsa.example.test/OpenTimeStamp/timestamp'
-        foreach ($protocol in @('rfc3161', 'authenticode')) {
-            Assert-True ((Get-ClientTimestampUrl -Url $shared -Protocol $protocol) -ceq $shared) `
-                'The shared endpoint was rejected.'
-        }
-        Assert-Throws { Get-ClientServerEndpoints -ServerUrl $shared }
+        Assert-True ((Get-ClientTimestampUrl -Url $shared) -ceq $shared) 'The shared endpoint was rejected.'
         $namedTimestamp = Get-ClientServerEndpoints -ServerUrl 'https://tsa.example.test/timestamp'
         Assert-True ($namedTimestamp.Rfc3161Url -ceq 'https://tsa.example.test/timestamp/timestamp/rfc3161') `
             'An application named timestamp was mistaken for the shared endpoint.'
@@ -539,13 +552,13 @@ try {
     }
 
     Invoke-Test 'Cross-user profile variables do not expand using the operator account' {
-        $profile = [pscustomobject]@{}
-        $profile | Add-Member ScriptMethod GetValue { param($name) 'C:\Users\IntendedUser' }
+        $profileKey = [pscustomobject]@{}
+        $profileKey | Add-Member ScriptMethod GetValue { param($name) 'C:\Users\IntendedUser' }
         $shell = [pscustomobject]@{}
         $shell | Add-Member ScriptMethod GetValue { param($name, $default, $options) 'C:\Users\%USERNAME%\AppData\Roaming' }
         function Get-Item {
             param([string]$LiteralPath)
-            if ($LiteralPath -like '*ProfileList*') { return $profile }
+            if ($LiteralPath -like '*ProfileList*') { return $profileKey }
             if ($LiteralPath -like '*User Shell Folders') { return $shell }
             throw 'Unexpected registry path.'
         }

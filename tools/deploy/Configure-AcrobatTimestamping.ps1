@@ -97,12 +97,6 @@ function Get-CanonicalTimestampUrl {
     if ($Url.OriginalString.IndexOfAny([char[]]'*|') -ge 0) {
         throw 'TimestampUrl cannot contain a wildcard or the Trust Manager list delimiter.'
     }
-    $endpointPath = $Url.AbsolutePath.TrimEnd('/')
-    if (-not $endpointPath.EndsWith('/timestamp/rfc3161', [StringComparison]::OrdinalIgnoreCase) -and
-        -not $endpointPath.EndsWith('/timestamp', [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'TimestampUrl must identify the OpenTimeStamp /timestamp or /timestamp/rfc3161 endpoint.'
-    }
-
     $builder = New-Object UriBuilder $Url
     $builder.Scheme = $Url.Scheme.ToLowerInvariant()
     $builder.Host = $Url.DnsSafeHost.ToLowerInvariant()

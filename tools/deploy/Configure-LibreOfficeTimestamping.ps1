@@ -24,7 +24,7 @@ $ErrorActionPreference = 'Stop'
 if (-not (Get-Command Get-ClientTimestampUrl -CommandType Function -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'ClientConfiguration.Common.ps1')
 }
-$canonicalUrl = Get-ClientTimestampUrl -Url $TimestampUrl -Protocol rfc3161 -AllowInsecureHttp:$AllowInsecureHttp
+$canonicalUrl = Get-ClientTimestampUrl -Url $TimestampUrl -AllowInsecureHttp:$AllowInsecureHttp
 $userContext = Get-ClientUserContext -UserSid $UserSid
 if (-not $SettingsPath) {
     $SettingsPath = Join-Path (Get-ClientRoamingAppData -UserContext $userContext) `

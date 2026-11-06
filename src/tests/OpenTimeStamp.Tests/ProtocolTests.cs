@@ -52,6 +52,38 @@ public sealed class ProtocolTests
         AssertEx.Throws<ArgumentNullException>(() => repository.ValidateSelection(null, latest, out _));
     }
 
+    [TestMethod(DisplayName = "Manual certificate selection survives store and cache cleanup")]
+    public void ManualCertificateSelectionOwnsItsCertificate()
+    {
+        using var fixture = new TimestampCertificateFixture();
+        using var stored = X509CertificateLoader.LoadPkcs12(
+            fixture.Certificate.Export(X509ContentType.Pfx), null, X509KeyStorageFlags.UserKeySet);
+        using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
+        using var repository = new CertificateRepository();
+        store.Open(OpenFlags.ReadWrite);
+        store.Add(stored);
+        try
+        {
+            var configuration = TestFixtures.CreateConfiguration();
+            configuration.CertificateSelectionMode = ServiceConfiguration.ManualCertificateSelection;
+            configuration.CertificateStoreLocation = nameof(StoreLocation.CurrentUser);
+            configuration.CertificateThumbprint = stored.Thumbprint;
+            configuration.AllowUntrustedDevelopmentCertificate = true;
+
+            using var selected = repository.GetSelectedCertificate(configuration);
+            repository.InvalidateSelectionCache();
+
+            // The caller retains a usable certificate after the repository releases its owned handles.
+            AssertEx.Equal(stored.Thumbprint, selected.Thumbprint);
+            AssertEx.True(CertificateRepository.ValidateCertificate(
+                selected, "SHA256", DateTime.UtcNow, out var reason), reason);
+        }
+        finally
+        {
+            store.Remove(stored);
+        }
+    }
+
     [TestMethod(DisplayName = "Certificate refresh stale reuse is bounded by the validated horizon")]
     public void CertificateRefreshStaleReuse()
     {

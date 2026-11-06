@@ -3,6 +3,8 @@
     <OutputType>Package</OutputType>
     <InstallerPlatform>x64</InstallerPlatform>
     <Cultures>en-US</Cultures>
+    <!-- IIS website and application choices are temporary rows populated before each dialog opens. -->
+    <SuppressIces>ICE17</SuppressIces>
     <OutputName>OpenTimeStamp-$(ProductVersion)-x64</OutputName>
     <DefineConstants>
       PayloadPath=$(PayloadPath);DeployPath=$(DeployPath);SetupPath=$(SetupPath);ProductVersion=$(ProductVersion)

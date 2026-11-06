@@ -42,7 +42,7 @@ $values = @()
 
 if ($SigningType -in @('Documents', 'Both')) {
     if (-not $Rfc3161Url) { throw 'Rfc3161Url is required for Office document signatures.' }
-    $documentUrl = Get-ClientTimestampUrl -Url $Rfc3161Url -Protocol rfc3161 -AllowInsecureHttp:$AllowInsecureHttp
+    $documentUrl = Get-ClientTimestampUrl -Url $Rfc3161Url -AllowInsecureHttp:$AllowInsecureHttp
     foreach ($version in $OfficeVersion | Select-Object -Unique) {
         $path = Join-Path $effectiveRegistryRoot "Software\Microsoft\Office\$version\Common\Signatures"
         $minimumLevel = if ($AllowSigningWithoutTimestamp) { 1 } else { 2 }
@@ -66,7 +66,7 @@ if ($SigningType -in @('Documents', 'Both')) {
 }
 if ($SigningType -in @('Vba', 'Both')) {
     if (-not $AuthenticodeUrl) { throw 'AuthenticodeUrl is required for the VBA editor.' }
-    $vbaUrl = Get-ClientTimestampUrl -Url $AuthenticodeUrl -Protocol authenticode -AllowInsecureHttp:$AllowInsecureHttp
+    $vbaUrl = Get-ClientTimestampUrl -Url $AuthenticodeUrl -AllowInsecureHttp:$AllowInsecureHttp
     $path = Join-Path $effectiveRegistryRoot 'Software\Microsoft\VBA\Security'
     $values += @(
         [PSCustomObject]@{ Path = $path; Name = 'TimeStampURL'; Kind = 'String'; Value = $vbaUrl },

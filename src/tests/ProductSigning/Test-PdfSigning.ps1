@@ -144,7 +144,7 @@ try {
         "Acrobat returned PDF signature validation status '$validationStatus' instead of 3 or 4."
 
     Assert-PdfHasRfc3161Timestamp -Bytes ([IO.File]::ReadAllBytes($artifactPath)) `
-        -ExpectedTsaThumbprint $ExpectedTsaThumbprint
+        -ExpectedTsaThumbprint $ExpectedTsaThumbprint -ExpectedSignerThumbprint $CertificateThumbprint
 
     $result = New-ProductTestResult -Name $testName -Status Passed -Artifact $artifactPath `
         -Detail ('Acrobat validated the PDF signature, and its CMS signature-time-stamp token validated ' +

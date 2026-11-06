@@ -17,6 +17,8 @@ The script does not discover or modify other installed editions automatically.
 param(
     [Parameter(Mandatory = $true)][string]$SettingsPath,
     [Parameter(Mandatory = $true)][uri]$ServerUrl,
+    [string]$Rfc3161Path = '/timestamp/rfc3161',
+    [string]$AuthenticodePath = '/timestamp/authenticode',
     [switch]$AllowInsecureHttp
 )
 
@@ -25,7 +27,8 @@ $ErrorActionPreference = 'Stop'
 if (-not (Get-Command Get-ClientTimestampUrl -CommandType Function -ErrorAction SilentlyContinue)) {
     . (Join-Path $PSScriptRoot 'ClientConfiguration.Common.ps1')
 }
-$endpoints = Get-ClientServerEndpoints -ServerUrl $ServerUrl -AllowInsecureHttp:$AllowInsecureHttp
+$endpoints = Get-ClientServerEndpoints -ServerUrl $ServerUrl -Rfc3161Path $Rfc3161Path `
+    -AuthenticodePath $AuthenticodePath -AllowInsecureHttp:$AllowInsecureHttp
 $SettingsPath = [IO.Path]::GetFullPath($SettingsPath)
 if (-not [IO.File]::Exists($SettingsPath)) {
     throw 'SettingsPath must identify an existing InstallShield Settings.xml.'

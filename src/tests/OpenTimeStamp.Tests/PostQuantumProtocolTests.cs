@@ -20,7 +20,6 @@ public sealed class PostQuantumProtocolTests
     private const string MlDsa87Oid = "2.16.840.1.101.3.4.3.19";
     private const string Pkcs7SignedDataOid = "1.2.840.113549.1.7.2";
     private const string RsaEncryptionOid = "1.2.840.113549.1.1.1";
-    private const string Sha384Oid = "2.16.840.1.101.3.4.2.2";
     private const string Sha512Oid = "2.16.840.1.101.3.4.2.3";
     private const string TstInfoContentTypeOid = "1.2.840.113549.1.9.16.1.4";
 

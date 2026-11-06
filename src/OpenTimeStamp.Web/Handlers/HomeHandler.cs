@@ -2,6 +2,7 @@ using System;
 using System.Text;
 using System.Web;
 using OpenTimeStamp.Web.Infrastructure;
+using OpenTimeStamp.Web.Routing;
 
 namespace OpenTimeStamp.Web.Handlers;
 
@@ -86,19 +87,21 @@ internal sealed class HomeHandler : IHttpHandler
             HttpSupport.IsLocalAdminRequest(context.Request)));
     }
 
-    internal static string Render(string application, string authority, bool showAdministration)
+    internal static string Render(
+        string application, string authority, bool showAdministration, PublicRoutes? paths = null)
     {
         application = (application ?? string.Empty).TrimEnd('/');
         authority = (authority ?? string.Empty).TrimEnd('/');
+        paths ??= PublicRoutes.Current;
         var root = authority + application;
-        var timestampPath = application + "/timestamp";
-        var rfc3161Path = application + "/timestamp/rfc3161";
-        var authenticodePath = application + "/timestamp/authenticode";
-        var healthPath = application + "/health";
+        var timestampPath = application + paths.Timestamp;
+        var rfc3161Path = application + paths.Rfc3161;
+        var authenticodePath = application + paths.Authenticode;
+        var healthPath = application + paths.Health;
         var adminPath = application + "/admin";
-        var rfc3161Url = root + "/timestamp/rfc3161";
+        var rfc3161Url = root + paths.Rfc3161;
         var authenticodeUrl = root.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-            ? root + "/timestamp/authenticode"
+            ? root + paths.Authenticode
             : "http://<server>" + authenticodePath;
 
         StringBuilder builder = new(12288);

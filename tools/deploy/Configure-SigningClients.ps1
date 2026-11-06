@@ -44,6 +44,8 @@ The signing host architecture, independent of the IDE or output file architectur
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [Parameter(Mandatory = $true)][uri]$ServerUrl,
+    [string]$Rfc3161Path = '/timestamp/rfc3161',
+    [string]$AuthenticodePath = '/timestamp/authenticode',
     [ValidateSet('Detected', 'Office', 'Vba', 'Acrobat', 'AcrobatReader', 'LibreOffice', 'PdfXChange',
         'Foxit', 'Nitro', 'Bluebeam', 'InstallShield', 'VisualStudio', 'VisualStudioCode')]
     [string[]]$Applications = @('Detected'),
@@ -77,12 +79,13 @@ if ($Applications -contains 'InstallShield' -and -not $InstallShieldSettingsPath
     throw 'InstallShield requires InstallShieldSettingsPath for the intended edition and language.'
 }
 . (Join-Path $PSScriptRoot 'ClientConfiguration.Common.ps1')
-Get-ClientServerEndpoints -ServerUrl $ServerUrl -AllowInsecureHttp:$AllowInsecureHttp | Out-Null
+Get-ClientServerEndpoints -ServerUrl $ServerUrl -Rfc3161Path $Rfc3161Path `
+    -AuthenticodePath $AuthenticodePath -AllowInsecureHttp:$AllowInsecureHttp | Out-Null
 if (-not $VSCodeSigningScriptPath -and -not $ComputerName) {
     $VSCodeSigningScriptPath = Join-Path $PSScriptRoot 'Invoke-TimestampSigning.ps1'
 }
 $options = @{}
-foreach ($name in @('ServerUrl', 'Applications', 'UserSid', 'OfficeVersion', 'AcrobatVersion',
+foreach ($name in @('ServerUrl', 'Rfc3161Path', 'AuthenticodePath', 'Applications', 'UserSid', 'OfficeVersion', 'AcrobatVersion',
         'LibreOfficeSettingsPath', 'PdfXChangePresetPath', 'InstallShieldSettingsPath', 'ServerName',
         'VisualStudioProjectPath', 'VSCodeWorkspacePath', 'VSCodeSigningScriptPath', 'VSCodeSigningTool',
         'VSCodePowerShellArchitecture', 'VSCodeSignToolPath')) {
@@ -109,6 +112,7 @@ $configure = {
     $ErrorActionPreference = 'Stop'
     . ([scriptblock]::Create($Sources['ClientConfiguration.Common.ps1']))
     $endpoints = Get-ClientServerEndpoints -ServerUrl ([uri]$Options.ServerUrl) `
+        -Rfc3161Path $Options.Rfc3161Path -AuthenticodePath $Options.AuthenticodePath `
         -AllowInsecureHttp:$Options.AllowInsecureHttp
     $user = Get-ClientUserContext -UserSid $Options.UserSid
     $executables = [ordered]@{
@@ -182,6 +186,8 @@ $configure = {
                 $scriptName = 'Configure-InstallShieldTimestamping.ps1'
                 $parameters.Remove('UserSid')
                 $parameters.ServerUrl = $Options.ServerUrl
+                $parameters.Rfc3161Path = $Options.Rfc3161Path
+                $parameters.AuthenticodePath = $Options.AuthenticodePath
                 $parameters.SettingsPath = $Options.InstallShieldSettingsPath
             }
             VisualStudio {
@@ -194,6 +200,8 @@ $configure = {
                 $parameters.Remove('UserSid')
                 $parameters.ProjectPath = $Options.VisualStudioProjectPath
                 $parameters.ServerUrl = $Options.ServerUrl
+                $parameters.Rfc3161Path = $Options.Rfc3161Path
+                $parameters.AuthenticodePath = $Options.AuthenticodePath
             }
             VisualStudioCode {
                 if (-not $Options.VSCodeWorkspacePath -or -not $Options.VSCodeSigningScriptPath) {
@@ -205,6 +213,8 @@ $configure = {
                 $parameters.Remove('UserSid')
                 $parameters.WorkspacePath = $Options.VSCodeWorkspacePath
                 $parameters.ServerUrl = $Options.ServerUrl
+                $parameters.Rfc3161Path = $Options.Rfc3161Path
+                $parameters.AuthenticodePath = $Options.AuthenticodePath
                 $parameters.SigningScriptPath = $Options.VSCodeSigningScriptPath
                 $parameters.SigningTool = $Options.VSCodeSigningTool
                 $parameters.PowerShellArchitecture = $Options.VSCodePowerShellArchitecture

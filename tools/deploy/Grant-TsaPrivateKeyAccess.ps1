@@ -59,6 +59,7 @@ namespace OpenTimeStamp
 {
     public static class TsaKeyNativeMethods
     {
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("crypt32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool CryptAcquireCertificatePrivateKey(
@@ -69,6 +70,7 @@ namespace OpenTimeStamp
             out uint keySpec,
             [MarshalAs(UnmanagedType.Bool)] out bool callerFree);
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("ncrypt.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
         public static extern int NCryptGetProperty(
             IntPtr handle,
@@ -78,6 +80,7 @@ namespace OpenTimeStamp
             out int resultLength,
             int flags);
 
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [DllImport("ncrypt.dll", ExactSpelling = true)]
         public static extern int NCryptFreeObject(IntPtr handle);
     }

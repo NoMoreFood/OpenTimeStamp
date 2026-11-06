@@ -354,7 +354,7 @@ public sealed class CertificateRepository : IDisposable
                     "The selected certificate was not found in the configured Personal certificate store.");
             }
 
-            var certificate = new X509Certificate2(matches[0]);
+            var certificate = matches[0];
             if (!IsEligible(
                     certificate,
                     false,
@@ -363,7 +363,6 @@ public sealed class CertificateRepository : IDisposable
                     signingTimeUtc,
                     out var reason))
             {
-                certificate.Dispose();
                 throw new CertificateSelectionException("The selected certificate cannot be used: " + reason);
             }
 
@@ -381,12 +380,11 @@ public sealed class CertificateRepository : IDisposable
                      configuration.AllowUntrustedDevelopmentCertificate,
                      out reason)))
             {
-                certificate.Dispose();
                 throw new CertificateSelectionException(
                     "The selected certificate cannot be used for the next health-check interval: " + reason);
             }
 
-            return certificate;
+            return new X509Certificate2(certificate);
         }
         finally
         {

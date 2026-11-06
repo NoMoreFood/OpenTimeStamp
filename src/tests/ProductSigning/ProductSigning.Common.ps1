@@ -567,7 +567,8 @@ function Assert-CmsHasRfc3161Timestamp {
     param(
         [Parameter(Mandatory)][byte[]]$Bytes,
         [Parameter(Mandatory)][byte[]]$DetachedContent,
-        [string]$ExpectedTsaThumbprint
+        [string]$ExpectedTsaThumbprint,
+        [string]$ExpectedSignerThumbprint
     )
 
     Add-Type -AssemblyName System.Security.Cryptography.Pkcs
@@ -576,6 +577,10 @@ function Assert-CmsHasRfc3161Timestamp {
     $cms.Decode((Get-DerObjectBytes -Bytes $Bytes))
     $cms.CheckSignature($true)
     foreach ($signer in $cms.SignerInfos) {
+        if ($ExpectedSignerThumbprint) {
+            Assert-Condition ($signer.Certificate -and $signer.Certificate.Thumbprint -eq $ExpectedSignerThumbprint) `
+                "The document signature did not use certificate '$ExpectedSignerThumbprint'."
+        }
         foreach ($attribute in $signer.UnsignedAttributes) {
             if ($attribute.Oid.Value -ne '1.2.840.113549.1.9.16.2.14') { continue }
             foreach ($value in $attribute.Values) {
@@ -590,7 +595,11 @@ function Assert-CmsHasRfc3161Timestamp {
 }
 
 function Assert-PdfHasRfc3161Timestamp {
-    param([Parameter(Mandatory)][byte[]]$Bytes, [string]$ExpectedTsaThumbprint)
+    param(
+        [Parameter(Mandatory)][byte[]]$Bytes,
+        [string]$ExpectedTsaThumbprint,
+        [string]$ExpectedSignerThumbprint
+    )
 
     $text = [Text.Encoding]::ASCII.GetString($Bytes)
     $rangeMatch = [regex]::Match($text,
@@ -611,7 +620,8 @@ function Assert-PdfHasRfc3161Timestamp {
     [Buffer]::BlockCopy($Bytes, 0, $signedContent, 0, [int]$ranges[1])
     [Buffer]::BlockCopy($Bytes, [int]$ranges[2], $signedContent, [int]$ranges[1], [int]$ranges[3])
     Assert-CmsHasRfc3161Timestamp -Bytes (Convert-HexToBytes -Hex $contents.Groups[1].Value) `
-        -DetachedContent $signedContent -ExpectedTsaThumbprint $ExpectedTsaThumbprint
+        -DetachedContent $signedContent -ExpectedTsaThumbprint $ExpectedTsaThumbprint `
+        -ExpectedSignerThumbprint $ExpectedSignerThumbprint
 }
 
 function Convert-HexToBytes {

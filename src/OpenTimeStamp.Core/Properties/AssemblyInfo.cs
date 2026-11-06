@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyCompany("OpenTimeStamp")]
 [assembly: AssemblyProduct("OpenTimeStamp")]
 [assembly: InternalsVisibleTo("OpenTimeStamp.Tests")]
+[assembly: DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
 [assembly: ComVisible(false)]
 [assembly: Guid("ef48ad23-b580-4868-aa13-32b8206de460")]
 [assembly: AssemblyVersion("1.0.1.0")]

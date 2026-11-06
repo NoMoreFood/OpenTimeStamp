@@ -14,6 +14,8 @@ redirects. Certificate stores and application security settings are not changed.
 param(
     [Parameter(Mandatory = $true)][string]$LiteralPath,
     [Parameter(Mandatory = $true)][uri]$ServerUrl,
+    [string]$Rfc3161Path = '/timestamp/rfc3161',
+    [string]$AuthenticodePath = '/timestamp/authenticode',
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9A-Fa-f]{40}$')][string]$CertificateThumbprint,
     [ValidateSet('CurrentUser', 'LocalMachine')][string]$CertificateStoreLocation = 'CurrentUser',
     [ValidateSet('SignTool', 'PowerShell')][string]$Tool = 'SignTool',
@@ -25,7 +27,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'ClientConfiguration.Common.ps1')
-$endpoints = Get-ClientServerEndpoints -ServerUrl $ServerUrl -AllowInsecureHttp:$AllowInsecureHttp
+$endpoints = Get-ClientServerEndpoints -ServerUrl $ServerUrl -Rfc3161Path $Rfc3161Path `
+    -AuthenticodePath $AuthenticodePath -AllowInsecureHttp:$AllowInsecureHttp
 $timestampUrl = if ($Tool -eq 'PowerShell') { $endpoints.AuthenticodeUrl } else { $endpoints.Rfc3161Url }
 $file = Get-Item -LiteralPath $LiteralPath -ErrorAction Stop
 if ($file.PSIsContainer -or $file.Attributes -band [IO.FileAttributes]::ReadOnly) {

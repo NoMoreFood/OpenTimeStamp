@@ -23,6 +23,11 @@ param(
 
     [string[]]$AdminHostNames,
 
+    [string]$TimestampPath,
+    [string]$Rfc3161Path,
+    [string]$AuthenticodePath,
+    [string]$HealthPath,
+
     [ValidateNotNullOrEmpty()]
     [string]$SiteName = 'Default Web Site',
 
@@ -802,6 +807,13 @@ function ConvertTo-NormalizedHostName {
 function Get-ExistingWebSettings {
     param([string]$ApplicationPhysicalPath)
 
+    # Only an OpenTimeStamp deployment can supply settings or issuance state for an upgrade.
+    if (-not (Test-Path -LiteralPath (Join-Path $ApplicationPhysicalPath $script:OpenTimeStampDeploymentManifestName)) -and
+        -not (Test-Path -LiteralPath (Join-Path $ApplicationPhysicalPath 'bin\OpenTimeStamp.Web.dll')) -and
+        -not (Test-Path -LiteralPath (Join-Path $ApplicationPhysicalPath 'bin\OpenTimeStamp.Core.dll'))) {
+        return $null
+    }
+
     $webConfigPath = Join-Path $ApplicationPhysicalPath 'web.config'
     if (-not (Test-Path -LiteralPath $webConfigPath -PathType Leaf)) {
         throw "The existing IIS application does not contain web.config at '$webConfigPath'. Pass explicit deployment settings only after repairing the application path."
@@ -813,6 +825,7 @@ function Get-ExistingWebSettings {
             'AuthenticationMode',
             'DataPath',
             'AdminHostNames',
+            'TimestampPath', 'Rfc3161Path', 'AuthenticodePath', 'HealthPath',
             'TimestampBodyReadTimeoutSeconds',
             'TimestampBodyIntakeLimit',
             'TimestampBodyIntakePerClientLimit',
@@ -828,6 +841,58 @@ function Get-ExistingWebSettings {
     }
 
     return $result
+}
+
+function Get-RetainedWebSettings {
+    param([string]$DeploymentRoot)
+
+    if (-not (Test-OpenTimeStampDeploymentRootMarker -Path $DeploymentRoot)) { return $null }
+    Assert-OpenTimeStampNoReparsePoints -Root $DeploymentRoot
+    $releasesPath = Join-Path $DeploymentRoot 'Releases'
+    $releases = @(Get-ChildItem -LiteralPath $releasesPath -Directory -Force)
+    if ($releases.Count -eq 0) {
+        throw 'The retained deployment has no release from which to recover settings. Restore its IIS application first.'
+    }
+
+    # Without an IIS pointer, every retained release must agree; a newer folder is not proof of activation.
+    $retained = $null
+    foreach ($release in $releases) {
+        $manifest = Assert-OpenTimeStampPublishedPayload -PayloadPath $release.FullName
+        if ([string]$manifest.ReleaseId -cne $release.Name) {
+            throw "The retained release '$($release.FullName)' does not match its manifest."
+        }
+        $settings = Get-ExistingWebSettings -ApplicationPhysicalPath $release.FullName
+        Assert-OpenTimeStampIntakeSettings -Settings $settings
+        if ($settings['AuthenticationMode'] -notin @('Anonymous', 'Windows') -or
+            [string]::IsNullOrWhiteSpace($settings['DataPath'])) {
+            throw 'The retained deployment has incomplete authentication or data settings. Restore its IIS application first.'
+        }
+        $dataPath = [Environment]::ExpandEnvironmentVariables($settings['DataPath'])
+        if (-not [IO.Path]::IsPathRooted($dataPath)) { $dataPath = Join-Path $release.FullName $dataPath }
+        $settings['DataPath'] = Get-OpenTimeStampCanonicalDirectoryPath -Path $dataPath
+        if ($null -ne $retained) {
+            foreach ($key in $settings.Keys) {
+                if ($settings[$key] -cne $retained[$key]) {
+                    throw 'Retained releases have conflicting settings. Restore the intended IIS application before retrying setup.'
+                }
+            }
+        }
+        $retained = $settings
+    }
+    return $retained
+}
+
+function Set-IisApplicationSelection {
+    param([string]$SiteName, [string]$ApplicationPath, [string]$PhysicalPath, [string]$ApplicationPool)
+
+    $manager = New-Object Microsoft.Web.Administration.ServerManager
+    try {
+        $application = $manager.Sites[$SiteName].Applications[$ApplicationPath]
+        $application.VirtualDirectories['/'].PhysicalPath = $PhysicalPath
+        $application.ApplicationPoolName = $ApplicationPool
+        $manager.CommitChanges()
+    }
+    finally { $manager.Dispose() }
 }
 
 function Test-IssuanceStateUsesCurrentFormat {
@@ -1449,6 +1514,8 @@ if ($applicationExists) {
         throw 'The existing IIS application does not reference an existing application pool.'
     }
     $existingWebSettings = Get-ExistingWebSettings -ApplicationPhysicalPath $existingApplicationPhysicalPath
+}
+if ($null -ne $existingWebSettings) {
     Assert-OpenTimeStampIntakeSettings -Settings $existingWebSettings
     $existingIisAuthentication = Get-IisAuthenticationMode -ConfigurationPath $configurationPath -Location $appLocation
 
@@ -1460,6 +1527,9 @@ if ($applicationExists) {
         throw "The existing application uses shared pool '$existingApplicationPool', which cannot be safely quiesced for state migration: $($unexpectedCurrentPoolAssignments -join ', '). Move OpenTimeStamp to a dedicated pool first."
     }
 }
+$deploymentPools = @($AppPoolName)
+if ($null -ne $existingWebSettings) { $deploymentPools += $existingApplicationPool }
+$deploymentPools = @($deploymentPools | Sort-Object -Unique)
 $manager = New-Object Microsoft.Web.Administration.ServerManager
 try {
     $existingSslFlags = [uint32]$manager.GetApplicationHostConfiguration().GetSection(
@@ -1467,7 +1537,11 @@ try {
 }
 finally { $manager.Dispose() }
 
-if ($applicationExists -and -not $PSBoundParameters.ContainsKey('PhysicalPath')) {
+$requestedRoutes = @{}
+foreach ($key in @("TimestampPath", "Rfc3161Path", "AuthenticodePath", "HealthPath")) {
+    if ($PSBoundParameters.ContainsKey($key)) { $requestedRoutes[$key] = $PSBoundParameters[$key] }
+}
+if ($null -ne $existingWebSettings -and -not $PSBoundParameters.ContainsKey('PhysicalPath')) {
     $parent = Split-Path -Parent $existingApplicationPhysicalPath
     if ((Split-Path -Leaf $parent) -eq 'Releases') {
         $PhysicalPath = Split-Path -Parent $parent
@@ -1506,7 +1580,7 @@ if (Test-Path -LiteralPath $PhysicalPath -PathType Container) {
     Assert-OpenTimeStampNoReparsePoints -Root $PhysicalPath
 }
 
-if ($applicationExists -and -not $PSBoundParameters.ContainsKey('AuthenticationMode')) {
+if ($null -ne $existingWebSettings -and -not $PSBoundParameters.ContainsKey('AuthenticationMode')) {
     $configuredMode = if ($null -eq $existingWebSettings['AuthenticationMode']) { '' } else { $existingWebSettings['AuthenticationMode'].Trim() }
     if ($configuredMode -notin @('Anonymous', 'Windows') -or
         $null -eq $existingIisAuthentication -or
@@ -1517,12 +1591,18 @@ if ($applicationExists -and -not $PSBoundParameters.ContainsKey('AuthenticationM
     $AuthenticationMode = $existingIisAuthentication
 }
 
-if (-not $applicationExists -and -not $PSBoundParameters.ContainsKey('AuthenticationMode') -and
+if ($null -eq $existingWebSettings -and -not $PSBoundParameters.ContainsKey('AuthenticationMode') -and
     (Test-Path -LiteralPath $PhysicalPath -PathType Container) -and
     @(Get-ChildItem -LiteralPath $PhysicalPath -Force).Count -ne 0) {
-    throw 'AuthenticationMode must be explicit when adopting a deployment root that has no authoritative IIS application.'
+    $existingWebSettings = Get-RetainedWebSettings -DeploymentRoot $PhysicalPath
+    if ($null -eq $existingWebSettings) {
+        throw 'AuthenticationMode must be explicit when adopting a deployment root that has no authoritative IIS application.'
+    }
+    $AuthenticationMode = $existingWebSettings['AuthenticationMode']
+    Write-Host "Recovered retained deployment settings from '$PhysicalPath'."
 }
 
+$routePaths = Resolve-OpenTimeStampRoutePaths -Requested $requestedRoutes -Existing $existingWebSettings
 $bindingProtocolPolicy = Get-OpenTimeStampBindingProtocolPolicy -Endpoints $siteBindingEndpoints `
     -ExistingSslFlags $existingSslFlags -AuthenticationMode $AuthenticationMode
 $effectiveRequireHttps = $bindingProtocolPolicy.RequireHttps
@@ -1530,7 +1610,7 @@ $requestedSslFlags = $bindingProtocolPolicy.SslFlags
 $uploadReadAheadSize = $bindingProtocolPolicy.UploadReadAheadSize
 
 $existingRuntimeDataPath = $null
-if ($applicationExists) {
+if ($null -ne $existingWebSettings) {
     $savedDataPath = if ($null -eq $existingWebSettings['DataPath']) { '' } else { $existingWebSettings['DataPath'].Trim() }
     if ([string]::IsNullOrWhiteSpace($savedDataPath)) {
         $existingRuntimeDataPath = Join-Path $existingApplicationPhysicalPath 'App_Data'
@@ -1556,7 +1636,7 @@ if ($PSBoundParameters.ContainsKey('DataPath')) {
         Get-OpenTimeStampCanonicalDirectoryPath -Path $expanded
     }
 }
-elseif ($applicationExists) {
+elseif ($null -ne $existingWebSettings) {
     $runtimeDataPath = $existingRuntimeDataPath
 }
 else {
@@ -1564,7 +1644,7 @@ else {
 }
 
 $runtimeDataPath = Assert-LocalDedicatedPath -Path $runtimeDataPath -Label 'DataPath' -ProtectedRoots $protectedRoots
-if ($MsiTransaction -and $applicationExists -and
+if ($MsiTransaction -and $null -ne $existingWebSettings -and
     -not (Test-IssuanceStateUsesCurrentFormat -EffectiveDataPath $runtimeDataPath)) {
     throw 'MSI upgrades require current issuance state. Use the PowerShell deployment workflow to migrate or recover this deployment first.'
 }
@@ -1603,14 +1683,10 @@ $networkIdentity = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlob
 if (-not [string]::IsNullOrWhiteSpace($networkIdentity.DomainName)) {
     $hostCandidates.Add($networkIdentity.HostName + '.' + $networkIdentity.DomainName.Trim('.'))
 }
-foreach ($binding in $siteBindings) {
-    $bindingParts = @(([string]$binding.bindingInformation).Split(':'))
-    $bindingHost = if ($bindingParts.Count -ge 3) { $bindingParts[$bindingParts.Count - 1].Trim() } else { '' }
-    if (-not [string]::IsNullOrWhiteSpace($bindingHost) -and $bindingHost.IndexOf('*') -lt 0 -and $bindingHost -ne '+') {
-        $hostCandidates.Add($bindingHost)
-    }
+foreach ($endpoint in $siteBindingEndpoints) {
+    $hostCandidates.Add($endpoint.Host)
 }
-if (-not $PSBoundParameters.ContainsKey('AdminHostNames') -and $applicationExists -and
+if (-not $PSBoundParameters.ContainsKey('AdminHostNames') -and $null -ne $existingWebSettings -and
     -not [string]::IsNullOrWhiteSpace($existingWebSettings['AdminHostNames'])) {
     $AdminHostNames = @($existingWebSettings['AdminHostNames'] -split '[,;]')
 }
@@ -1626,8 +1702,7 @@ foreach ($candidate in $hostCandidates) {
     if ($seenAdminHostNames.Add($normalized)) { $effectiveAdminHostNames.Add($normalized) }
 }
 
-# A signing-key identity and the application's current pool must both be
-# dedicated. Quiescing a shared current pool would create collateral downtime.
+# Pools used for issuance must be dedicated. An unrelated application's old pool remains untouched.
 $expectedPoolAssignment = "$SiteName$ApplicationPath"
 $poolAssignments = @(Get-IisApplicationPoolAssignments -Name $AppPoolName)
 $unexpectedPoolAssignments = @($poolAssignments | Where-Object { $_ -ne $expectedPoolAssignment } | Sort-Object -Unique)
@@ -1648,9 +1723,13 @@ $targetPoolCreatedInitialState = $null
 $deploymentParent = Split-Path -Parent $PhysicalPath
 $stagePath = Join-Path $deploymentParent ('.' + (Split-Path -Leaf $PhysicalPath) + '.stage-' +
     [string]$manifest.ReleaseId + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
-$releasePath = Join-Path $releasesPath ([string]$manifest.ReleaseId)
+$releaseId = [string]$manifest.ReleaseId
+$releasePath = Join-Path $releasesPath $releaseId
 if (Test-Path -LiteralPath $releasePath) {
-    throw "Release '$($manifest.ReleaseId)' is already present under '$releasesPath'."
+    # Reinstall into a fresh immutable release so rollback never changes retained files.
+    $releaseId = (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss\Z') + '-' +
+        [Guid]::NewGuid().ToString('N').Substring(0, 12)
+    $releasePath = Join-Path $releasesPath $releaseId
 }
 
 if ($WhatIfPreference) {
@@ -1702,9 +1781,9 @@ try {
     $stageOwnedByInstaller = $true
     Set-OpenTimeStampStagedWebSettings -ReleasePath $stagePath -Mode $AuthenticationMode `
         -EffectiveDataPath $runtimeDataPath -EffectiveAdminHosts $effectiveAdminHostNames `
-        -ExistingSettings $existingWebSettings -RequireHttps $effectiveRequireHttps `
+        -ExistingSettings $existingWebSettings -RoutePaths $routePaths -RequireHttps $effectiveRequireHttps `
         -ApplicationPath $ApplicationPath
-    New-OpenTimeStampDeploymentManifest -PayloadPath $stagePath -ReleaseId ([string]$manifest.ReleaseId) | Out-Null
+    New-OpenTimeStampDeploymentManifest -PayloadPath $stagePath -ReleaseId $releaseId | Out-Null
     Assert-OpenTimeStampPublishedPayload -PayloadPath $stagePath | Out-Null
     Set-OpenTimeStampRestrictedDirectoryAcl -Path $stagePath -ApplicationPoolSid $poolSid `
         -PoolRights ([System.Security.AccessControl.FileSystemRights]::ReadAndExecute) -Recursive
@@ -1712,7 +1791,7 @@ try {
     # Complete all remaining failure-prone observations before a key ACL can be
     # changed. From the grant onward, execution enters the rollback-covered try.
     $initialPoolStates = @{}
-    foreach ($pool in @($existingApplicationPool, $AppPoolName) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique) {
+    foreach ($pool in $deploymentPools) {
         $initialPoolStates[$pool] = Get-PoolStateValue -Name $pool
     }
     $installerExpectedPoolStates = @{}
@@ -1818,8 +1897,7 @@ try {
     # changing ACLs; the deployment mutex cannot serialize external IIS admins.
     Assert-OpenTimeStampExclusiveIisStorage -TargetApplication $targetApplicationIdentity `
         -DeploymentRoot $PhysicalPath -DataPath $runtimeDataPath
-    foreach ($poolName in @($existingApplicationPool, $AppPoolName) |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique) {
+    foreach ($poolName in $deploymentPools) {
         $lastMinutePoolAssignments = @(Get-IisApplicationPoolAssignments -Name $poolName)
         $lastMinuteUnexpectedPoolAssignments = @($lastMinutePoolAssignments |
             Where-Object { $_ -ne $targetApplicationIdentity })
@@ -1961,11 +2039,10 @@ try {
         -PoolRights ([System.Security.AccessControl.FileSystemRights]::ReadAndExecute) -Recursive
 
     if ($applicationExists) {
-        # Set the rollback flag before the first property write: changing the
-        # physical path can succeed even if the following pool assignment fails.
+        # Switch both values atomically so the old pool never serves the new release.
         $applicationPointerChanged = $true
-        Set-ItemProperty -LiteralPath $iisApplicationPath -Name physicalPath -Value $releasePath
-        Set-ItemProperty -LiteralPath $iisApplicationPath -Name applicationPool -Value $AppPoolName
+        Set-IisApplicationSelection -SiteName $SiteName -ApplicationPath $ApplicationPath `
+            -PhysicalPath $releasePath -ApplicationPool $AppPoolName
     }
     else {
         New-WebApplication -Site $SiteName -Name $applicationName -PhysicalPath $releasePath -ApplicationPool $AppPoolName | Out-Null
@@ -2077,8 +2154,7 @@ try {
     if ($commitSiteState -ne $installerExpectedSiteState) {
         throw "IIS site '$SiteName' changed to '$commitSiteState' before issuance commit."
     }
-    foreach ($poolName in @($existingApplicationPool, $AppPoolName) |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique) {
+    foreach ($poolName in $deploymentPools) {
         $commitPoolAssignments = @(Get-IisApplicationPoolAssignments -Name $poolName)
         $unexpectedCommitPoolAssignments = @($commitPoolAssignments |
             Where-Object { $_ -ne $targetApplicationIdentity })
@@ -2130,8 +2206,7 @@ try {
             -First $activationPoolSettings -Second $targetPoolAppliedSettings)) {
         throw "Application pool '$AppPoolName' settings changed before application lifecycle activation."
     }
-    foreach ($poolName in @($existingApplicationPool, $AppPoolName) |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique) {
+    foreach ($poolName in $deploymentPools) {
         $activationPoolAssignments = @(Get-IisApplicationPoolAssignments -Name $poolName)
         $unexpectedActivationPoolAssignments = @($activationPoolAssignments |
             Where-Object { $_ -ne $targetApplicationIdentity })
@@ -2209,7 +2284,7 @@ try {
     if ((Get-SiteStateValue -Name $SiteName) -ne $installerExpectedSiteState) {
         throw "IIS site '$SiteName' changed before the committed application could be started."
     }
-    if ($applicationExists -and $existingApplicationPool -ne $AppPoolName) {
+    if ($deploymentPools -contains $existingApplicationPool -and $existingApplicationPool -ne $AppPoolName) {
         $installerExpectedPoolStates[$existingApplicationPool] = Restore-PoolStateOptimistic `
             -Name $existingApplicationPool -InitialState $initialPoolStates[$existingApplicationPool] `
             -ExpectedCurrentState $installerExpectedPoolStates[$existingApplicationPool]
@@ -2295,11 +2370,9 @@ catch {
                     (-not $poolIsOriginal -and -not $poolIsApplied)) {
                     throw 'The IIS application selection changed externally after installer mutation; preserving the external values.'
                 }
-                if ($physicalIsApplied -and -not $physicalIsOriginal) {
-                    Set-ItemProperty -LiteralPath $iisApplicationPath -Name physicalPath -Value $existingApplicationPhysicalPath
-                }
-                if ($poolIsApplied -and -not $poolIsOriginal) {
-                    Set-ItemProperty -LiteralPath $iisApplicationPath -Name applicationPool -Value $existingApplicationPool
+                if (-not $physicalIsOriginal -or -not $poolIsOriginal) {
+                    Set-IisApplicationSelection -SiteName $SiteName -ApplicationPath $ApplicationPath `
+                        -PhysicalPath $existingApplicationPhysicalPath -ApplicationPool $existingApplicationPool
                 }
                 $oldApplicationSelectionRestored = Test-IisApplicationMatchesSelection -Path $iisApplicationPath `
                     -PhysicalPath $existingApplicationPhysicalPath -ApplicationPool $existingApplicationPool
@@ -2635,7 +2708,7 @@ $resultEndpoint = $committedSiteBindingEndpoints | Sort-Object Scheme -Descendin
     ApplicationPool = $AppPoolName
     DeploymentRoot = $PhysicalPath
     ActiveReleasePath = $releasePath
-    ReleaseId = [string]$manifest.ReleaseId
+    ReleaseId = $releaseId
     ManifestSignerThumbprint = if ($null -eq $manifestSignature) { $null } else { $manifestSignature.SignerThumbprint }
     RemovedReleaseCount = $removedReleases.Count
     DataPath = $runtimeDataPath
@@ -2644,10 +2717,11 @@ $resultEndpoint = $committedSiteBindingEndpoints | Sort-Object Scheme -Descendin
     AuthenticationMode = $AuthenticationMode
     IdleTimeoutMinutes = 20
     AdminHostNames = $effectiveAdminHostNames -join ','
-    Rfc3161Path = "$ApplicationPath/timestamp/rfc3161"
-    AuthenticodePath = "$ApplicationPath/timestamp/authenticode"
+    TimestampPath = $ApplicationPath + $routePaths.TimestampPath
+    Rfc3161Path = $ApplicationPath + $routePaths.Rfc3161Path
+    AuthenticodePath = $ApplicationPath + $routePaths.AuthenticodePath
     AdminPath = "$ApplicationPath/admin"
-    HealthPath = "$ApplicationPath/health"
+    HealthPath = $ApplicationPath + $routePaths.HealthPath
     Scheme = $resultEndpoint.Scheme
     Schemes = $bindingProtocolPolicy.Schemes
     RequireHttps = $effectiveRequireHttps

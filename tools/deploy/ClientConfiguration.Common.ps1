@@ -5,7 +5,6 @@ Set-StrictMode -Version Latest
 function Get-ClientTimestampUrl {
     param(
         [Parameter(Mandatory = $true)][uri]$Url,
-        [ValidateSet('rfc3161', 'authenticode', 'Application')][string]$Protocol = 'Application',
         [switch]$AllowInsecureHttp
     )
 
@@ -19,13 +18,6 @@ function Get-ClientTimestampUrl {
     if ($Url.UserInfo -or $Url.Query -or $Url.Fragment -or $Url.OriginalString.IndexOfAny([char[]]'*|') -ge 0) {
         throw 'The timestamp URL cannot contain credentials, a query, a fragment, a wildcard, or a list delimiter.'
     }
-    $endpointPath = $Url.AbsolutePath.TrimEnd('/')
-    if ($Protocol -ne 'Application' -and
-        -not $endpointPath.EndsWith("/timestamp/$Protocol", [StringComparison]::OrdinalIgnoreCase) -and
-        -not $endpointPath.EndsWith('/timestamp', [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Use the OpenTimeStamp /timestamp or /timestamp/$Protocol endpoint."
-    }
-
     $builder = New-Object UriBuilder $Url
     $builder.Host = $Url.DnsSafeHost.ToLowerInvariant()
     if ($Url.IsDefaultPort) { $builder.Port = -1 }
@@ -33,15 +25,19 @@ function Get-ClientTimestampUrl {
 }
 
 function Get-ClientServerEndpoints {
-    param([Parameter(Mandatory = $true)][uri]$ServerUrl, [switch]$AllowInsecureHttp)
+    param(
+        [Parameter(Mandatory = $true)][uri]$ServerUrl,
+        [ValidatePattern("\A/?[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*\z")]
+        [string]$Rfc3161Path = "/timestamp/rfc3161",
+        [ValidatePattern("\A/?[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*\z")]
+        [string]$AuthenticodePath = "/timestamp/authenticode",
+        [switch]$AllowInsecureHttp
+    )
 
     $canonical = Get-ClientTimestampUrl -Url $ServerUrl -AllowInsecureHttp:$AllowInsecureHttp
-    if ($ServerUrl.AbsolutePath.TrimEnd('/') -match '/timestamp/(rfc3161|authenticode)$|/.+/timestamp$') {
-        throw 'ServerUrl must identify the IIS application, for example https://tsa.example.com/OpenTimeStamp.'
-    }
     return [PSCustomObject]@{
-        Rfc3161Url = $canonical.TrimEnd('/') + '/timestamp/rfc3161'
-        AuthenticodeUrl = $canonical.TrimEnd('/') + '/timestamp/authenticode'
+        Rfc3161Url = $canonical.TrimEnd('/') + '/' + $Rfc3161Path.TrimStart('/')
+        AuthenticodeUrl = $canonical.TrimEnd('/') + '/' + $AuthenticodePath.TrimStart('/')
     }
 }
 
@@ -336,13 +332,13 @@ function Add-ClientJsonArrayEntries
         foreach ($entry in $Entries[$name])
         {
             $identity = $IdentityProperties[$name]
-            $matches = @($existing | Where-Object {
+            $matchingEntries = @($existing | Where-Object {
                 $_ -and $_.PSObject.Properties[$identity] -and $_.$identity -ceq $entry.$identity
             })
             $json = $entry | ConvertTo-Json -Depth 30 -Compress
-            if ($matches.Count)
+            if ($matchingEntries.Count)
             {
-                if ($matches.Count -ne 1 -or ($matches[0] | ConvertTo-Json -Depth 30 -Compress) -cne $json)
+                if ($matchingEntries.Count -ne 1 -or ($matchingEntries[0] | ConvertTo-Json -Depth 30 -Compress) -cne $json)
                 { throw "VS Code '$($entry.$identity)' conflicts with existing settings. Choose another task label." }
                 continue
             }
