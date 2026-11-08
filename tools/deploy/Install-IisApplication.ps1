@@ -863,6 +863,9 @@ function Get-RetainedWebSettings {
         }
         $settings = Get-ExistingWebSettings -ApplicationPhysicalPath $release.FullName
         Assert-OpenTimeStampIntakeSettings -Settings $settings
+        # Omitted route keys mean default routes, so releases agree on the routes they actually serve.
+        $routes = Resolve-OpenTimeStampRoutePaths -Existing $settings
+        foreach ($key in $routes.Keys) { $settings[$key] = $routes[$key] }
         if ($settings['AuthenticationMode'] -notin @('Anonymous', 'Windows') -or
             [string]::IsNullOrWhiteSpace($settings['DataPath'])) {
             throw 'The retained deployment has incomplete authentication or data settings. Restore its IIS application first.'

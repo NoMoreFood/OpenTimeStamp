@@ -1935,6 +1935,20 @@ catch {
         Assert-Equal 'Windows' $settings['AuthenticationMode'] 'Recovery changed the saved authentication mode.'
         Assert-Equal $data $settings['DataPath'] 'Recovery changed the saved external data path.'
 
+        # A release whose web.config has no route keys serves the default routes.
+        $legacyConfig = Join-Path $releases[0] 'web.config'
+        $document = Read-OpenTimeStampXmlDocument -Path $legacyConfig
+        foreach ($key in @('TimestampPath', 'Rfc3161Path', 'AuthenticodePath', 'HealthPath')) {
+            $node = $document.SelectSingleNode("/configuration/appSettings/add[@key='$key']")
+            [void]$node.ParentNode.RemoveChild($node)
+        }
+        $document.Save($legacyConfig)
+        New-OpenTimeStampDeploymentManifest -PayloadPath $releases[0] `
+            -ReleaseId (Split-Path -Leaf $releases[0]) | Out-Null
+        $settings = Get-RetainedWebSettings -DeploymentRoot $root
+        Assert-Equal '/timestamp/rfc3161' $settings['Rfc3161Path'] `
+            'Recovery treated default routes and omitted route keys as conflicting.'
+
         Set-OpenTimeStampStagedWebSettings -ReleasePath $releases[1] -Mode Anonymous `
             -EffectiveDataPath $data -EffectiveAdminHosts @('localhost')
         New-OpenTimeStampDeploymentManifest -PayloadPath $releases[1] `
