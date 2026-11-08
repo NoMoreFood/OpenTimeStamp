@@ -23,7 +23,7 @@ $applicationPath = '/' + $applicationName
 $appPoolName = 'OpenTimeStamp'
 $commonScript = Join-Path $PSScriptRoot 'deploy\Deployment.Common.ps1'
 if (-not (Test-Path -LiteralPath $commonScript -PathType Leaf)) {
-    throw 'The MSI cache is missing its deployment support script.'
+    throw 'The installation is missing its deployment support script.'
 }
 . $commonScript
 

@@ -108,7 +108,7 @@
         <Control Id="Description" Type="Text" X="25" Y="23" Width="300" Height="15" Transparent="yes"
           NoPrefix="yes" Text="Choose an existing application or enter a new name." />
         <Control Id="ApplicationNameLabel" Type="Text" X="25" Y="60" Width="118" Height="12"
-          Text="Application &amp;Name:" />
+          Text="A&amp;pplication Name:" />
         <Control Id="ApplicationName" Type="ComboBox" X="148" Y="57" Width="197" Height="80"
           Property="APPLICATIONNAME" ComboList="no" Sorted="yes"
           DisableCondition="NOT IISAPPLICATIONSAVAILABLE" EnableCondition="IISAPPLICATIONSAVAILABLE" />
