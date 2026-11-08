@@ -10,7 +10,8 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
 try {
     $configuration = Get-ItemProperty -LiteralPath 'HKLM:\Software\OpenTimeStamp\Installer'
-    $links = @(foreach ($entry in $configuration.Endpoints) {
+    $saved = $configuration.PSObject.Properties['Endpoints']
+    $links = @(foreach ($entry in @(if ($saved) { $saved.Value })) {
         $parts = ([string]$entry).Split('|', 2)
         $url = $null
         if ($parts.Count -ne 2 -or -not [uri]::TryCreate($parts[1], [UriKind]::Absolute, [ref]$url) -or

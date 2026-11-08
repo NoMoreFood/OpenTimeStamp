@@ -340,9 +340,6 @@ try {
     if ($Action -eq 'Commit') {
         if ($transaction.Operation -eq 'Install') {
             Start-PoolForDeployment -Name 'OpenTimeStamp'
-            $links = @(Get-OpenTimeStampEndpointLinks -Deployment $transaction.Result)
-            New-ItemProperty -LiteralPath "HKLM:\Software\OpenTimeStamp\Installer" -Name Endpoints `
-                -Value ([string[]]$links) -PropertyType MultiString -Force | Out-Null
             foreach ($state in $transaction.PoolStates | Where-Object { $_.Name -ne 'OpenTimeStamp' }) {
                 if ($state.State -eq 'Started') { Start-PoolForDeployment -Name $state.Name }
             }
@@ -350,6 +347,12 @@ try {
         $transaction.Phase = 'Committed'
         Write-MsiJournal
         if ($transaction.Operation -eq 'Install') {
+            try {
+                $links = @(Get-OpenTimeStampEndpointLinks -Deployment $transaction.Result)
+                New-ItemProperty -LiteralPath 'HKLM:\Software\OpenTimeStamp\Installer' -Name Endpoints `
+                    -Value ([string[]]$links) -PropertyType MultiString -Force | Out-Null
+            }
+            catch { Write-Warning "Endpoint links could not be saved: $($_.Exception.Message)" }
             try { Initialize-OpenTimeStampEventLog }
             catch { Write-Warning "Optional Event Viewer logging could not be registered: $($_.Exception.Message)" }
             try {
