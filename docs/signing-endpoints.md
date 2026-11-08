@@ -1,6 +1,6 @@
 # Signing Endpoints and Hash Policies
 
-OpenTimeStamp exposes RFC 3161, legacy Authenticode, and automatic protocol-detecting routes under each IIS application. Each application has its own certificate selection, signing digest, allowed request hashes, RFC policy OIDs, authentication mode, issuance state, audit logs, and request limits. Deploy separate applications when signing needs require different settings. The routes within one application share that application's configuration.
+OpenTimeStamp exposes RFC 3161, legacy Authenticode, and automatic protocol-detecting routes under each IIS application. Each application has its own certificate selection, signing digest, allowed request hashes, RFC policy OIDs, authentication mode, issuance state, audit logs, and request limits. Deploy separate applications when signing needs require different settings. The routes within one application share that application's configuration. This guide uses the default public paths; see [Public Endpoint Paths](deployment.md#public-endpoint-paths) to choose others.
 
 ## Select the Protocol and Hash
 

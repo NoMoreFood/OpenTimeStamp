@@ -42,7 +42,7 @@ From a PowerShell 5.1 prompt on the build computer:
 ```
 
 The deployable output is `tools\artifacts\OpenTimeStamp`, and the WiX 7 installer is
-`tools\artifacts\OpenTimeStamp-1.0.1-x64.msi`. Use `-MSBuildPath` if MSBuild cannot be
+`tools\artifacts\OpenTimeStamp-<version>-x64.msi`. Use `-MSBuildPath` if MSBuild cannot be
 discovered through `vswhere.exe` or `PATH`, and use `-OutputPath` to stage the
 manual payload elsewhere. `Build.ps1` runs both the discoverable MSTest
 regression suite and the deployment/packaging regression suite under Windows
@@ -60,7 +60,7 @@ build, deployment, lock, fixture, and product-test files must be tracked; this
 prevents an accidentally incomplete commit from becoming a release. Exported
 source without Git metadata remains publishable.
 
-The build restores the installer through the pinned `WixToolset.Sdk/7.0.0`
+The build restores the installer through the WiX Toolset 7 SDK pinned by the setup
 project; a global WiX installation is not required. WiX 7 is subject to its Open
 Source Maintenance Fee terms and requires acceptance of the applicable EULA.
 The default build follows the WinDirStat signing pattern: it asks SignTool to

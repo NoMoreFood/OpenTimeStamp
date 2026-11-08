@@ -1,12 +1,6 @@
 # IIS Deployment
 
-The build produces a WiX MSI that uses this same hardened deployment routine.
-It prompts for an existing IIS website and the application name used as the URL
-root. IIS and its required role services must be installed before the MSI runs;
-the package does not add Windows features. See the
-[MSI installer guide](../tools/msi/README.md). Continue with the manual workflow
-below when the pool, authentication mode, deployment root, or other advanced
-settings must be customized.
+The build produces a WiX MSI that uses this same hardened deployment routine. It prompts for an existing IIS website, an existing or new application name used as the URL root, and the public endpoint paths. IIS and its required role services must be installed before the MSI runs; the package does not add Windows features. See the [MSI installer guide](../tools/msi/README.md). Continue with the manual workflow below when the pool, authentication mode, deployment root, or other advanced settings must be customized.
 
 ## Install on IIS
 
@@ -65,12 +59,8 @@ The installer:
   unrecognized release-shaped directories are preserved with a warning;
 - verifies the IIS leaf services needed by ASP.NET 4.x, Windows authentication,
   request filtering, IP restrictions, HTTP errors/logging, and the PowerShell administration provider;
-- creates a dedicated `OpenTimeStamp` application pool using
-  `ApplicationPoolIdentity`, 64-bit integrated mode, .NET CLR v4.0, one worker
-  process, non-overlapping recycling, on-demand startup, a 20-minute idle timeout,
-  and recycling after 29 hours or 35,000 requests, and
-  refuses both a target pool and an existing application's actual current pool
-  if either is assigned to another IIS application;
+- creates a dedicated `OpenTimeStamp` application pool using `ApplicationPoolIdentity`, 64-bit integrated mode, .NET CLR v4.0, one worker process, non-overlapping recycling, on-demand startup, a 20-minute idle timeout, and recycling after 29 hours or 35,000 requests, and refuses a target pool assigned to another IIS application or an existing OpenTimeStamp application's current pool when another application shares it;
+- reuses an existing application that is not an OpenTimeStamp deployment by pointing it at the new release and the dedicated pool in one IIS change, leaving its previous content, pool, and other virtual directories unchanged;
 - grants the pool read/execute access to the application and modify access only
   to the configured data directory (`App_Data` by default);
 - writes the selected mode to the application's immutable
@@ -85,24 +75,11 @@ The installer:
 - independently requires Windows authentication, a locally assigned IPv4 peer,
   and an exact configured host name for `/admin`.
 
-During a release switch, the installer stops the application's real current pool
-and the target pool. A successful installation starts the target pool; IIS starts
-the worker on demand. If a failure occurs before the issuance-state format
-commit, the IIS application pointer, pool settings, and original site and pool states are rolled back.
-A shared current pool is rejected before any stop, because quiescing it would
-interrupt unrelated applications. The enforced single-worker and
-non-overlapping-recycle settings keep the application-wide admission limits
-exact and avoid leaking named-semaphore capacity when a worker terminates while
-another worker still holds the same kernel object.
+During a release switch, the installer stops the target pool and, for an existing OpenTimeStamp application, its real current pool. A successful installation starts the target pool; IIS starts the worker on demand. If a failure occurs before the issuance-state format commit, the IIS application pointer, pool settings, and original site and pool states are rolled back. A shared current pool of an existing OpenTimeStamp application is rejected before any stop, because quiescing it would interrupt unrelated applications. The enforced single-worker and non-overlapping-recycle settings keep the application-wide admission limits exact and avoid leaking named-semaphore capacity when a worker terminates while another worker still holds the same kernel object.
 
-The separately marked data directory survives every release. On an existing
-deployment, omitting `-DataPath` or `-AdminHostNames` preserves the current
-values. Omitting `-AuthenticationMode` is accepted only when the existing
-`web.config` value and effective IIS Anonymous/Windows settings are both valid
-and agree exactly; ambiguity fails closed. Pass the mode explicitly to repair an
-inconsistent deployment. `-DataPath` selects a location; it does not migrate
-state from a previously configured location. Stop issuance and perform an
-application-consistent move before changing it.
+The separately marked data directory survives every release. On an existing deployment, omitting `-DataPath`, `-AdminHostNames`, or a public path parameter preserves the current values. Omitting `-AuthenticationMode` is accepted only when the existing `web.config` value and effective IIS Anonymous/Windows settings are both valid and agree exactly; ambiguity fails closed. Pass the mode explicitly to repair an inconsistent deployment. `-DataPath` selects a location; it does not migrate state from a previously configured location. Stop issuance and perform an application-consistent move before changing it.
+
+A deployment root keeps its releases and data after its IIS application is removed. Installing into that root without `-AuthenticationMode` recovers the authentication mode, data directory, administrative host names, public paths, and request limits only when every retained release matches its manifest and all of them agree; otherwise installation stops. When they disagree, pass `-AuthenticationMode` and any non-default `-DataPath`, `-AdminHostNames`, and public path values explicitly. A payload whose release ID is already present is installed under a new release ID, so retained release files never change.
 
 Upgrades also preserve and validate the five request-concurrency settings:
 `TimestampBodyReadTimeoutSeconds`, `TimestampBodyIntakeLimit`,
@@ -174,6 +151,25 @@ The installer requires `Web-Asp-Net45`,
 `Web-Http-Logging`, and `Web-Scripting-Tools`. Install missing role services before
 running setup; the installer reports missing services and does not change Windows features.
 
+## Public Endpoint Paths
+
+Each application serves automatic detection at `/timestamp`, RFC 3161 at `/timestamp/rfc3161`, legacy Authenticode at `/timestamp/authenticode`, and health at `/health` beneath its application path. Pass `-TimestampPath`, `-Rfc3161Path`, `-AuthenticodePath`, or `-HealthPath` to choose other paths:
+
+```powershell
+.\tools\deploy\Install-IisApplication.ps1 `
+    -SourcePath .\tools\artifacts\OpenTimeStamp `
+    -SiteName 'Default Web Site' `
+    -ApplicationPath '/OpenTimeStamp' `
+    -AuthenticationMode Anonymous `
+    -Rfc3161Path '/sign/rfc3161' `
+    -AuthenticodePath '/sign/authenticode' `
+    -AllowUnsignedManifest
+```
+
+A path has up to 256 characters of letters, numbers, underscores, and hyphens in `/`-separated segments, and it must differ from the application's other public paths. No segment may be `admin`, `bin`, `aspnet_client`, `App_Browsers`, `App_Code`, `App_Data`, `App_GlobalResources`, `App_LocalResources`, or `App_WebReferences`; these comparisons ignore case. Administration always remains at `/admin`.
+
+The installer stores the paths in the release `web.config` as `TimestampPath`, `Rfc3161Path`, `AuthenticodePath`, and `HealthPath`, and upgrades keep them unless new values are passed. A replaced path stops serving requests, so update clients before changing it. The service home page and the installer result show the configured endpoint URLs.
+
 ## Development Certificate
 
 `New-DevelopmentTsaCertificate.ps1` creates a self-signed, non-exportable RSA
@@ -196,19 +192,7 @@ $tsa = .\tools\deploy\New-DevelopmentTsaCertificate.ps1 `
 $tsa | Format-List
 ```
 
-Open `http://127.0.0.1/OpenTimeStamp/admin` locally. For HTTPS administration,
-use an exact site binding host name or one supplied with `-AdminHostNames`, and
-issue the IIS TLS certificate for that name. The installer also allows
-`localhost`, IPv4/IPv6 loopback, the short machine name, and the computer FQDN at
-the application layer; the IIS IP restriction requires the connection itself to
-arrive over IPv4 from an address assigned to this server. Select `LocalMachine`
-and the returned thumbprint. Because this certificate is deliberately
-self-signed and untrusted, check **DEVELOPMENT ONLY — allow a certificate whose
-chain is not trusted or whose revocation status cannot be verified** before
-saving. Clear that bypass before production and select a certificate whose chain
-and revocation status validate normally. Configure a timestamp policy OID owned
-by your organization for production. A made-up OID must not be published as an
-organizational policy.
+Open `http://127.0.0.1/OpenTimeStamp/admin` locally. For HTTPS administration, use an exact site binding host name or one supplied with `-AdminHostNames`, and issue the IIS TLS certificate for that name. The installer also allows `localhost`, IPv4/IPv6 loopback, the short machine name, the computer FQDN, and the address of each binding that specifies an IP address without a host name at the application layer; the IIS IP restriction requires the connection itself to arrive over IPv4 from an address assigned to this server. Select `LocalMachine` and the returned thumbprint. Because this certificate is deliberately self-signed and untrusted, check **DEVELOPMENT ONLY — allow a certificate whose chain is not trusted or whose revocation status cannot be verified** before saving. Clear that bypass before production and select a certificate whose chain and revocation status validate normally. Configure a timestamp policy OID owned by your organization for production. A made-up OID must not be published as an organizational policy.
 
 Do not use the development key in production, lengthen its lifetime, export its
 private key, or silently trust it on client fleets. Delete it from
@@ -273,7 +257,7 @@ ACL is substantially easier to operate and audit.
 
 ## Validate a Deployment
 
-Check health locally. Add `-UseDefaultCredentials` in Windows mode:
+These examples use the default application and public paths; substitute the URLs reported by the installer when they differ. Check health locally. Add `-UseDefaultCredentials` in Windows mode:
 
 ```powershell
 Invoke-WebRequest `

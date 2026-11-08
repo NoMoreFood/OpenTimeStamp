@@ -11,6 +11,8 @@ $authenticodeUrl = 'https://tsa.example.com/OpenTimeStamp/timestamp/authenticode
 
 Both clients can use the shared `/OpenTimeStamp/timestamp` URL when desired. The server detects the protocol from the request and applies its configured protocol restrictions. Use HTTP for legacy clients that require it.
 
+These URLs use the default public paths. For a server with custom paths, use the URLs shown on its service home page. Helpers that take `-ServerUrl` also accept `-Rfc3161Path` and `-AuthenticodePath`.
+
 The document or code-signing certificate and its private key belong on the
 signing workstation; the TSA certificate and private key remain on the server.
 Distribute the production TSA chain through the organization's normal trust

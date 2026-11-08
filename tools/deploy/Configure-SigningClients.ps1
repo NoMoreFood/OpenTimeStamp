@@ -15,8 +15,12 @@ TSA hostname in Adobe's Internet-access list. Each helper verifies its writes in
 Visual Studio and VS Code configuration belongs to the explicitly selected
 project or workspace. Detected IDEs without those paths return ProjectRequired.
 .PARAMETER ServerUrl
-IIS application URL, such as https://tsa.example.com/OpenTimeStamp, without the
-/timestamp/rfc3161 or /timestamp/authenticode suffix.
+IIS application URL, such as https://tsa.example.com/OpenTimeStamp, without an
+endpoint path.
+.PARAMETER Rfc3161Path
+The application's RFC 3161 path. The default is /timestamp/rfc3161.
+.PARAMETER AuthenticodePath
+The application's legacy Authenticode path. The default is /timestamp/authenticode.
 .PARAMETER UserSid
 An optional loaded user SID on the target computer. Without it, setup affects
 the account running the script or the authenticated remoting account.

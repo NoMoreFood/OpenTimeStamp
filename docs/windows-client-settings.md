@@ -67,6 +67,8 @@ HTTPS is accepted by default. To use an HTTP endpoint on this computer or anothe
 & $setup -ServerUrl 'http://tsa.example.com/OpenTimeStamp' -Applications Office,Vba,Acrobat -AllowInsecureHttp
 ```
 
+For a server with custom public paths, add `-Rfc3161Path` and `-AuthenticodePath` with the paths shown on its service home page. `Invoke-TimestampSigning.ps1` and `Get-TimestampSigningParameters.ps1` accept the same parameters.
+
 The default `Detected` selection discovers applications from PATH and Windows App Paths in the user and machine registry, including both registry layouts. It does not scan arbitrary portable installation folders. Explicitly select applications when discovery is incomplete or when preconfiguring a user:
 
 ```powershell

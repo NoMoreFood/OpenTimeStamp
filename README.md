@@ -13,7 +13,7 @@ administrative interface remains restricted to the server.
 
 ## Endpoints
 
-For the default IIS application path `/OpenTimeStamp`:
+For the default IIS application path `/OpenTimeStamp` and default public paths:
 
 | Path | Method | Purpose |
 | --- | --- | --- |
@@ -23,8 +23,7 @@ For the default IIS application path `/OpenTimeStamp`:
 | `/OpenTimeStamp/health` | `GET` | Operational health and readiness |
 | `/OpenTimeStamp/admin` | `GET`, `POST` | Local, Windows-authenticated administration |
 
-See [Protocols and Endpoints](docs/protocols.md) for supported algorithms,
-content types, and compatibility details.
+Installation can replace the four public paths, as described in [Public Endpoint Paths](docs/deployment.md#public-endpoint-paths); administration always uses `/admin`. See [Protocols and Endpoints](docs/protocols.md) for supported algorithms, content types, and compatibility details.
 
 ## Requirements
 
@@ -51,7 +50,7 @@ From a Windows PowerShell 5.1 prompt on the build computer:
 ```
 
 The deployable output is written to `tools\artifacts\OpenTimeStamp`, and the MSI is
-written to `tools\artifacts\OpenTimeStamp-1.0.1-x64.msi`. Install the
+written to `tools\artifacts\OpenTimeStamp-<version>-x64.msi`. Install the
 payload manually from an elevated Windows PowerShell 5.1 prompt:
 
 ```powershell

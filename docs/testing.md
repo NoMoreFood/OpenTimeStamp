@@ -71,7 +71,7 @@ Copy the complete `EndpointChecks` directory into the VM along with OpenSSL, its
 }
 ```
 
-Supply additional profiles in the `Profiles` array to exercise different configurations simultaneously. `CertificateFile` is the public DER TSA certificate and `CertificatePemFile` is its PEM representation. `CertificateRequestFile` is optional; generate it using the [documented enrollment INF](examples/timestamp-signing.inf) and `certreq -new` to check the actual machine request's key size, critical EKU, end-entity constraints, and request signature. `NativeClientBaseUrl` is optional and selects the transport used by SignTool; an HTTP value also enables PowerShell's legacy transport test. Direct protocol probes still use `BaseUrl` and validate HTTPS normally. The example policy OID is test data; production uses your authority's assigned policies.
+Supply additional profiles in the `Profiles` array to exercise different configurations simultaneously. `CertificateFile` is the public DER TSA certificate and `CertificatePemFile` is its PEM representation. `CertificateRequestFile` is optional; generate it using the [documented enrollment INF](examples/timestamp-signing.inf) and `certreq -new` to check the actual machine request's key size, critical EKU, end-entity constraints, and request signature. `NativeClientBaseUrl` is optional and selects the transport used by SignTool; an HTTP value also enables PowerShell's legacy transport test. Direct protocol probes still use `BaseUrl` and validate HTTPS normally. Both URLs identify an application root; the verifier appends the default public paths, so install each profile without custom paths. The example policy OID is test data; production uses your authority's assigned policies.
 
 In the VM, use a new output directory for each pass:
 
@@ -83,3 +83,18 @@ C:\EndpointChecks\TimestampEndpointChecks.exe `
 The verifier reports progress after every check, applies native-tool and HTTP deadlines, writes `results.json`, and returns a failing exit code for any failed check. Keep the server's `MaxRequestBytes` at 65,536 for this qualification. Each profile must accept SHA-256 for the concurrent progress check; include SHA-384 and SHA-512 profiles as appropriate. Its cryptographic receipts must use zero published accuracy and `Ordering = false`, matching the normal defaults.
 
 After the normal pass, enable Windows FIPS policy **only in the disposable VM**, stop and restart all test pools, set `FipsEnabled` to `true` in a second manifest, and rerun. Require MD5/SHA-1 imprint rejection, SHA-1 signing rejection, unavailable Authenticode, and continued modern RFC issuance. Disable the test policy, restart the pools, and run a recovery pass with the original manifest. This verifies the application's effective policy gate, not formal provider certification. Restore the VM checkpoint after collecting results so test certificates, trust changes, policy, and deployments do not remain active. Publishing a production AD CS template and verifying its CA-issued certificate and revocation endpoints remain separate PKI acceptance steps.
+
+## Live MSI Qualification
+
+Use a disposable Windows Server VM with IIS, a checkpoint, and an isolated website whose bindings resolve only to the VM. Run both checks from an elevated prompt. The rollback suite also requires the standard `DefaultAppPool` and refuses to run when the site already has an `/OpenTimeStamp` application or the VM already has the `OpenTimeStamp` pool, `C:\inetpub\OpenTimeStamp`, `Program Files\OpenTimeStamp`, or the `HKLM\Software\OpenTimeStamp\Installer` key:
+
+```powershell
+.\src\tests\LiveIis\Invoke-MsiRollbackChecks.ps1 `
+    -MsiPath .\OpenTimeStamp-<version>-x64.msi -UpgradeMsiPath .\OpenTimeStamp-<version>-x64.msi `
+    -SiteName OpenTimeStampLab -OutputDirectory C:\MsiChecks\Run1
+.\src\tests\LiveIis\Invoke-MsiSitePickerChecks.ps1 -MsiPath .\OpenTimeStamp-<version>-x64.msi
+```
+
+The rollback suite builds failing copies of the package to verify rollback of fresh installs, a reused existing application, upgrades, repair, uninstall, and reinstall over preserved data. It also installs custom public paths, requests every saved completion URL, and checks the Start menu shortcut. `-UpgradeMsiPath` supplies the package for the failing higher-version upgrade and can be the same MSI. The site name may contain letters, numbers, underscores, and hyphens, and `-OutputDirectory` must not exist. The suite leaves its deployment data for inspection, so restore the checkpoint afterward.
+
+The site picker checks run setup's website and application list actions against temporary IIS sites that are not started, then remove those sites. Without IIS, they verify that setup reports the failure and blocks continuation.

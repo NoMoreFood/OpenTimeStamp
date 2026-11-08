@@ -1,6 +1,6 @@
 # Protocols and Endpoints
 
-For the default IIS application path `/OpenTimeStamp`:
+For the default IIS application path `/OpenTimeStamp` and default public paths:
 
 | Path | Method | Purpose |
 | --- | --- | --- |
@@ -12,7 +12,7 @@ For the default IIS application path `/OpenTimeStamp`:
 
 The automatic endpoint accepts `application/timestamp-query` and `application/octet-stream`. It detects binary RFC 3161 requests and base64-encoded Authenticode requests from the body, then returns the selected protocol's normal response. Protocol enablement, authentication, limits, auditing, and FIPS restrictions apply to all routes. A disabled protocol returns HTTP 404; Authenticode returns HTTP 503 while Windows FIPS mode is enabled.
 
-For per-application certificate, digest, policy, and authentication settings, see [Signing Endpoints and Hash Policies](signing-endpoints.md). Distinct IIS application roots provide independent signing profiles with the same protocol routes.
+For per-application certificate, digest, policy, and authentication settings, see [Signing Endpoints and Hash Policies](signing-endpoints.md). Distinct IIS application roots provide independent signing profiles. Installation can replace each application's four public paths, as described in [Public Endpoint Paths](deployment.md#public-endpoint-paths); administration always uses `/admin`.
 
 RFC 3161/RFC 5816 message imprints support MD5, SHA-1, SHA-224, SHA-256,
 SHA-384, and SHA-512 OIDs. Safe defaults enable SHA-256, SHA-384, and SHA-512.

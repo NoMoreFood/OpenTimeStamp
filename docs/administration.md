@@ -24,12 +24,9 @@ The installer protects `/admin` independently of the public endpoints:
 4. A required Windows-group allowlist defaults to `BUILTIN\Administrators` and
    can be replaced with one or more dedicated administrative group names or SIDs.
 
-The installer populates `AdminHostNames` from non-wildcard IIS site binding host
-headers, localhost/loopback, the short machine name, the computer FQDN, and
-values passed through `-AdminHostNames`. Blank or wildcard bindings never become
-allowed hosts. On an existing deployment, omitted custom host values are
-preserved. Rerun the installer after adding, removing, or renumbering a network
-interface so the IIS peer-address allowlist stays current.
+The installer populates `AdminHostNames` from localhost/loopback, the short machine name, the computer FQDN, each IIS site binding host name, the address of each binding that specifies an IP address without a host name, and values passed through `-AdminHostNames`. Wildcard binding host names never become allowed hosts. On an existing deployment, omitted custom host values are preserved. Rerun the installer after changing site bindings or adding, removing, or renumbering a network interface so the host and IIS peer-address allowlists stay current.
+
+Administration always uses `/admin` beneath the application, even when the public endpoint paths are customized.
 
 Use a browser directly on the server. Do not publish or reverse-proxy the admin
 path. In particular, a same-host reverse proxy makes a remote request appear to
