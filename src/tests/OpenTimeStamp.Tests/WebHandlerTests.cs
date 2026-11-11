@@ -348,7 +348,7 @@ public sealed class WebHandlerTests
         edited.FailClosedOnAuditError = false;
         edited.AdminAllowedWindowsGroups = ["CONTOSO\\TSA Admins", "S-1-5-32-544"];
         AssertEx.Equal(
-            "changed=AdminAllowedWindowsGroups: [BUILTIN\\Administrators] -> [CONTOSO\\TSA Admins, S-1-5-32-544]; " +
+            "changed=AdminAllowedWindowsGroups: [S-1-5-32-544] -> [CONTOSO\\TSA Admins, S-1-5-32-544]; " +
             "FailClosedOnAuditError: True -> False",
             AdminHandler.DescribeConfigurationChange(baseline, edited));
     }

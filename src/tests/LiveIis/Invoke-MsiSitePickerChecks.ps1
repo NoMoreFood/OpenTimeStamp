@@ -53,7 +53,8 @@ try {
     try {
         $site = $manager.Sites.Add($fixtureName, 'http', '127.0.0.1:61037:picker.invalid', $env:TEMP)
         $site.ServerAutoStart = $false
-        foreach ($path in @('/Existing-One', '/Another.App', '/nested/child', '/Unsupported Name')) {
+        foreach ($path in @('/Existing-One', '/Another.App', '/nested/child', '/Unsupported Name',
+                '/bin', '/APP_DATA', '/web.config', '/Name.')) {
             [void]$site.Applications.Add($path, $env:TEMP)
         }
         $manager.CommitChanges()

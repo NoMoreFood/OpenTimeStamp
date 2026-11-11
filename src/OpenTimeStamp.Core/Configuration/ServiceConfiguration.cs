@@ -71,7 +71,8 @@ public sealed class ServiceConfiguration
         ClockRollbackToleranceSeconds = 2;
         AllowUntrustedDevelopmentCertificate = false;
 
-        AdminAllowedWindowsGroups = ["BUILTIN\\Administrators"];
+        // The built-in Administrators SID is independent of the server's display language.
+        AdminAllowedWindowsGroups = ["S-1-5-32-544"];
     }
 
     [DataMember(Order = 1)]

@@ -32,6 +32,13 @@ param(
     [string]$SiteName = 'Default Web Site',
 
     [ValidatePattern('^/[A-Za-z0-9._-]+$')]
+    [ValidateScript({
+        if ($_.EndsWith('.') -or $_ -match ('^/(?:bin|App_Data|App_Code|App_GlobalResources|' +
+                'App_LocalResources|App_WebReferences|App_Browsers|web\.config|\.git|\.svn)$')) {
+            throw 'ApplicationPath must not use an IIS-hidden name or end with a period.'
+        }
+        return $true
+    })]
     [string]$ApplicationPath = '/OpenTimeStamp',
 
     [ValidatePattern('^[A-Za-z0-9._-]+$')]
@@ -862,7 +869,8 @@ function Get-RetainedWebSettings {
             throw "The retained release '$($release.FullName)' does not match its manifest."
         }
         $settings = Get-ExistingWebSettings -ApplicationPhysicalPath $release.FullName
-        Assert-OpenTimeStampIntakeSettings -Settings $settings
+        $intakeSettings = Get-OpenTimeStampIntakeSettings -Settings $settings
+        foreach ($key in $intakeSettings.Keys) { $settings[$key] = [string]$intakeSettings[$key] }
         # Omitted route keys mean default routes, so releases agree on the routes they actually serve.
         $routes = Resolve-OpenTimeStampRoutePaths -Existing $settings
         foreach ($key in $routes.Keys) { $settings[$key] = $routes[$key] }
@@ -1519,7 +1527,7 @@ if ($applicationExists) {
     $existingWebSettings = Get-ExistingWebSettings -ApplicationPhysicalPath $existingApplicationPhysicalPath
 }
 if ($null -ne $existingWebSettings) {
-    Assert-OpenTimeStampIntakeSettings -Settings $existingWebSettings
+    Get-OpenTimeStampIntakeSettings -Settings $existingWebSettings | Out-Null
     $existingIisAuthentication = Get-IisAuthenticationMode -ConfigurationPath $configurationPath -Location $appLocation
 
 

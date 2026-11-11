@@ -576,7 +576,7 @@ public sealed class PersistenceAndConfigurationTests
         AssertEx.Equal(ServiceConfiguration.DailyLogRollover, configuration.LogRolloverInterval);
         AssertEx.Equal(365, configuration.LogRetentionDays);
         AssertEx.True(configuration.PruneAuditLogs);
-        AssertEx.Equal("BUILTIN\\Administrators", configuration.AdminAllowedWindowsGroups.Single());
+        AssertEx.Equal("S-1-5-32-544", configuration.AdminAllowedWindowsGroups.Single());
         AssertEx.Equal(0, configuration.Validate().Count);
 
         var nonCanonicalOid = new ServiceConfiguration
@@ -754,6 +754,25 @@ public sealed class PersistenceAndConfigurationTests
             AssertEx.True(File.Exists(path + ".bak"), "Updating a configuration should retain the prior version as a backup.");
             AssertEx.Equal(366, store.Load().LogRetentionDays);
         }
+    }
+
+    [TestMethod(DisplayName = "Configuration rejects content after its XML root")]
+    public void ConfigurationRejectsTrailingContent()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = directory.File("tsa.config");
+        var store = new ConfigurationStore(path);
+        store.Save(new ServiceConfiguration());
+        var xml = File.ReadAllText(path);
+
+        foreach (var trailing in new[] { "<FailClosedOnAuditError>false</FailClosedOnAuditError>", "garbage", "<!--" })
+        {
+            File.WriteAllText(path, xml + Environment.NewLine + trailing);
+            AssertEx.Throws<ConfigurationErrorsException>(() => store.Load());
+        }
+
+        File.WriteAllText(path, xml + Environment.NewLine + "<!-- operator note -->");
+        AssertEx.True(store.Load().FailClosedOnAuditError);
     }
 
     [TestMethod(DisplayName = "Configuration compare-and-swap rejects stale writers")]

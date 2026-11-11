@@ -523,37 +523,34 @@ function Assert-OpenTimeStampWebConfig {
     return $document
 }
 
-function Assert-OpenTimeStampIntakeSettings {
+function Get-OpenTimeStampIntakeSettings {
     param([hashtable]$Settings)
 
-    if ($null -eq $Settings) { return }
+    if ($null -eq $Settings) { $Settings = @{} }
     $definitions = @(
         @('TimestampBodyReadTimeoutSeconds', 10, 1, 25),
         @('TimestampBodyIntakeLimit', 32, 1, 256),
-        @('TimestampBodyIntakePerClientLimit', 4, 1, 256),
+        @('TimestampBodyIntakePerClientLimit', 4, 1, 256, 'TimestampBodyIntakeLimit'),
         @('TimestampProcessingLimit', 4, 1, 64),
-        @('TimestampProcessingPerClientLimit', 2, 1, 64))
+        @('TimestampProcessingPerClientLimit', 2, 1, 64, 'TimestampProcessingLimit'))
     $values = @{}
     foreach ($definition in $definitions) {
         $key = [string]$definition[0]
-        $value = [int]$definition[1]
-        if ($null -ne $Settings[$key] -and
+        $maximum = if ($definition.Length -eq 5) { $values[$definition[4]] } else { [int]$definition[3] }
+        # Match the runtime's blank defaults, strict integer syntax, and per-client bounds.
+        $value = [Math]::Min([int]$definition[1], $maximum)
+        if (-not [string]::IsNullOrWhiteSpace([string]$Settings[$key]) -and
             (-not [int]::TryParse(
-                    ([string]$Settings[$key]).Trim(),
-                    [Globalization.NumberStyles]::Integer,
+                    [string]$Settings[$key],
+                    [Globalization.NumberStyles]::None,
                     [Globalization.CultureInfo]::InvariantCulture,
                     [ref]$value) -or
-                $value -lt [int]$definition[2] -or $value -gt [int]$definition[3])) {
-            throw "The existing '$key' appSetting must be an integer from $($definition[2]) through $($definition[3])."
+                $value -lt [int]$definition[2] -or $value -gt $maximum)) {
+            throw "The existing '$key' appSetting must be an integer from $($definition[2]) through $maximum."
         }
         $values[$key] = $value
     }
-    if ($values.TimestampBodyIntakePerClientLimit -gt $values.TimestampBodyIntakeLimit) {
-        throw "The existing 'TimestampBodyIntakePerClientLimit' appSetting exceeds 'TimestampBodyIntakeLimit'."
-    }
-    if ($values.TimestampProcessingPerClientLimit -gt $values.TimestampProcessingLimit) {
-        throw "The existing 'TimestampProcessingPerClientLimit' appSetting exceeds 'TimestampProcessingLimit'."
-    }
+    return $values
 }
 
 function Get-OpenTimeStampEndpointLinks {
@@ -623,18 +620,13 @@ function Set-OpenTimeStampStagedWebSettings {
     $document.SelectSingleNode("/configuration/appSettings/add[@key='AuthenticationMode']").SetAttribute('value', $Mode)
     $document.SelectSingleNode("/configuration/appSettings/add[@key='DataPath']").SetAttribute('value', $EffectiveDataPath)
     $document.SelectSingleNode("/configuration/appSettings/add[@key='AdminHostNames']").SetAttribute('value', ($EffectiveAdminHosts -join ','))
-    foreach ($key in @(
-            'TimestampBodyReadTimeoutSeconds',
-            'TimestampBodyIntakeLimit',
-            'TimestampBodyIntakePerClientLimit',
-            'TimestampProcessingLimit',
-            'TimestampProcessingPerClientLimit')) {
-        if ($null -eq $ExistingSettings -or $null -eq $ExistingSettings[$key]) { continue }
+    $intakeSettings = Get-OpenTimeStampIntakeSettings -Settings $ExistingSettings
+    foreach ($key in $intakeSettings.Keys) {
         $node = $document.SelectSingleNode("/configuration/appSettings/add[@key='$key']")
         if ($null -eq $node) {
             throw "The published web.config does not contain the upgrade-preserved '$key' appSetting."
         }
-        $node.SetAttribute('value', [string]$ExistingSettings[$key])
+        $node.SetAttribute('value', $intakeSettings[$key].ToString([Globalization.CultureInfo]::InvariantCulture))
     }
     if ($PSBoundParameters.ContainsKey('RequireHttps')) {
         $cookies = $document.SelectSingleNode('/configuration/system.web/httpCookies')

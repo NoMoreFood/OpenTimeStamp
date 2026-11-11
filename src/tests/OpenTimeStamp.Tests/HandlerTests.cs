@@ -1,12 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
+using System.Formats.Asn1;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Web;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using OpenTimeStamp.Configuration;
@@ -170,6 +173,33 @@ public sealed class HandlerTests
         AssertEx.Equal(2, serials.Distinct(StringComparer.Ordinal).Count());
     }
 
+    [TestMethod(DisplayName = "RFC 3161 audit preserves the issued time during a tolerated clock rollback")]
+    public void Rfc3161AuditPreservesGenerationTime()
+    {
+        using var certificate = new TimestampCertificateFixture();
+        using var host = new HandlerTestHost(certificate: _ => new X509Certificate2(certificate.Certificate));
+        host.Configure(configuration =>
+        {
+            EnableRfc3161(configuration);
+            configuration.ClockRollbackToleranceSeconds = 60;
+        });
+        var issuedTime = DateTime.UtcNow.AddSeconds(30);
+        ServiceRuntime.IssuanceState.Allocate(() => issuedTime, TimeSpan.Zero, false, CancellationToken.None);
+
+        var response = Timestamp(Rfc3161Post(TestFixtures.BuildRfc3161Request(
+            TestFixtures.Sha256Oid, new byte[32])), TimestampProtocol.Rfc3161);
+        var cms = TestFixtures.DecodeCms(TestFixtures.ExtractGrantedRfc3161Token(response.Body));
+        var tstInfo = new AsnReader(cms.ContentInfo.Content, AsnEncodingRules.DER).ReadSequence();
+        for (var field = 0; field < 4; field++) tstInfo.ReadEncodedValue();
+
+        // Compare the wire time without the decoder's fractional-second rounding.
+        var encodedTime = tstInfo.ReadEncodedValue().ToArray();
+        AssertEx.Equal(issuedTime.ToString("yyyyMMddHHmmss.FFFFFFF", CultureInfo.InvariantCulture).TrimEnd('.') + "Z",
+            Encoding.ASCII.GetString(encodedTime, 2, encodedTime.Length - 2));
+        AssertEx.Contains("\"generationTimeUtc\":\"" + issuedTime.ToString("o", CultureInfo.InvariantCulture) + "\"",
+            host.AuditLines().Single());
+    }
+
     [TestMethod(DisplayName = "RFC 3161 endpoint answers a malformed request with an audited rejection")]
     [DataRow(false)]
     [DataRow(true)]
@@ -294,6 +324,8 @@ public sealed class HandlerTests
         var audit = host.AuditLines().Single();
         AssertEx.Contains("\"protocol\":\"authenticode\"", audit);
         AssertEx.Contains("\"result\":\"granted\"", audit);
+        AssertEx.True(Regex.IsMatch(audit, "\"generationTimeUtc\":\"[^\"]+\""),
+            "Legacy issuance must retain its allocated time in the audit history.");
 
         var malformed = new FakeHttpRequest("POST", url, Encoding.ASCII.GetBytes("not base64!"))
         {

@@ -399,7 +399,7 @@ catch {
             TimestampProcessingLimit = '8'
             TimestampProcessingPerClientLimit = '3'
         }
-        Assert-OpenTimeStampIntakeSettings -Settings $settings
+        Get-OpenTimeStampIntakeSettings -Settings $settings | Out-Null
         Set-OpenTimeStampStagedWebSettings -ReleasePath $stage -Mode Windows `
             -EffectiveDataPath 'C:\ProgramData\OpenTimeStamp' -EffectiveAdminHosts @('localhost') `
             -ExistingSettings $settings
@@ -410,13 +410,35 @@ catch {
                 "Upgrade setting '$key' was not preserved."
         }
         Assert-Throws {
-            Assert-OpenTimeStampIntakeSettings -Settings @{ TimestampBodyIntakeLimit = '0' }
+            Get-OpenTimeStampIntakeSettings -Settings @{ TimestampBodyIntakeLimit = '0' }
         } 'An out-of-range global intake limit was accepted.'
         Assert-Throws {
-            Assert-OpenTimeStampIntakeSettings -Settings @{
+            Get-OpenTimeStampIntakeSettings -Settings @{
                 TimestampProcessingLimit = '2'; TimestampProcessingPerClientLimit = '3'
             }
         } 'A per-client processing limit above the global limit was accepted.'
+
+        # Absent or blank per-client settings inherit the runtime's reduced global limits.
+        foreach ($perClient in @($null, '', ' ')) {
+            $reduced = @{
+                TimestampBodyIntakeLimit = '1'; TimestampProcessingLimit = '1'
+                TimestampBodyIntakePerClientLimit = $perClient; TimestampProcessingPerClientLimit = $perClient
+            }
+            Set-OpenTimeStampStagedWebSettings -ReleasePath $stage -Mode Anonymous `
+                -EffectiveDataPath 'C:\ProgramData\OpenTimeStamp' -EffectiveAdminHosts @('localhost') `
+                -ExistingSettings $reduced
+            [xml]$configuration = Get-Content -LiteralPath (Join-Path $stage 'Web.config') -Raw
+            foreach ($key in $reduced.Keys) {
+                Assert-Equal '1' `
+                    $configuration.SelectSingleNode("/configuration/appSettings/add[@key='$key']").GetAttribute('value') `
+                    "Upgrade changed the effective limit for '$key'."
+            }
+        }
+        foreach ($invalid in @('+8', ' 8 ', '8.0')) {
+            Assert-Throws {
+                Get-OpenTimeStampIntakeSettings -Settings @{ TimestampProcessingLimit = $invalid }
+            } 'Deployment accepted an intake limit that the runtime rejects.'
+        }
     }
 
     Invoke-Test 'Binding validation requires a usable HTTPS certificate and returns an exact URL' {

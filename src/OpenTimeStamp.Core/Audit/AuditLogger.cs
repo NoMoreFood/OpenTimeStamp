@@ -14,6 +14,7 @@ namespace OpenTimeStamp.Audit;
 public sealed class AuditRecord
 {
     public DateTime TimestampUtc { get; set; }
+    public DateTime? GenerationTimeUtc { get; set; }
     public string? EventType { get; set; }
     public string? Result { get; set; }
     public string? CorrelationId { get; set; }
@@ -372,6 +373,7 @@ public sealed class AuditLogger
         List<string> fields =
         [
             Field("timestampUtc", record.TimestampUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture)),
+            Field("generationTimeUtc", record.GenerationTimeUtc?.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture)),
             Field("eventType", record.EventType),
             Field("result", record.Result),
             Field("correlationId", record.CorrelationId),

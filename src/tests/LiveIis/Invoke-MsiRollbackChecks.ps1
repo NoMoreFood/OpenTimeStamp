@@ -209,6 +209,12 @@ foreach ($path in @('/admin', '/health')) {
     if (Test-Path -LiteralPath $deploymentRoot) { throw 'An invalid route created a deployment root.' }
 }
 Write-Host 'PASS nonexistent websites and invalid route paths are rejected'
+foreach ($name in @('bin', 'APP_DATA', 'web.config', '.git', '.', '..', 'Tsa.')) {
+    Invoke-MsiCheck -Name ('invalid-application-' + [guid]::NewGuid().ToString('N')) -ExpectedExitCode 1603 `
+        -Arguments "/i `"$MsiPath`" IISSITENAME=$SiteName APPLICATIONNAME=$name"
+    if (Test-Path -LiteralPath $deploymentRoot) { throw 'An inaccessible application name created a deployment root.' }
+}
+Write-Host 'PASS IIS-hidden and normalized application names are rejected before deployment'
 Invoke-MsiCheck -Name 'fresh-failure' -Arguments "/i `"$($fresh.Path)`" IISSITENAME=$SiteName" -ExpectedExitCode 1603
 $evidence = Get-Content -LiteralPath $fresh.Evidence -Raw | ConvertFrom-Json
 if (-not $evidence.ApplicationPresent -or $evidence.PoolState -ne 'Stopped') {

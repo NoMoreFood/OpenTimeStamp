@@ -232,7 +232,12 @@ public sealed class ConfigurationStore
             throw new ConfigurationErrorsException("The settings file is empty or does not contain valid settings.");
         }
 
-        return (ServiceConfiguration)serializer.ReadObject(reader);
+        var configuration = (ServiceConfiguration)serializer.ReadObject(reader);
+
+        // Consume the entire document so appended settings or a torn XML tail cannot be ignored.
+        reader.MoveToContent();
+        if (!reader.EOF) throw new ConfigurationErrorsException("The settings file contains unexpected trailing content.");
+        return configuration;
     }
 
     // The serializer silently skips a setting that appears after a later-ordered one or a second

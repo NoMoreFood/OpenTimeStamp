@@ -410,7 +410,7 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
             // Persist the issuance before returning the SignTool-compatible response envelope.
             WriteAudit(configuration, identity, context, correlationId, stopwatch, "granted", "granted", null,
                 HashAlgorithmCatalog.FindByName(configuration.SigningDigestAlgorithm)?.Oid, null,
-                result.AuditSerialNumber, result.CertificateThumbprint);
+                result.AuditSerialNumber, result.CertificateThumbprint, result.GenerationTimeUtc);
             var response = LegacyAuthenticodeHttpCodec.EncodeResponseBody(result.EncodedResponse);
             context.Response.StatusCode = 200;
             context.Response.TrySkipIisCustomErrors = true;
@@ -494,7 +494,8 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
         // Persist the outcome before returning the DER timestamp response.
         WriteAudit(configuration, identity, context, correlationId, stopwatch,
             result.Granted ? "granted" : "rejected", result.Detail, result.PolicyOid,
-            result.HashAlgorithmOid, result.MessageImprint, result.SerialNumber, result.CertificateThumbprint);
+            result.HashAlgorithmOid, result.MessageImprint, result.SerialNumber, result.CertificateThumbprint,
+            result.Granted ? result.GenerationTimeUtc : null);
         context.Response.StatusCode = 200;
         context.Response.TrySkipIisCustomErrors = true;
         context.Response.ContentType = "application/timestamp-reply";
@@ -548,12 +549,14 @@ internal sealed class TimestampHandler(TimestampProtocol protocol) : HttpTaskAsy
         string? hashOid,
         byte[]? imprint,
         byte[]? serial,
-        string? certificateThumbprint)
+        string? certificateThumbprint,
+        DateTime? generationTimeUtc = null)
     {
         // Record protocol, caller, cryptographic, and latency context in one durable event.
         AuditRecord record = new()
         {
             TimestampUtc = DateTime.UtcNow,
+            GenerationTimeUtc = generationTimeUtc,
             EventType = "timestamp",
             Result = result,
             CorrelationId = correlationId,

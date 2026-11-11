@@ -2,6 +2,7 @@
 **/obj/
 **/TestResults/
 .vs/
+/Build/Temp/
 /tools/artifacts/
 *.user
 *.suo

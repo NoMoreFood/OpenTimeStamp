@@ -104,7 +104,9 @@ function LoadIisApplications()
         {
             var name = String(applications.Item(index).Properties.Item("path").Value).substring(1);
             // Setup deploys named, single-segment applications rather than the website root.
-            if (!/^[A-Za-z0-9._-]{1,64}$/.test(name))
+            if (!/^[A-Za-z0-9._-]{1,64}$/.test(name) || /\.$/.test(name) ||
+                new RegExp("^(bin|App_Data|App_Code|App_GlobalResources|App_LocalResources|" +
+                    "App_WebReferences|App_Browsers|web\\.config|\\.git|\\.svn)$", "i").test(name))
             {
                 continue;
             }
