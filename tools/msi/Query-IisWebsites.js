@@ -64,6 +64,28 @@ function LoadIisWebsites()
     return 1;
 }
 
+function IsHiddenIisApplication(manager, sitePath, name)
+{
+    try
+    {
+        var filter = manager.GetAdminSection("system.webServer/security/requestFiltering", sitePath + "/" + name);
+        var segments = filter.ChildElements.Item("hiddenSegments").Collection;
+        var lowerName = name.toLowerCase();
+        for (var index = 0; index < segments.Count; index++)
+        {
+            if (String(segments.Item(index).Properties.Item("segment").Value).toLowerCase() === lowerName)
+            {
+                return true;
+            }
+        }
+    }
+    catch (error)
+    {
+        // An unreadable application can still be replaced. Deployment validates the staged configuration.
+    }
+    return false;
+}
+
 function LoadIisApplications()
 {
     Session.Property("IISAPPLICATIONSAVAILABLE") = "";
@@ -78,7 +100,7 @@ function LoadIisApplications()
         view = null;
 
         var siteName = Session.Property("IISSITENAME");
-        var manager = new ActiveXObject("Microsoft.ApplicationHost.WritableAdminManager");
+        var manager = new ActiveXObject("Microsoft.ApplicationHost.AdminManager");
         var sites = manager.GetAdminSection("system.applicationHost/sites", "MACHINE/WEBROOT/APPHOST").Collection;
         var applications = null;
         for (var index = 0; index < sites.Count; index++)
@@ -97,6 +119,9 @@ function LoadIisApplications()
             return 1;
         }
 
+        var sitePath = "MACHINE/WEBROOT/APPHOST/" + siteName;
+        var reserved = new RegExp("^(bin|App_Data|App_Code|App_GlobalResources|App_LocalResources|" +
+            "App_WebReferences|App_Browsers|web\\.config|\\.git|\\.svn)$", "i");
         view = database.OpenView("SELECT `Property`, `Order`, `Value`, `Text` FROM `ComboBox`");
         view.Execute();
         var selected = Session.Property("APPLICATIONNAME");
@@ -104,9 +129,8 @@ function LoadIisApplications()
         {
             var name = String(applications.Item(index).Properties.Item("path").Value).substring(1);
             // Setup deploys named, single-segment applications rather than the website root.
-            if (!/^[A-Za-z0-9._-]{1,64}$/.test(name) || /\.$/.test(name) ||
-                new RegExp("^(bin|App_Data|App_Code|App_GlobalResources|App_LocalResources|" +
-                    "App_WebReferences|App_Browsers|web\\.config|\\.git|\\.svn)$", "i").test(name))
+            if (!/^[A-Za-z0-9._-]{1,64}$/.test(name) || /\.$/.test(name) || reserved.test(name) ||
+                IsHiddenIisApplication(manager, sitePath, name))
             {
                 continue;
             }

@@ -209,12 +209,22 @@ foreach ($path in @('/admin', '/health')) {
     if (Test-Path -LiteralPath $deploymentRoot) { throw 'An invalid route created a deployment root.' }
 }
 Write-Host 'PASS nonexistent websites and invalid route paths are rejected'
-foreach ($name in @('bin', 'APP_DATA', 'web.config', '.git', '.', '..', 'Tsa.')) {
-    Invoke-MsiCheck -Name ('invalid-application-' + [guid]::NewGuid().ToString('N')) -ExpectedExitCode 1603 `
+$name = 'HiddenTsa' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+$hiddenSegments = @{ PSPath = 'MACHINE/WEBROOT/APPHOST'; Location = $SiteName; Name = '.'
+    Filter = 'system.webServer/security/requestFiltering/hiddenSegments' }
+$entry = @{ segment = $name.ToUpperInvariant() }
+Add-WebConfigurationProperty @hiddenSegments -Value $entry
+try {
+    Invoke-MsiCheck -Name 'hidden-application' -ExpectedExitCode 1603 `
         -Arguments "/i `"$MsiPath`" IISSITENAME=$SiteName APPLICATIONNAME=$name"
-    if (Test-Path -LiteralPath $deploymentRoot) { throw 'An inaccessible application name created a deployment root.' }
+    $log = Join-Path $OutputDirectory 'hidden-application.log'
+    if (-not (Select-String -LiteralPath $log -SimpleMatch "IIS hides application path '/$name'." -Quiet) -or
+        (Test-Path -LiteralPath $deploymentRoot)) {
+        throw "Setup did not reject the site's hidden application name cleanly. See '$log'."
+    }
 }
-Write-Host 'PASS IIS-hidden and normalized application names are rejected before deployment'
+finally { Remove-WebConfigurationProperty @hiddenSegments -AtElement $entry }
+Write-Host 'PASS setup rejects an application hidden by the selected site'
 Invoke-MsiCheck -Name 'fresh-failure' -Arguments "/i `"$($fresh.Path)`" IISSITENAME=$SiteName" -ExpectedExitCode 1603
 $evidence = Get-Content -LiteralPath $fresh.Evidence -Raw | ConvertFrom-Json
 if (-not $evidence.ApplicationPresent -or $evidence.PoolState -ne 'Stopped') {

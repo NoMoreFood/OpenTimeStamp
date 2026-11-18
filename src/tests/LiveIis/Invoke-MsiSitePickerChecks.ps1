@@ -10,6 +10,7 @@ $installer.UILevel = 2
 $package = $installer.OpenPackage((Resolve-Path -LiteralPath $MsiPath).Path, 0)
 $database = $package.GetType().InvokeMember('Database', 'GetProperty', $null, $package, $null)
 $fixtureName = "OpenTimeStamp Picker O'Brien " + [guid]::NewGuid().ToString('N')
+$fixtureRoot = Join-Path $env:TEMP $fixtureName
 $createdSites = @()
 $otherSiteName = $fixtureName + ' Other'
 
@@ -51,10 +52,23 @@ try {
     Add-Type -Path $administrationAssembly
     $manager = [Microsoft.Web.Administration.ServerManager]::new()
     try {
-        $site = $manager.Sites.Add($fixtureName, 'http', '127.0.0.1:61037:picker.invalid', $env:TEMP)
+        [void][IO.Directory]::CreateDirectory($fixtureRoot)
+        [IO.File]::WriteAllText((Join-Path $fixtureRoot 'Web.config'), @'
+<configuration>
+  <system.webServer><security><requestFiltering><hiddenSegments>
+    <add segment="HIDDENFIXTURE" /><add segment="Existing-One" />
+  </hiddenSegments></requestFiltering></security></system.webServer>
+  <location path="Existing-One">
+    <system.webServer><security><requestFiltering><hiddenSegments>
+      <remove segment="Existing-One" />
+    </hiddenSegments></requestFiltering></security></system.webServer>
+  </location>
+</configuration>
+'@)
+        $site = $manager.Sites.Add($fixtureName, 'http', '127.0.0.1:61037:picker.invalid', $fixtureRoot)
         $site.ServerAutoStart = $false
         foreach ($path in @('/Existing-One', '/Another.App', '/nested/child', '/Unsupported Name',
-                '/bin', '/APP_DATA', '/web.config', '/Name.')) {
+                '/bin', '/APP_DATA', '/web.config', '/Name.', '/HiddenFixture')) {
             [void]$site.Applications.Add($path, $env:TEMP)
         }
         $manager.CommitChanges()
@@ -86,10 +100,12 @@ try {
 
     $package.Property('APPLICATIONNAME') = 'existing-one'
     Invoke-Picker LoadIisApplications
+    $choices = @(Get-PickerValues APPLICATIONNAME | Sort-Object) -join ','
     if ($package.Property('IISAPPLICATIONSAVAILABLE') -ne '1' -or
         $package.Property('APPLICATIONNAME') -cne 'Existing-One' -or
-        (@(Get-PickerValues APPLICATIONNAME | Sort-Object) -join ',') -cne 'Another.App,Existing-One') {
-        throw 'Application choices did not match the selected website and supported application names.'
+        $choices -cne 'Another.App,Existing-One') {
+        $selected = $package.Property('APPLICATIONNAME')
+        throw "Expected Another.App,Existing-One with Existing-One selected. Got '$choices' with '$selected'."
     }
     Write-Host 'PASS application choices are scoped to the website and retain an existing selection'
 
@@ -142,6 +158,10 @@ finally {
         $manager = [Microsoft.Web.Administration.ServerManager]::new()
         try { $manager.Sites.Remove($manager.Sites[$name]); $manager.CommitChanges() }
         finally { $manager.Dispose() }
+    }
+    if ([IO.Directory]::Exists($fixtureRoot)) {
+        [IO.File]::Delete((Join-Path $fixtureRoot 'Web.config'))
+        [IO.Directory]::Delete($fixtureRoot)
     }
     foreach ($item in @($database, $package, $installer)) {
         [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($item)

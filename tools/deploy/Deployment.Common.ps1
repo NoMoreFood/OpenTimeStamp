@@ -505,6 +505,7 @@ function Assert-OpenTimeStampWebConfig {
     }
 
     $document = Read-OpenTimeStampXmlDocument -Path $Path
+    $settings = @{}
     foreach ($key in @(
             'AuthenticationMode',
             'DataPath',
@@ -518,8 +519,10 @@ function Assert-OpenTimeStampWebConfig {
         if ($null -eq $node) {
             throw "The published web.config does not contain the required '$key' appSetting."
         }
+        $settings[$key] = $node.GetAttribute('value')
     }
 
+    Get-OpenTimeStampIntakeSettings -Settings $settings | Out-Null
     return $document
 }
 
@@ -546,7 +549,7 @@ function Get-OpenTimeStampIntakeSettings {
                     [Globalization.CultureInfo]::InvariantCulture,
                     [ref]$value) -or
                 $value -lt [int]$definition[2] -or $value -gt $maximum)) {
-            throw "The existing '$key' appSetting must be an integer from $($definition[2]) through $maximum."
+            throw "The '$key' appSetting must be an integer from $($definition[2]) through $maximum."
         }
         $values[$key] = $value
     }
@@ -620,13 +623,12 @@ function Set-OpenTimeStampStagedWebSettings {
     $document.SelectSingleNode("/configuration/appSettings/add[@key='AuthenticationMode']").SetAttribute('value', $Mode)
     $document.SelectSingleNode("/configuration/appSettings/add[@key='DataPath']").SetAttribute('value', $EffectiveDataPath)
     $document.SelectSingleNode("/configuration/appSettings/add[@key='AdminHostNames']").SetAttribute('value', ($EffectiveAdminHosts -join ','))
-    $intakeSettings = Get-OpenTimeStampIntakeSettings -Settings $ExistingSettings
-    foreach ($key in $intakeSettings.Keys) {
-        $node = $document.SelectSingleNode("/configuration/appSettings/add[@key='$key']")
-        if ($null -eq $node) {
-            throw "The published web.config does not contain the upgrade-preserved '$key' appSetting."
+    if ($null -ne $ExistingSettings) {
+        $intakeSettings = Get-OpenTimeStampIntakeSettings -Settings $ExistingSettings
+        foreach ($key in $intakeSettings.Keys) {
+            $node = $document.SelectSingleNode("/configuration/appSettings/add[@key='$key']")
+            $node.SetAttribute('value', $intakeSettings[$key].ToString([Globalization.CultureInfo]::InvariantCulture))
         }
-        $node.SetAttribute('value', $intakeSettings[$key].ToString([Globalization.CultureInfo]::InvariantCulture))
     }
     if ($PSBoundParameters.ContainsKey('RequireHttps')) {
         $cookies = $document.SelectSingleNode('/configuration/system.web/httpCookies')

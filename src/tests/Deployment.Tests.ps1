@@ -389,6 +389,29 @@ catch {
         }
     }
 
+    Invoke-Test 'Fresh installation preserves and validates the published intake limits' {
+        $stage = Join-Path $testRoot 'fresh-intake-settings'
+        New-TestPayload -Path $stage
+        $path = Join-Path $stage 'Web.config'
+        $config = Read-OpenTimeStampXmlDocument -Path $path
+        $globalKey = "/configuration/appSettings/add[@key='TimestampProcessingLimit']"
+        $clientKey = "/configuration/appSettings/add[@key='TimestampProcessingPerClientLimit']"
+        $config.SelectSingleNode($globalKey).SetAttribute('value', '1')
+        $config.SelectSingleNode($clientKey).SetAttribute('value', '1')
+        $config.Save($path)
+
+        $parameters = @{ ReleasePath = $stage; Mode = 'Anonymous'; EffectiveDataPath = $testRoot
+            EffectiveAdminHosts = @('localhost') }
+        Set-OpenTimeStampStagedWebSettings @parameters
+        $config = Read-OpenTimeStampXmlDocument -Path $path
+        Assert-Equal '1' $config.SelectSingleNode($globalKey).GetAttribute('value') 'The global signing limit changed.'
+        Assert-Equal '1' $config.SelectSingleNode($clientKey).GetAttribute('value') 'The client signing limit changed.'
+
+        $config.SelectSingleNode($clientKey).SetAttribute('value', '2')
+        $config.Save($path)
+        Assert-Throws { Set-OpenTimeStampStagedWebSettings @parameters } 'Invalid published limits were accepted.'
+    }
+
     Invoke-Test 'Upgrade intake settings are range checked, related, and preserved' {
         $stage = Join-Path $testRoot 'intake-settings-stage'
         New-TestPayload -Path $stage
@@ -2267,6 +2290,26 @@ namespace OpenTimeStamp.Issuance {
                     '/../health', '/x%2fy', '/x?y', '/x#y', '/{route}', '/sign.dll', 'https://other.test/sign')) {
                 Assert-Throws { Resolve-OpenTimeStampRoutePaths -Requested @{ Rfc3161Path = $invalid } } `
                     "An unsafe route was accepted: $invalid"
+            }
+        }
+        finally { [Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture }
+    }
+
+    Invoke-Test 'Application path binding rejects hidden names independently of the Windows language' {
+        $installer = Get-Command (Join-Path $repositoryRoot 'tools\deploy\Install-IisApplication.ps1')
+        $parameter = $installer.ScriptBlock.Ast.ParamBlock.Parameters | Where-Object {
+            $_.Name.VariablePath.UserPath -eq 'ApplicationPath'
+        }
+        $bind = [scriptblock]::Create('param(' + $parameter.Extent.Text + ') $ApplicationPath')
+        $originalCulture = [Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            foreach ($culture in @('tr-TR', 'en-US')) {
+                [Threading.Thread]::CurrentThread.CurrentCulture = [Globalization.CultureInfo]::GetCultureInfo($culture)
+                Assert-Equal '/Tsa.Bin' (& $bind '/Tsa.Bin') "A valid dotted application was rejected under $culture."
+                foreach ($path in @('/BIN', '/APP_DATA', '/web.config', '/.git', '/.', '/..', '/Tsa.',
+                        ('/Tsa' + [char]0x0130), "/Tsa`n")) {
+                    Assert-Throws { & $bind $path } "ApplicationPath accepted '$path' under $culture."
+                }
             }
         }
         finally { [Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture }

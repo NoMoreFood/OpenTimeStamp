@@ -31,10 +31,13 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$SiteName = 'Default Web Site',
 
-    [ValidatePattern('^/[A-Za-z0-9._-]+$')]
+    [ValidatePattern('\A/[A-Za-z0-9._-]+\z', Options = 'None')]
     [ValidateScript({
-        if ($_.EndsWith('.') -or $_ -match ('^/(?:bin|App_Data|App_Code|App_GlobalResources|' +
-                'App_LocalResources|App_WebReferences|App_Browsers|web\.config|\.git|\.svn)$')) {
+        $hiddenPaths = [Collections.Generic.HashSet[string]]::new([string[]]@(
+            '/bin', '/App_Data', '/App_Code', '/App_GlobalResources', '/App_LocalResources',
+            '/App_WebReferences', '/App_Browsers', '/web.config', '/.git', '/.svn'),
+            [StringComparer]::OrdinalIgnoreCase)
+        if ($_.EndsWith('.', [StringComparison]::Ordinal) -or $hiddenPaths.Contains($_)) {
             throw 'ApplicationPath must not use an IIS-hidden name or end with a period.'
         }
         return $true
@@ -466,6 +469,12 @@ function Assert-IisApplicationHardening {
             }
         }
         $filter = $configuration.GetSection('system.webServer/security/requestFiltering')
+        $name = $ApplicationPath.Substring(1)
+        foreach ($segment in $filter.GetCollection('hiddenSegments')) {
+            if ([string]::Equals($name, $segment.GetAttributeValue('segment'), [StringComparison]::OrdinalIgnoreCase)) {
+                throw "IIS hides application path '$ApplicationPath'."
+            }
+        }
         foreach ($collectionName in @('verbs', 'fileExtensions')) {
             $element = $filter.GetChildElement($collectionName)
             if ([bool]$element.GetAttributeValue('allowUnlisted') -or

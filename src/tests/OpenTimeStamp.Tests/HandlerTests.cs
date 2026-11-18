@@ -304,7 +304,13 @@ public sealed class HandlerTests
 
         using var certificate = new TimestampCertificateFixture();
         using var host = new HandlerTestHost(certificate: _ => new X509Certificate2(certificate.Certificate));
-        host.Configure(configuration => configuration.AuthenticodeEnabled = true);
+        host.Configure(configuration =>
+        {
+            configuration.AuthenticodeEnabled = true;
+            configuration.ClockRollbackToleranceSeconds = 60;
+        });
+        var issuedTime = DateTime.UtcNow.AddSeconds(30);
+        ServiceRuntime.IssuanceState.Allocate(() => issuedTime, TimeSpan.Zero, false, CancellationToken.None);
         byte[] signature = [0x10, 0x20, 0x30, 0x40];
         var protocol = automatic ? TimestampProtocol.Automatic : TimestampProtocol.Authenticode;
         var url = automatic ? AutomaticUrl : AuthenticodeUrl;
@@ -324,8 +330,8 @@ public sealed class HandlerTests
         var audit = host.AuditLines().Single();
         AssertEx.Contains("\"protocol\":\"authenticode\"", audit);
         AssertEx.Contains("\"result\":\"granted\"", audit);
-        AssertEx.True(Regex.IsMatch(audit, "\"generationTimeUtc\":\"[^\"]+\""),
-            "Legacy issuance must retain its allocated time in the audit history.");
+        AssertEx.Contains("\"generationTimeUtc\":\"" + issuedTime.ToString("o", CultureInfo.InvariantCulture) + "\"",
+            audit);
 
         var malformed = new FakeHttpRequest("POST", url, Encoding.ASCII.GetBytes("not base64!"))
         {
